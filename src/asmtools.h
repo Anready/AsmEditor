@@ -133,3 +133,32 @@ std::string IdFromSource(const std::string& text);
 // Output matches when both are equal after collapsing whitespace.
 bool OutputMatches(const std::string& output, const std::string& expected);
 }
+
+namespace Lessons {
+struct Lesson {
+    std::string id;
+    std::wstring titleRu, titleEn;
+    std::string textRu, textEn;  // the explanation (goes into the lesson file as comments)
+    std::string exercise;        // the task at the end of the lesson (Exercises id)
+};
+const std::vector<Lesson>& All();
+// The lesson's file: "; task: …", the explanation as comments, then the exercise's starter code.
+std::string FileText(const Lesson& lesson, bool english);
+}
+
+// What the student solved: kept in %APPDATA%\AsmEditor\results.ini, exported for the teacher as CSV.
+namespace Results {
+struct Entry {
+    int attempts = 0;
+    int bestPassed = 0;      // most tests passed in one attempt
+    int total = 0;
+    bool solved = false;
+    std::string firstSolved;  // "2026-10-31 12:00"
+    std::string last;
+};
+std::map<std::string, Entry> Load(const fs::path& file, std::string* student = nullptr);
+bool Save(const fs::path& file, const std::map<std::string, Entry>& results, const std::string& student);
+void Record(std::map<std::string, Entry>& results, const std::string& id, int passed, int total, const std::string& when);
+// One row per exercise (unattempted ones too), ';'-separated, UTF-8 with BOM.
+std::string ExportCsv(const std::map<std::string, Entry>& results, const std::string& student, bool english);
+}

@@ -90,6 +90,8 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_RESET_MAIN, L"Сбросить главный файл проекта", L""},
         {ID_CHECK_SOLUTION, L"Проверить решение задачи", L"Ctrl+Shift+T"},
         {ID_NEW_EXERCISE, L"Новая учебная задача…", L""},
+        {ID_LESSONS, L"Уроки…", L""},
+        {ID_EXPORT_RESULTS, L"Экспорт результатов задач…", L""},
         {ID_SETTINGS, L"Настройки…", L"Ctrl+Alt+S"},
         {ID_KEYS, L"Горячие клавиши…", L""},
         {ID_CHECK_UPDATES, L"Проверить обновления NASM и Scintilla", L""},

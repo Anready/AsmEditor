@@ -545,8 +545,9 @@ void MainWindow::CheckSolution() {
         };
         BuildResult built = Toolchain::Build(copy, plan, post);
         if (!built.ok) {
-            PostMessageW(hwnd, WM_APP_SOLUTION_DONE, 0,
-                         reinterpret_cast<LPARAM>(new std::string(Tr(std::string("Решение не собирается — исправьте ошибки.\n")))));
+            auto* done = new SolutionDone{Tr(std::string("Решение не собирается — исправьте ошибки.\n")), exercise.id, 0,
+                                          static_cast<int>(exercise.tests.size()), false};
+            PostMessageW(hwnd, WM_APP_SOLUTION_DONE, 0, reinterpret_cast<LPARAM>(done));
             return;
         }
         int passed = 0;
@@ -574,15 +575,18 @@ void MainWindow::CheckSolution() {
         std::string summary = all ? Tr(std::string("Все тесты пройдены — задача решена!"))
                                   : Tr(std::string("Пройдено тестов:")) + " " + std::to_string(passed) + " / " +
                                         std::to_string(exercise.tests.size());
-        PostMessageW(hwnd, WM_APP_SOLUTION_DONE, all ? 1 : 0, reinterpret_cast<LPARAM>(new std::string(summary + "\n")));
+        auto* done = new SolutionDone{summary + "\n", exercise.id, passed, static_cast<int>(exercise.tests.size()), true};
+        PostMessageW(hwnd, WM_APP_SOLUTION_DONE, all ? 1 : 0, reinterpret_cast<LPARAM>(done));
     }).detach();
 }
 
 void MainWindow::NewExercise() {
     std::vector<std::wstring> items;
+    auto results = Results::Load(ResultsFile());
     for (const Exercises::Exercise& e : Exercises::All()) {
         std::string first = e.description.substr(0, e.description.find('\n'));
-        items.push_back(std::wstring(Tr(e.title.c_str())) + L"\t" + Widen(first));
+        bool solved = results.count(e.id) && results[e.id].solved;
+        items.push_back(std::wstring(solved ? L"✓ " : L"") + Tr(e.title.c_str()) + L"\t" + Widen(first));
     }
     auto pick = PickFromList(hwnd_, Tr(L"Учебные задачи"), items, Tr(L"Название задачи…"));
     if (!pick) return;
@@ -612,6 +616,97 @@ void MainWindow::NewExercise() {
     Print(Narrow(Tr(e.title.c_str())) + "\n" + e.description + "\n\n" +
               Tr(std::string("Напишите решение и нажмите Ctrl+Shift+T — редактор соберёт программу и проверит её на тестах.")) +
               "\n", Out::Info);
+}
+
+fs::path MainWindow::ResultsFile() {
+    return Settings::Dir() / L"results.ini";
+}
+
+void MainWindow::RecordResult(const std::string& id, int passed, int total) {
+    std::string student;
+    auto results = Results::Load(ResultsFile(), &student);
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    char when[32];
+    sprintf_s(when, "%04d-%02d-%02d %02d:%02d", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute);
+    Results::Record(results, id, passed, total, when);
+    Results::Save(ResultsFile(), results, student);
+}
+
+// Run → Lessons: an explanation with a task at the end, checked like the exercises (Ctrl+Shift+T).
+void MainWindow::OpenLesson() {
+    auto results = Results::Load(ResultsFile());
+    std::vector<std::wstring> items;
+    for (const Lessons::Lesson& l : Lessons::All()) {
+        bool solved = results.count(l.exercise) && results[l.exercise].solved;
+        const std::string& text = English() ? l.textEn : l.textRu;
+        items.push_back(std::wstring(solved ? L"✓ " : L"") + (English() ? l.titleEn : l.titleRu) + L"\t" +
+                        Widen(text.substr(0, text.find('\n'))));
+    }
+    auto pick = PickFromList(hwnd_, Tr(L"Уроки"), items, Tr(L"Название урока…"));
+    if (!pick) return;
+    const Lessons::Lesson& lesson = Lessons::All()[*pick];
+    fs::path dir;
+    if (!projectRoot_.empty()) {
+        dir = projectRoot_ / L"lessons";
+    } else if (auto folder = PickFolder(Tr(L"Папка для уроков"))) {
+        dir = *folder;
+    } else {
+        return;
+    }
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    wchar_t name[32];
+    swprintf_s(name, L"lesson%02d-%s.asm", static_cast<int>(*pick + 1), Widen(lesson.id).c_str());
+    fs::path file = dir / name;
+    if (!fs::exists(file)) {
+        std::ofstream out(file, std::ios::binary);
+        out << Lessons::FileText(lesson, English());
+    }
+    if (!projectRoot_.empty()) excludedFromBuild_.insert(Project::Key(file));
+    SaveProjectSession();
+    RefreshTree();
+    OpenFile(file);
+    ClearPane(Pane::Output);
+    ShowPane(Pane::Output);
+    Print(Narrow(English() ? lesson.titleEn : lesson.titleRu) + "\n" + (English() ? lesson.textEn : lesson.textRu) + "\n\n" +
+              Tr(std::string("Задача урока — в конце файла. Ctrl+Shift+T проверяет решение на тестах.")) + "\n",
+          Out::Info);
+}
+
+// Run → Export results: a CSV for the teacher (one row per task, solved or not).
+void MainWindow::ExportResults() {
+    std::string student;
+    auto results = Results::Load(ResultsFile(), &student);
+    auto name = InputBox(hwnd_, Tr(L"Экспорт результатов"), Tr(L"Имя и фамилия (попадут в файл):"), Widen(student));
+    if (!name) return;
+    student = Narrow(Trim(*name));
+    Results::Save(ResultsFile(), results, student);
+    std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
+    std::wstring suggested = L"results" + (student.empty() ? L"" : L"-" + Widen(student)) + L".csv";
+    for (wchar_t& c : suggested) {
+        if (wcschr(L"\\/:*?\"<>| ", c)) c = L'_';
+    }
+    wcsncpy_s(buf.data(), buf.size(), suggested.c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"CSV (*.csv)\0*.csv\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = static_cast<DWORD>(buf.size());
+    ofn.lpstrDefExt = L"csv";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn)) return;
+    std::ofstream out(fs::path(buf.data()), std::ios::binary | std::ios::trunc);
+    out << Results::ExportCsv(results, student, English());
+    if (!out) {
+        ShowMessage(hwnd_, Tr(L"Не удалось записать файл."));
+        return;
+    }
+    int solved = 0;
+    for (const auto& [id, e] : results) solved += e.solved;
+    Print(Tr(std::string("Результаты сохранены: ")) + Narrow(buf.data()) + " (" + Tr(std::string("решено задач: ")) +
+              std::to_string(solved) + " / " + std::to_string(Exercises::All().size()) + ")\n",
+          Out::Success);
 }
 
 // ---- program console (ConPTY) -----------------------------------------------------------------------------------

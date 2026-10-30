@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <sstream>
 #include <thread>
 
 namespace {
@@ -1079,6 +1080,153 @@ TEST(DebuggerWatchInOtherThread) {
     d.Continue();
     CHECK(host.Wait(10000));
     CHECK(host.exited);
+}
+
+// ---- learning: lessons, new exercises (solved by reference solutions), results -----------------------------------
+
+// Runs a console program with the text on stdin; its stdout (false: did not finish in time).
+bool RunExe(const fs::path& exe, const std::string& input, std::string& output) {
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE inRead, inWrite, outRead, outWrite;
+    CreatePipe(&inRead, &inWrite, &sa, 0);
+    CreatePipe(&outRead, &outWrite, &sa, 0);
+    SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW si{sizeof(si)};
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = inRead;
+    si.hStdOutput = outWrite;
+    si.hStdError = outWrite;
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + exe.wstring() + L"\"";
+    std::wstring cwd = exe.parent_path().wstring();
+    BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si, &pi);
+    CloseHandle(inRead);
+    CloseHandle(outWrite);
+    if (!ok) {
+        CloseHandle(inWrite);
+        CloseHandle(outRead);
+        return false;
+    }
+    std::string in = input + "\n";
+    DWORD n = 0;
+    WriteFile(inWrite, in.data(), static_cast<DWORD>(in.size()), &n, nullptr);
+    CloseHandle(inWrite);
+    std::thread reader([&] {
+        char buf[4096];
+        DWORD got;
+        while (ReadFile(outRead, buf, sizeof(buf), &got, nullptr) && got) output.append(buf, got);
+    });
+    bool finished = WaitForSingleObject(pi.hProcess, 5000) == WAIT_OBJECT_0;
+    if (!finished) TerminateProcess(pi.hProcess, 1);
+    reader.join();
+    CloseHandle(outRead);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return finished;
+}
+
+std::string Replace(std::string text, const std::string& what, const std::string& with) {
+    size_t at = text.find(what);
+    if (at == std::string::npos) {
+        printf("    (starter has no \"%s\")\n", what.c_str());
+        return text;
+    }
+    return text.replace(at, what.size(), with);
+}
+
+// Turns "a\nb" into indented CRLF lines, as the starters are written.
+std::string Code(const std::string& lines) {
+    std::string out;
+    std::istringstream in(lines);
+    for (std::string l; std::getline(in, l);) out += (l.empty() || l[0] == '.' || l.back() == ':' ? l : "    " + l) + "\r\n";
+    return out;
+}
+
+void CheckSolves(const std::string& id, const std::string& todo, const std::string& solution) {
+    const Exercises::Exercise* ex = Exercises::Find(id);
+    CHECK(ex != nullptr);
+    if (!ex) return;
+    std::string source = Replace(ex->starter, todo, Code(solution));
+    CHECK(StackCheck::Analyze(ex->starter).empty());
+    auto exe = BuildProgram("ex-" + id, source);
+    if (!exe) return;
+    for (const Exercises::Test& t : ex->tests) {
+        std::string output;
+        bool finished = RunExe(*exe, t.input, output);
+        bool ok = finished && Exercises::OutputMatches(output, t.expected);
+        if (!ok) printf("    %s: input [%s] expected [%s] got [%s]\n", id.c_str(), t.input.c_str(), t.expected.c_str(), output.c_str());
+        CHECK(ok);
+    }
+}
+
+TEST(NewExercisesAreSolvable) {
+    CheckSolves("reverse", "    ; TODO: запишите в result слово задом наперёд (и 0 в конце)\r\n",
+                "lea r8, [input]\nxor ecx, ecx\n.len:\ncmp byte [r8 + rcx], 0\nje .got\ninc rcx\njmp .len\n.got:\n"
+                "lea r9, [result]\nxor edx, edx\n.copy:\ntest rcx, rcx\njz .done\ndec rcx\nmov al, [r8 + rcx]\n"
+                "mov [r9 + rdx], al\ninc rdx\njmp .copy\n.done:\nmov byte [r9 + rdx], 0");
+    CheckSolves("upper", "    ; TODO: замените строчные буквы в input на заглавные\r\n",
+                "lea r8, [input]\n.next:\nmov al, [r8]\ntest al, al\njz .done\ncmp al, 'a'\njb .skip\ncmp al, 'z'\nja .skip\n"
+                "sub al, 32\nmov [r8], al\n.skip:\ninc r8\njmp .next\n.done:");
+    CheckSolves("array_sum",
+                "    ; TODO: прочитайте n чисел в arr (rbx — номер элемента, он сохраняется при call)\r\n"
+                "    ; TODO: сложите их в rdx\r\n    xor     edx, edx\r\n",
+                "xor ebx, ebx\n.read:\ncmp rbx, [n]\njge .sum\nlea rcx, [fmt_in]\nlea rdx, [arr + rbx*8]\ncall scanf\ninc rbx\n"
+                "jmp .read\n.sum:\nxor edx, edx\nxor ebx, ebx\n.add:\ncmp rbx, [n]\njge .print\nadd rdx, [arr + rbx*8]\n"
+                "inc rbx\njmp .add\n.print:");
+    CheckSolves("sort",
+                "    ; TODO: прочитайте n чисел в arr, отсортируйте их\r\n"
+                "    ; TODO: напечатайте каждое: lea rcx, [fmt_num] / mov rdx, [arr + rbx*8] / call printf\r\n",
+                "xor ebx, ebx\n.read:\ncmp rbx, [n]\njge .sort\nlea rcx, [fmt_in]\nlea rdx, [arr + rbx*8]\ncall scanf\ninc rbx\n"
+                "jmp .read\n.sort:\nmov r8, [n]\n.outer:\ndec r8\njle .print0\nxor ecx, ecx\n.inner:\ncmp rcx, r8\njge .outer\n"
+                "mov rax, [arr + rcx*8]\nmov rdx, [arr + rcx*8 + 8]\ncmp rax, rdx\njle .noswap\nmov [arr + rcx*8], rdx\n"
+                "mov [arr + rcx*8 + 8], rax\n.noswap:\ninc rcx\njmp .inner\n.print0:\nxor ebx, ebx\n.print:\ncmp rbx, [n]\n"
+                "jge .end\nlea rcx, [fmt_num]\nmov rdx, [arr + rbx*8]\ncall printf\ninc rbx\njmp .print\n.end:");
+    CheckSolves("gcd", "    ; TODO\r\n    mov     rax, rcx\r\n    ret\r\n",
+                "test rdx, rdx\njnz .rec\nmov rax, rcx\nret\n.rec:\nsub rsp, 40\nmov rax, rcx\nmov r8, rdx\nxor edx, edx\n"
+                "div r8\nmov rcx, r8\ncall gcd\nadd rsp, 40\nret");
+    CheckSolves("binary", "print_bin:\r\n    ; TODO\r\n    ret\r\n",
+                "print_bin:\npush rbx\nsub rsp, 32\nmov rbx, rcx\ncmp rbx, 2\njb .digit\nmov rcx, rbx\nshr rcx, 1\ncall print_bin\n"
+                ".digit:\nlea rcx, [fmt_bit]\nmov rdx, rbx\nand rdx, 1\ncall printf\nadd rsp, 32\npop rbx\nret");
+    CheckSolves("file",
+                "    ; TODO: rax = fopen(name, mode_w); fprintf(rax, fmt_str, input); fclose\r\n"
+                "    ; TODO: rax = fopen(name, mode_r); fscanf(rax, fmt_in, copy); fclose\r\n",
+                "section .bss\nfp resq 1\nsection .text\nlea rcx, [name]\nlea rdx, [mode_w]\ncall fopen\nmov [fp], rax\n"
+                "mov rcx, rax\nlea rdx, [fmt_str]\nlea r8, [input]\ncall fprintf\nmov rcx, [fp]\ncall fclose\n"
+                "lea rcx, [name]\nlea rdx, [mode_r]\ncall fopen\nmov [fp], rax\nmov rcx, rax\nlea rdx, [fmt_in]\n"
+                "lea r8, [copy]\ncall fscanf\nmov rcx, [fp]\ncall fclose");
+}
+
+TEST(LessonsAndResults) {
+    CHECK(Lessons::All().size() >= 9u);
+    for (const Lessons::Lesson& l : Lessons::All()) {
+        CHECK(Exercises::Find(l.exercise) != nullptr);
+        for (bool english : {false, true}) {
+            std::string text = Lessons::FileText(l, english);
+            CHECK_EQ(Exercises::IdFromSource(text), l.exercise);
+            CHECK(text.find("global main") != std::string::npos);
+        }
+    }
+    std::map<std::string, Results::Entry> r;
+    Results::Record(r, "sum", 1, 3, "2026-10-31 10:00");
+    Results::Record(r, "sum", 3, 3, "2026-10-31 10:05");
+    Results::Record(r, "sum", 2, 3, "2026-10-31 10:09");
+    CHECK(r["sum"].solved);
+    CHECK_EQ(r["sum"].attempts, 3);
+    CHECK_EQ(r["sum"].bestPassed, 3);
+    CHECK_EQ(r["sum"].firstSolved, std::string("2026-10-31 10:05"));
+    wchar_t tmp[MAX_PATH + 1];
+    GetTempPathW(MAX_PATH + 1, tmp);
+    fs::path file = fs::path(tmp) / L"asmeditor-tests" / L"results.ini";
+    CHECK(Results::Save(file, r, "Иванов И."));
+    std::string student;
+    auto loaded = Results::Load(file, &student);
+    CHECK_EQ(student, std::string("Иванов И."));
+    CHECK(loaded["sum"].solved && loaded["sum"].attempts == 3 && loaded["sum"].last == "2026-10-31 10:09");
+    std::string csv = Results::ExportCsv(loaded, student, false);
+    CHECK(csv.find("Иванов И.;sum;") != std::string::npos);
+    CHECK(csv.find(";да;3/3;3;2026-10-31 10:05;2026-10-31 10:09") != std::string::npos);
+    CHECK(csv.find(";gcd;") != std::string::npos);  // unattempted tasks are listed too
 }
 
 const char* kSleepProgram =

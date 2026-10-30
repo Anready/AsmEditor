@@ -1439,6 +1439,218 @@ const std::vector<Exercise>& All() {
             "Подсказка: у степени двойки n & (n - 1) = 0. Строки выводите своим форматом, например\n"
             "yes db \"yes\", 10, 0 и printf с ним.",
             "%lld", kReadOneNumber, {{"1", "yes"}, {"64", "yes"}, {"12", "no"}, {"0", "no"}, {"1024", "yes"}});
+        // strings
+        add("reverse", L"7. Строка наоборот",
+            "Прочитайте слово (до 99 символов, без пробелов) и напечатайте его задом наперёд.\n"
+            "Строка в памяти — байты, в конце 0. Найдите длину, затем идите с конца (movzx eax, byte [rsi]).\n"
+            "Пример: ввод «hello» — вывод «olleh».",
+            "%99s",
+            "    fmt_str db \"%s\", 10, 0\r\n"
+            "\r\n"
+            "section .bss\r\n"
+            "    input   resb 100\r\n"
+            "    result  resb 100\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    sub     rsp, 40\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [input]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    ; TODO: запишите в result слово задом наперёд (и 0 в конце)\r\n"
+            "\r\n"
+            "    lea     rcx, [fmt_str]\r\n"
+            "    lea     rdx, [result]\r\n"
+            "    call    printf\r\n"
+            "    add     rsp, 40\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n",
+            {{"hello", "olleh"}, {"a", "a"}, {"abc", "cba"}, {"racecar", "racecar"}});
+        add("upper", L"8. Заглавные буквы",
+            "Прочитайте слово из латинских букв и напечатайте его заглавными.\n"
+            "У строчной и заглавной буквы коды отличаются на 32 ('a' = 97, 'A' = 65): проверьте диапазон 'a'…'z'.\n"
+            "Пример: ввод «Hello» — вывод «HELLO».",
+            "%99s",
+            "    fmt_str db \"%s\", 10, 0\r\n"
+            "\r\n"
+            "section .bss\r\n"
+            "    input   resb 100\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    sub     rsp, 40\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [input]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    ; TODO: замените строчные буквы в input на заглавные\r\n"
+            "\r\n"
+            "    lea     rcx, [fmt_str]\r\n"
+            "    lea     rdx, [input]\r\n"
+            "    call    printf\r\n"
+            "    add     rsp, 40\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n",
+            {{"Hello", "HELLO"}, {"abc", "ABC"}, {"XyZ", "XYZ"}, {"NASM", "NASM"}});
+        // arrays
+        add("array_sum", L"9. Сумма массива",
+            "Прочитайте n (1 ≤ n ≤ 100), затем n целых чисел, и напечатайте их сумму.\n"
+            "Числа читайте в массив: адрес i-го элемента — [arr + i*8] (lea rdx, [arr + rbx*8]).\n"
+            "Пример: ввод «3 1 2 3» — вывод «6».",
+            "%lld",
+            "section .bss\r\n"
+            "    n       resq 1\r\n"
+            "    arr     resq 100\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    push    rbx\r\n"
+            "    sub     rsp, 32\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [n]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    ; TODO: прочитайте n чисел в arr (rbx — номер элемента, он сохраняется при call)\r\n"
+            "    ; TODO: сложите их в rdx\r\n"
+            "    xor     edx, edx\r\n"
+            "\r\n"
+            "    lea     rcx, [fmt_out]\r\n"
+            "    call    printf\r\n"
+            "    add     rsp, 32\r\n"
+            "    pop     rbx\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n",
+            {{"3 1 2 3", "6"}, {"1 -5", "-5"}, {"5 10 20 30 40 50", "150"}});
+        add("sort", L"10. Сортировка",
+            "Прочитайте n (1 ≤ n ≤ 100) и n целых чисел, напечатайте их по возрастанию через пробел.\n"
+            "Подойдёт сортировка пузырьком: два вложенных цикла, соседние элементы меняются местами.\n"
+            "Пример: ввод «5 3 1 4 1 5» — вывод «1 1 3 4 5».",
+            "%lld",
+            "    fmt_num db \"%lld \", 0\r\n"
+            "\r\n"
+            "section .bss\r\n"
+            "    n       resq 1\r\n"
+            "    arr     resq 100\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    push    rbx\r\n"
+            "    sub     rsp, 32\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [n]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    ; TODO: прочитайте n чисел в arr, отсортируйте их\r\n"
+            "    ; TODO: напечатайте каждое: lea rcx, [fmt_num] / mov rdx, [arr + rbx*8] / call printf\r\n"
+            "\r\n"
+            "    add     rsp, 32\r\n"
+            "    pop     rbx\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n",
+            {{"5 3 1 4 1 5", "1 1 3 4 5"}, {"1 42", "42"}, {"4 -1 -10 7 0", "-10 -1 0 7"}});
+        // recursion
+        add("gcd", L"11. НОД рекурсией",
+            "Прочитайте два натуральных числа и напечатайте их наибольший общий делитель.\n"
+            "Напишите рекурсивную функцию gcd(a, b): если b = 0, ответ a, иначе gcd(b, a mod b).\n"
+            "Аргументы — в rcx и rdx, результат — в rax; не забудьте про div и rdx.\n"
+            "Пример: ввод «12 18» — вывод «6».",
+            "%lld %lld",
+            "section .bss\r\n"
+            "    a       resq 1\r\n"
+            "    b       resq 1\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    sub     rsp, 40\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [a]\r\n"
+            "    lea     r8, [b]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    mov     rcx, [a]\r\n"
+            "    mov     rdx, [b]\r\n"
+            "    call    gcd\r\n"
+            "\r\n"
+            "    lea     rcx, [fmt_out]\r\n"
+            "    mov     rdx, rax\r\n"
+            "    call    printf\r\n"
+            "    add     rsp, 40\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n"
+            "\r\n"
+            "; rax = gcd(rcx, rdx)\r\n"
+            "gcd:\r\n"
+            "    ; TODO\r\n"
+            "    mov     rax, rcx\r\n"
+            "    ret\r\n",
+            {{"12 18", "6"}, {"7 5", "1"}, {"100 10", "10"}, {"1071 462", "21"}});
+        add("binary", L"12. Двоичная запись",
+            "Прочитайте неотрицательное число и напечатайте его в двоичной системе (без ведущих нулей).\n"
+            "Рекурсия: print(n) = print(n / 2), затем цифра n mod 2. Для 0 — «0».\n"
+            "Пример: ввод «5» — вывод «101».",
+            "%lld",
+            "    fmt_bit db \"%lld\", 0\r\n"
+            "\r\n"
+            "section .bss\r\n"
+            "    n       resq 1\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    sub     rsp, 40\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [n]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    mov     rcx, [n]\r\n"
+            "    call    print_bin\r\n"
+            "\r\n"
+            "    add     rsp, 40\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n"
+            "\r\n"
+            "; печатает rcx в двоичной системе (цифры — printf с fmt_bit)\r\n"
+            "print_bin:\r\n"
+            "    ; TODO\r\n"
+            "    ret\r\n",
+            {{"5", "101"}, {"0", "0"}, {"8", "1000"}, {"255", "11111111"}});
+        // files
+        add("file", L"13. Запись и чтение файла",
+            "Прочитайте слово, запишите его в файл copy.txt (fopen с \"w\", fprintf, fclose), затем откройте\n"
+            "файл на чтение (\"r\"), прочитайте слово обратно (fscanf) и напечатайте его.\n"
+            "Пример: ввод «hello» — вывод «hello».",
+            "%99s",
+            "    fmt_str db \"%s\", 10, 0\r\n"
+            "    name    db \"copy.txt\", 0\r\n"
+            "    mode_w  db \"w\", 0\r\n"
+            "    mode_r  db \"r\", 0\r\n"
+            "\r\n"
+            "extern fopen\r\n"
+            "extern fprintf\r\n"
+            "extern fscanf\r\n"
+            "extern fclose\r\n"
+            "\r\n"
+            "section .bss\r\n"
+            "    input   resb 100\r\n"
+            "    copy    resb 100\r\n"
+            "\r\n"
+            "section .text\r\n"
+            "main:\r\n"
+            "    sub     rsp, 40\r\n"
+            "    lea     rcx, [fmt_in]\r\n"
+            "    lea     rdx, [input]\r\n"
+            "    call    scanf\r\n"
+            "\r\n"
+            "    ; TODO: rax = fopen(name, mode_w); fprintf(rax, fmt_str, input); fclose\r\n"
+            "    ; TODO: rax = fopen(name, mode_r); fscanf(rax, fmt_in, copy); fclose\r\n"
+            "\r\n"
+            "    lea     rcx, [fmt_str]\r\n"
+            "    lea     rdx, [copy]\r\n"
+            "    call    printf\r\n"
+            "    add     rsp, 40\r\n"
+            "    xor     eax, eax\r\n"
+            "    ret\r\n",
+            {{"hello", "hello"}, {"NASM", "NASM"}});
         return v;
     }();
     return list;
@@ -1473,6 +1685,236 @@ bool OutputMatches(const std::string& output, const std::string& expected) {
         if (std::equal(exp.begin(), exp.end(), out.begin() + i)) return true;
     }
     return false;
+}
+
+}
+
+// ---- lessons ----------------------------------------------------------------------------------------------------
+
+namespace Lessons {
+
+const std::vector<Lesson>& All() {
+    static const std::vector<Lesson> list = {
+        {"registers", L"Урок 1. Регистры и mov", L"Lesson 1. Registers and mov",
+         "Процессор считает в регистрах — 16 ячеек по 64 бита: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8–r15.\n"
+         "У каждого есть младшие части: eax — младшие 32 бита rax, ax — 16, al — 8.\n"
+         "mov куда, откуда — копирует значение: mov rax, 5 / mov rbx, rax / mov rax, [x] (из памяти).\n"
+         "add и sub складывают и вычитают: add rax, rbx — это rax = rax + rbx.\n"
+         "Квадратные скобки — обращение к памяти: [a] — значение по адресу метки a, lea rdx, [a] — сам адрес.\n"
+         "printf и scanf вызываются по соглашению Win64: аргументы в rcx, rdx, r8, r9, перед call — sub rsp, 40.\n"
+         "Попробуйте: поставьте точку останова (F9) на add и пройдите программу по шагам (F10),\n"
+         "глядя на панель «Регистры» — изменившиеся значения подсвечиваются.",
+         "Processor arithmetic happens in registers: 16 cells of 64 bits each: rax, rbx, rcx, rdx, rsi, rdi, rbp, rsp, r8–r15.\n"
+         "Each has smaller parts: eax is the low 32 bits of rax, ax the low 16, al the low 8.\n"
+         "mov dest, src copies a value: mov rax, 5 / mov rbx, rax / mov rax, [x] (from memory).\n"
+         "add and sub add and subtract: add rax, rbx means rax = rax + rbx.\n"
+         "Square brackets access memory: [a] is the value at label a, lea rdx, [a] is the address itself.\n"
+         "printf and scanf follow the Win64 convention: arguments in rcx, rdx, r8, r9, and sub rsp, 40 before call.\n"
+         "Try it: put a breakpoint (F9) on add and step through the program (F10) while watching the Registers\n"
+         "panel: changed values are highlighted.",
+         "sum"},
+        {"branches", L"Урок 2. Сравнения и переходы", L"Lesson 2. Comparisons and jumps",
+         "cmp a, b вычисляет a − b, никуда не записывает результат, но выставляет флаги: ZF (равно), SF, OF, CF.\n"
+         "Условные переходы смотрят на флаги: je/jne — равно/не равно; jl, jg, jle, jge — меньше/больше со знаком;\n"
+         "jb, ja — без знака. jmp — переход всегда.\n"
+         "cmovl rax, rbx копирует rbx в rax, только если «меньше» — ветвление без перехода.\n"
+         "Вкладка «Флаги» в панели отладки показывает значения флагов и пишет, сработает ли переход на текущей\n"
+         "строке и почему (например, jl: SF ≠ OF).",
+         "cmp a, b computes a − b, stores nothing, but sets the flags: ZF (equal), SF, OF, CF.\n"
+         "Conditional jumps look at the flags: je/jne equal/not equal; jl, jg, jle, jge less/greater (signed);\n"
+         "jb, ja unsigned. jmp always jumps.\n"
+         "cmovl rax, rbx copies rbx into rax only if \"less\": a branch without a jump.\n"
+         "The Flags tab of the debug panel shows the flags and tells whether the jump on the current line will be\n"
+         "taken and why (for example, jl: SF ≠ OF).",
+         "max"},
+        {"loops", L"Урок 3. Циклы", L"Lesson 3. Loops",
+         "Цикл — это метка и переход назад:\n"
+         "    mov rcx, 10\n"
+         ".loop:\n"
+         "    ...\n"
+         "    dec rcx\n"
+         "    jnz .loop      ; пока rcx не 0\n"
+         "Метки с точкой (.loop) — локальные: принадлежат функции выше.\n"
+         "imul rax, rbx умножает (со знаком). Счётчик держите в регистре, который не портит printf\n"
+         "(rbx, rsi, rdi, r12–r15 — но их нужно сохранить: push в начале, pop перед ret).\n"
+         "Профилировщик (Запуск → «Профилировать») покажет, сколько раз выполнилась каждая строка цикла.",
+         "A loop is a label and a jump back:\n"
+         "    mov rcx, 10\n"
+         ".loop:\n"
+         "    ...\n"
+         "    dec rcx\n"
+         "    jnz .loop      ; while rcx is not 0\n"
+         "Labels with a dot (.loop) are local: they belong to the function above.\n"
+         "imul rax, rbx multiplies (signed). Keep the counter in a register printf does not destroy\n"
+         "(rbx, rsi, rdi, r12–r15, but save them: push at the start, pop before ret).\n"
+         "The profiler (Run → Profile) shows how many times each line of the loop ran.",
+         "factorial"},
+        {"division", L"Урок 4. Деление и остаток", L"Lesson 4. Division and remainder",
+         "div rcx делит 128-битное число rdx:rax на rcx: частное — в rax, остаток — в rdx.\n"
+         "Поэтому перед div нужно обнулить rdx: xor edx, edx. Для idiv (со знаком) — расширить знак: cqo.\n"
+         "Если забыть, частное будет неверным или программа упадёт («переполнение при делении»);\n"
+         "редактор предупреждает об этом, а Alt+Enter вставит xor edx, edx.\n"
+         "Цифры числа: остаток от деления на 10 — последняя цифра, частное — число без неё.",
+         "div rcx divides the 128-bit number rdx:rax by rcx: the quotient goes to rax, the remainder to rdx.\n"
+         "So clear rdx before div: xor edx, edx. For idiv (signed), sign-extend instead: cqo.\n"
+         "If you forget, the quotient is wrong or the program crashes (divide overflow);\n"
+         "the editor warns about it, and Alt+Enter inserts xor edx, edx.\n"
+         "Digits of a number: the remainder of a division by 10 is the last digit, the quotient is the rest.",
+         "digits"},
+        {"bits", L"Урок 5. Битовые операции", L"Lesson 5. Bitwise operations",
+         "and, or, xor, not работают с каждым битом отдельно; shl/shr сдвигают биты (умножение и деление на 2).\n"
+         "test a, b — это and без записи результата: только флаги. test rax, rax — проверка на ноль.\n"
+         "xor eax, eax — самый короткий способ обнулить регистр.\n"
+         "У степени двойки ровно одна единица в двоичной записи, поэтому n & (n − 1) = 0.",
+         "and, or, xor, not work on each bit separately; shl/shr shift bits (multiply and divide by 2).\n"
+         "test a, b is an and that only sets the flags. test rax, rax checks for zero.\n"
+         "xor eax, eax is the shortest way to clear a register.\n"
+         "A power of two has exactly one 1 bit, so n & (n − 1) = 0.",
+         "power"},
+        {"arrays", L"Урок 6. Память и массивы", L"Lesson 6. Memory and arrays",
+         "Массив — подряд идущие элементы: arr resq 100 резервирует 100 чисел по 8 байт.\n"
+         "Адрес элемента: [arr + rbx*8] — база, индекс и множитель (1, 2, 4 или 8).\n"
+         "lea rdx, [arr + rbx*8] вычисляет этот адрес (например, чтобы передать в scanf).\n"
+         "Панель «Память» показывает байты по выражению: введите arr — и смотрите, как массив заполняется.",
+         "An array is elements one after another: arr resq 100 reserves 100 numbers of 8 bytes.\n"
+         "The address of an element: [arr + rbx*8]: base, index and scale (1, 2, 4 or 8).\n"
+         "lea rdx, [arr + rbx*8] computes that address (for example, to pass it to scanf).\n"
+         "The Memory panel shows the bytes at an expression: type arr and watch the array fill up.",
+         "array_sum"},
+        {"strings", L"Урок 7. Строки", L"Lesson 7. Strings",
+         "Строка в C — байты символов и 0 в конце: msg db \"hi\", 0.\n"
+         "movzx eax, byte [rsi] читает один байт (символ) и дополняет его нулями до 32 бит.\n"
+         "Длина строки — сколько байтов до нуля: цикл с inc rsi и cmp byte [rsi], 0.\n"
+         "Символы — это числа: 'a' = 97, 'A' = 65; mov byte [rdi], al записывает символ.",
+         "A C string is the bytes of its characters and a 0 at the end: msg db \"hi\", 0.\n"
+         "movzx eax, byte [rsi] reads one byte (a character) and zero-extends it to 32 bits.\n"
+         "The length is the number of bytes before the zero: a loop with inc rsi and cmp byte [rsi], 0.\n"
+         "Characters are numbers: 'a' = 97, 'A' = 65; mov byte [rdi], al stores a character.",
+         "reverse"},
+        {"functions", L"Урок 8. Стек, функции и рекурсия", L"Lesson 8. The stack, functions and recursion",
+         "call кладёт в стек адрес возврата и переходит к функции; ret снимает его и возвращается.\n"
+         "push и pop кладут и снимают 8 байт; rsp указывает на вершину стека, стек растёт вниз.\n"
+         "Соглашение Win64: аргументы в rcx, rdx, r8, r9, результат в rax; rbx, rbp, rsi, rdi, r12–r15 функция\n"
+         "обязана сохранить; перед call стек выровнен на 16 и есть 32 байта теневого места.\n"
+         "Рекурсивная функция вызывает сама себя: значения, нужные после call, сохраняйте в стеке.\n"
+         "Во время отладки панель «Регистры» подсвечивает изменения стека при push, pop, call и ret,\n"
+         "а «Стек вызовов» показывает всю цепочку рекурсивных вызовов.",
+         "call pushes the return address and jumps to the function; ret pops it and returns.\n"
+         "push and pop put and take 8 bytes; rsp points to the top of the stack, which grows down.\n"
+         "Win64 convention: arguments in rcx, rdx, r8, r9, the result in rax; a function must preserve rbx, rbp,\n"
+         "rsi, rdi, r12–r15; before call the stack is aligned to 16 with 32 bytes of shadow space.\n"
+         "A recursive function calls itself: keep the values needed after the call on the stack.\n"
+         "While debugging, the Registers panel highlights stack changes on push, pop, call and ret,\n"
+         "and the Call stack shows the whole chain of recursive calls.",
+         "gcd"},
+        {"files", L"Урок 9. Файлы", L"Lesson 9. Files",
+         "Файлы открываются функциями C: fopen(имя, режим) возвращает FILE* в rax (0 — ошибка).\n"
+         "Режимы: \"r\" — чтение, \"w\" — запись (файл создаётся заново), \"a\" — дописывание.\n"
+         "fprintf(FILE*, формат, ...) и fscanf(FILE*, формат, адреса...) — как printf и scanf, но с файлом.\n"
+         "fclose(FILE*) закрывает файл и сбрасывает буферы — без него записанное может потеряться.\n"
+         "FILE* нужен после нескольких call: держите его в сохраняемом регистре (rbx, с push/pop).",
+         "Files are opened with C functions: fopen(name, mode) returns a FILE* in rax (0 on error).\n"
+         "Modes: \"r\" read, \"w\" write (the file is created anew), \"a\" append.\n"
+         "fprintf(FILE*, format, ...) and fscanf(FILE*, format, addresses...) work like printf and scanf on a file.\n"
+         "fclose(FILE*) closes the file and flushes its buffers: without it the written data may be lost.\n"
+         "The FILE* is needed across several calls: keep it in a preserved register (rbx, with push/pop).",
+         "file"},
+    };
+    return list;
+}
+
+std::string FileText(const Lesson& lesson, bool english) {
+    const Exercises::Exercise* ex = Exercises::Find(lesson.exercise);
+    std::string text = "; task: " + lesson.exercise + "\r\n;\r\n; " + Narrow(english ? lesson.titleEn : lesson.titleRu) + "\r\n;\r\n";
+    std::istringstream in(english ? lesson.textEn : lesson.textRu);
+    for (std::string line; std::getline(in, line);) text += "; " + line + "\r\n";
+    text += ";\r\n; " + std::string(english ? "Task:" : "Задача:") + "\r\n";
+    if (ex) {
+        // The exercise's starter without its own "; task:" line.
+        size_t first = ex->starter.find('\n');
+        text += first == std::string::npos ? ex->starter : ex->starter.substr(first + 1);
+    }
+    return text;
+}
+
+}
+
+// ---- results of the exercises -----------------------------------------------------------------------------------
+
+namespace Results {
+
+std::map<std::string, Entry> Load(const fs::path& file, std::string* student) {
+    std::map<std::string, Entry> out;
+    std::ifstream in(file, std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+        line = RTrim(line);
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string key = line.substr(0, eq), value = line.substr(eq + 1);
+        if (key == "student") {
+            if (student) *student = value;
+            continue;
+        }
+        Entry e;
+        std::vector<std::string> f;
+        std::istringstream parts(value);
+        for (std::string p; std::getline(parts, p, ';');) f.push_back(p);
+        if (f.size() < 6) continue;
+        e.attempts = atoi(f[0].c_str());
+        e.bestPassed = atoi(f[1].c_str());
+        e.total = atoi(f[2].c_str());
+        e.solved = f[3] == "1";
+        e.firstSolved = f[4];
+        e.last = f[5];
+        out[key] = e;
+    }
+    return out;
+}
+
+bool Save(const fs::path& file, const std::map<std::string, Entry>& results, const std::string& student) {
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    if (!out) return false;
+    if (!student.empty()) out << "student=" << student << "\n";
+    for (const auto& [id, e] : results) {
+        out << id << "=" << e.attempts << ";" << e.bestPassed << ";" << e.total << ";" << (e.solved ? 1 : 0) << ";"
+            << e.firstSolved << ";" << e.last << "\n";
+    }
+    return static_cast<bool>(out);
+}
+
+void Record(std::map<std::string, Entry>& results, const std::string& id, int passed, int total, const std::string& when) {
+    Entry& e = results[id];
+    e.attempts++;
+    e.bestPassed = std::max(e.bestPassed, passed);
+    e.total = total;
+    e.last = when;
+    if (passed == total && total > 0 && !e.solved) {
+        e.solved = true;
+        e.firstSolved = when;
+    }
+}
+
+std::string ExportCsv(const std::map<std::string, Entry>& results, const std::string& student, bool english) {
+    auto field = [](std::string s) {
+        if (s.find_first_of(";\"\n") == std::string::npos) return s;
+        std::string q = "\"";
+        for (char c : s) q += c == '"' ? std::string("\"\"") : std::string(1, c);
+        return q + "\"";
+    };
+    std::string out = "\xEF\xBB\xBF";  // UTF-8 BOM: Excel opens the file with the right encoding
+    out += english ? "Student;Task;Title;Solved;Best (tests passed);Attempts;First solved;Last attempt\r\n"
+                   : "Ученик;Задача;Название;Решена;Лучший результат (тестов);Попыток;Решена впервые;Последняя попытка\r\n";
+    for (const Exercises::Exercise& ex : Exercises::All()) {
+        auto it = results.find(ex.id);
+        Entry e = it == results.end() ? Entry{} : it->second;
+        std::string title = Narrow(english ? std::wstring(Tr(ex.title.c_str())) : ex.title);
+        out += field(student) + ";" + ex.id + ";" + field(title) + ";" + (e.solved ? (english ? "yes" : "да") : (english ? "no" : "нет")) +
+               ";" + std::to_string(e.bestPassed) + "/" + std::to_string(ex.tests.size()) + ";" + std::to_string(e.attempts) +
+               ";" + e.firstSolved + ";" + e.last + "\r\n";
+    }
+    return out;
 }
 
 }

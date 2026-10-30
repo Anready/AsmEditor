@@ -160,6 +160,10 @@ private:
     void ChooseProfile();
     void CheckSolution();
     void NewExercise();
+    void OpenLesson();
+    void ExportResults();
+    void RecordResult(const std::string& id, int passed, int total);
+    static fs::path ResultsFile();
     void CheckUpdates();
     // program console (ConPTY)
     bool StartConsole();

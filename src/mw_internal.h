@@ -29,7 +29,7 @@ enum : int {
     ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_SHOW_PROBLEMS, ID_SHOW_TERMINAL, ID_SHOW_OUTPUT,
     // learning & help
     ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_KEYS, ID_CHECK_UPDATES, ID_OPEN_LOG, ID_ABOUT, ID_LANGUAGE,
-    ID_STEP_BACK, ID_PROFILE_RUN, ID_PROFILE_CLEAR, ID_QUICK_FIX,
+    ID_STEP_BACK, ID_PROFILE_RUN, ID_PROFILE_CLEAR, ID_QUICK_FIX, ID_LESSONS, ID_EXPORT_RESULTS,
     ID_MENU_FILE = 300, ID_MENU_EDIT, ID_MENU_VIEW, ID_MENU_RUN, ID_MENU_HELP, ID_TARGET, ID_PROFILE,
     ID_RECENT = 400,
     ID_TREE_NEW_FILE = 500, ID_TREE_NEW_FOLDER, ID_TREE_OPEN, ID_TREE_MAIN, ID_TREE_RENAME, ID_TREE_DELETE,
@@ -54,7 +54,7 @@ enum : UINT {
     WM_APP_PTY_RENDER,            // repaint the terminal after a batch of output
     WM_APP_PTY_DONE,              // wp = exit code, lp = console session
     WM_APP_INFO,                  // wp = Out, lp = std::string* (background result for the Output tab)
-    WM_APP_SOLUTION_DONE,         // lp = std::string* (report of an exercise check), wp = 1 if all tests passed
+    WM_APP_SOLUTION_DONE,         // lp = SolutionDone*
 };
 
 constexpr UINT_PTR kCheckTimerBase = 1000;
@@ -82,6 +82,13 @@ inline std::string PadRight(std::string s, size_t n) {
     return s;
 }
 
+
+struct SolutionDone {
+    std::string summary;  // last line of the report
+    std::string id;       // exercise
+    int passed = 0, total = 0;
+    bool built = false;
+};
 
 struct CheckDone {
     int editorId;

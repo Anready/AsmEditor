@@ -185,6 +185,7 @@ private:
     void ProfileStep(const CONTEXT& ctx);
     bool profiling_ = false;
     bool profileLimitHit_ = false;
+    bool profileTrace_ = false;  // the next instruction is on a source line: single-step it
     uint64_t profileTotal_ = 0;
     int profilePrev_ = -1;
     int64_t profileTick_ = 0;

@@ -2,6 +2,7 @@ name: build
 
 on:
   push:
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -11,19 +12,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install NASM
+      - name: Install NASM and Inno Setup
         shell: pwsh
         run: |
-          choco install nasm -y --no-progress
+          choco install nasm innosetup -y --no-progress
           "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
-      - name: Build and run the tests
+      - name: Build, unit tests, UI test
         shell: cmd
-        run: build.bat test
+        run: build.bat test uitest
 
-      - name: Portable zip
+      - name: Portable zip and installer
         shell: cmd
-        run: build.bat package
+        run: build.bat nobuild package installer
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-test
+          path: out/uitest/*.png
 
       - uses: actions/upload-artifact@v4
         with:
@@ -31,3 +38,4 @@ jobs:
           path: |
             AsmEditor.exe
             AsmEditor-portable.zip
+            out/installer/*.exe

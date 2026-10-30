@@ -7,7 +7,7 @@ namespace {
 constexpr DWORD kTrapFlag = 0x100;
 constexpr DWORD kStatusWx86SingleStep = 0x4000001E;
 constexpr DWORD kStatusWx86Breakpoint = 0x4000001F;
-constexpr uint64_t kProfileLimit = 20000000;  // traced instructions; then the program runs on untraced
+constexpr uint64_t kProfileLimit = 1000000;  // traced instructions (~0.3 ms each); then the program runs untraced
 
 struct SymbolBuffer {
     SYMBOL_INFOW info;
@@ -590,42 +590,47 @@ bool Debugger::StepBack(std::wstring& error) {
 // ---- profiler ---------------------------------------------------------------------------------------------------
 
 // Called for every traced instruction: rip is the next instruction to run, the time since the previous call belongs
-// to the previous one's line. A call out of the program runs at full speed until it returns.
+// to the previous one's line. Code without source (DLLs, the C runtime) runs at full speed until it returns to a
+// source line, and its time goes to the line that called it.
 void Debugger::ProfileStep(const CONTEXT& ctx) {
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&freq);
     if (profilePrev_ >= 0) profile_[profilePrev_].seconds += double(now.QuadPart - profileTick_) / freq.QuadPart;
-    profileTick_ = now.QuadPart;
-    if (profileLimitHit_) return;
-    if (!InMainImage(ctx.Rip)) {
-        uint64_t ret = ReadPointer(ctx.Rsp);
-        if (InMainImage(ret)) Install(ret, false, false, true);
-        return;
-    }
-    if (++profileTotal_ >= kProfileLimit) profileLimitHit_ = true;
+    profileTrace_ = false;
     int index = -1;
-    auto it = profileIndex_.find(ctx.Rip);
-    if (it != profileIndex_.end()) {
-        index = it->second;
-    } else {
-        SourceLocation loc = LocationOf(ctx.Rip);
-        if (loc.valid()) {
-            auto key = std::make_pair(Key(loc.file), loc.line);
-            auto byLine = profileByLine_.find(key);
-            if (byLine == profileByLine_.end()) {
-                byLine = profileByLine_.emplace(key, static_cast<int>(profile_.size())).first;
-                profile_.push_back({loc});
+    if (!profileLimitHit_ && InMainImage(ctx.Rip)) {
+        auto it = profileIndex_.find(ctx.Rip);
+        if (it != profileIndex_.end()) {
+            index = it->second;
+        } else {
+            SourceLocation loc = LocationOf(ctx.Rip);
+            if (loc.valid()) {
+                auto key = std::make_pair(Key(loc.file), loc.line);
+                auto byLine = profileByLine_.find(key);
+                if (byLine == profileByLine_.end()) {
+                    byLine = profileByLine_.emplace(key, static_cast<int>(profile_.size())).first;
+                    profile_.push_back({loc});
+                }
+                index = byLine->second;
             }
-            index = byLine->second;
+            profileIndex_[ctx.Rip] = index;
         }
-        profileIndex_[ctx.Rip] = index;
     }
     if (index >= 0) {
+        if (++profileTotal_ >= kProfileLimit) profileLimitHit_ = true;
         profile_[index].instructions++;
         if (index != profilePrev_) profile_[index].hits++;
+        profilePrev_ = index;
+        profileTrace_ = true;
+    } else if (!profileLimitHit_) {
+        // Entered code without source by a call: stop on the way back. (After main returns, [rsp] does not lead
+        // back to a source line, and the program runs on untraced.)
+        uint64_t ret = ReadPointer(ctx.Rsp);
+        if (InMainImage(ret) && LocationOf(ret).valid()) Install(ret, false, false, true);
     }
-    profilePrev_ = index;
+    QueryPerformanceCounter(&now);  // the debugger's own work is not the program's time
+    profileTick_ = now.QuadPart;
 }
 
 bool Debugger::RunTo(const SourceLocation& where) {
@@ -1246,7 +1251,7 @@ void Debugger::Resume(HANDLE thread, CONTEXT& ctx, bool singleStep) {
         if (watchesChanged_) ApplyWatchesToOtherThreads(thread, ctx);
         watchesChanged_ = false;
     }
-    if (profiling_ && !profileLimitHit_ && InMainImage(ctx.Rip)) singleStep = true;  // trace the program's own code
+    if (profiling_ && profileTrace_ && !profileLimitHit_) singleStep = true;  // trace the source lines
     if (singleStep) ctx.EFlags |= kTrapFlag;
     else ctx.EFlags &= ~kTrapFlag;
     SetContext(thread, ctx, contextChanged_);

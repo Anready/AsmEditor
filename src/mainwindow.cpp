@@ -1,4 +1,5 @@
 #include "mw_internal.h"
+#include "version.h"
 #include "hints.h"
 #include "project.h"
 
@@ -277,7 +278,7 @@ void MainWindow::BuildMenus() {
     }
 
     helpMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, ID_KEYS, 0, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
+    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, ID_KEYS, 0, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
         if (id) AppendCommand(helpMenu_, id);
         else AppendMenuW(helpMenu_, MF_SEPARATOR, 0, nullptr);
     }
@@ -471,6 +472,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        if (wp == kUiTestTimer) {
+            UiTestTick();
+            return 0;
+        }
         if (wp == kStackFlashTimer) {
             if (--stackFlash_ <= 0) KillTimer(hwnd_, wp);
             regsView_->Call(SCI_INDICSETALPHA, 9, std::max(0, stackFlash_) * 30);
@@ -635,7 +640,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_DESTROY:
-        PostQuitMessage(0);
+        PostQuitMessage(uiTestExit_);
         return 0;
     }
     return DefWindowProcW(hwnd_, msg, wp, lp);
@@ -864,6 +869,7 @@ void MainWindow::OnCommand(int id) {
         break;
     }
     case ID_KEYS: EditKeys(); break;
+    case ID_ASSOCIATE: ToggleAssociation(); break;
     case ID_CHECK_UPDATES: CheckUpdates(); break;
     case ID_OPEN_LOG: {
         if (!Log::Enabled()) {
@@ -878,7 +884,7 @@ void MainWindow::OnCommand(int id) {
     }
     case ID_ABOUT:
         ShowMessage(hwnd_,
-                    std::wstring(L"AsmEditor\n\n") + Tr(L"Редактор и отладчик NASM для Windows.") + L"\nScintilla 5.6.5 · NASM " +
+                    std::wstring(L"AsmEditor " ASMEDITOR_VERSION_TEXT_W L"\n\n") + Tr(L"Редактор и отладчик NASM для Windows.") + L"\nScintilla 5.6.5 · NASM " +
                         Toolchain::NasmVersion(*settings_) + L"\n\n" + Tr(L"Настройки: ") + Settings::Dir().wstring(),
                     false);
         break;

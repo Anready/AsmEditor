@@ -312,6 +312,9 @@ HWND CreateFlatButton(HWND parent, int id, const wchar_t* text, DWORD flags) {
 // ---- settings -------------------------------------------------------------------------------------------------
 
 fs::path Settings::Dir() {
+    wchar_t home[MAX_PATH];  // ASMEDITOR_HOME: another settings folder (the UI test uses a clean one)
+    DWORD n = GetEnvironmentVariableW(L"ASMEDITOR_HOME", home, MAX_PATH);
+    if (n && n < MAX_PATH) return fs::path(home);
     wchar_t* appData = nullptr;
     fs::path dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) dir = fs::path(appData) / L"AsmEditor";
@@ -424,4 +427,78 @@ void Settings::Save() const {
     };
     for (const auto& [name, value] : keys) kv.push_back({L"key." + name, value});
     WriteIni(Dir() / L"settings.ini", kv);
+}
+
+// ---- file association -------------------------------------------------------------------------------------------
+
+namespace FileAssociation {
+
+static const wchar_t* kProgId = L"AsmEditor.asm";
+static const wchar_t* kExtensions[] = {L".asm", L".inc", L".nasm", L".mac"};
+
+static bool SetString(HKEY root, const std::wstring& key, const wchar_t* name, const std::wstring& value) {
+    HKEY k;
+    if (RegCreateKeyExW(root, key.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &k, nullptr) != ERROR_SUCCESS) return false;
+    LSTATUS r = RegSetValueExW(k, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                               static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(k);
+    return r == ERROR_SUCCESS;
+}
+
+static std::wstring GetString(HKEY root, const std::wstring& key, const wchar_t* name) {
+    wchar_t buf[1024];
+    DWORD size = sizeof(buf);
+    if (RegGetValueW(root, key.c_str(), name, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS) return {};
+    return buf;
+}
+
+std::wstring OpenCommand(const fs::path& exe) {
+    return L"\"" + exe.wstring() + L"\" \"%1\"";
+}
+
+bool Register(const fs::path& exe, std::wstring& error, const std::wstring& classes) {
+    HKEY root = HKEY_CURRENT_USER;
+    std::wstring prog = classes + L"\\" + kProgId;
+    bool ok = SetString(root, prog, nullptr, Tr(L"Исходный код NASM")) &&
+              SetString(root, prog + L"\\DefaultIcon", nullptr, exe.wstring() + L",0") &&
+              SetString(root, prog + L"\\shell\\open\\command", nullptr, OpenCommand(exe));
+    for (const wchar_t* ext : kExtensions) {
+        std::wstring key = classes + L"\\" + ext;
+        ok = ok && SetString(root, key + L"\\OpenWithProgids", kProgId, L"");
+        // The default program, unless another one is already set (Windows may still ask once: UserChoice wins).
+        std::wstring current = GetString(root, key, nullptr);
+        if (current.empty() || current == kProgId) ok = ok && SetString(root, key, nullptr, kProgId);
+    }
+    if (!ok) {
+        error = Tr(L"не удалось записать в реестр (HKEY_CURRENT_USER\\Software\\Classes)");
+        return false;
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return true;
+}
+
+bool IsRegistered(const fs::path& exe, const std::wstring& classes) {
+    return _wcsicmp(GetString(HKEY_CURRENT_USER, classes + L"\\" + kProgId + L"\\shell\\open\\command", nullptr).c_str(),
+                    OpenCommand(exe).c_str()) == 0;
+}
+
+void Unregister(const std::wstring& classes) {
+    HKEY root = HKEY_CURRENT_USER;
+    RegDeleteTreeW(root, (classes + L"\\" + kProgId).c_str());
+    RegDeleteKeyW(root, (classes + L"\\" + kProgId).c_str());
+    for (const wchar_t* ext : kExtensions) {
+        std::wstring key = classes + L"\\" + ext;
+        HKEY k;
+        if (RegOpenKeyExW(root, (key + L"\\OpenWithProgids").c_str(), 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
+            RegDeleteValueW(k, kProgId);
+            RegCloseKey(k);
+        }
+        if (GetString(root, key, nullptr) == kProgId && RegOpenKeyExW(root, key.c_str(), 0, KEY_SET_VALUE, &k) == ERROR_SUCCESS) {
+            RegDeleteValueW(k, nullptr);
+            RegCloseKey(k);
+        }
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
+
 }

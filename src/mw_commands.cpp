@@ -1,4 +1,5 @@
 #include "mw_internal.h"
+#include "version.h"
 
 #include <winhttp.h>
 
@@ -96,6 +97,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_KEYS, L"Горячие клавиши…", L""},
         {ID_CHECK_UPDATES, L"Проверить обновления NASM и Scintilla", L""},
         {ID_OPEN_LOG, L"Открыть журнал работы", L""},
+        {ID_ASSOCIATE, L"Открывать файлы .asm в AsmEditor", L""},
         {ID_ABOUT, L"О программе", L""},
     };
     return list;
@@ -387,4 +389,24 @@ void MainWindow::CheckUpdates() {
                  newer ? Out::Warning : Out::Success);
         }
     }).detach();
+}
+
+// Help → "Open .asm files in AsmEditor": per-user file association (or removing it again).
+void MainWindow::ToggleAssociation() {
+    wchar_t exe[MAX_PATH * 2];
+    GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+    if (FileAssociation::IsRegistered(exe)) {
+        std::wstring q = Tr(L"Файлы .asm уже открываются в AsmEditor. Убрать эту связь?");
+        if (MessageBoxW(hwnd_, q.c_str(), L"AsmEditor", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+        FileAssociation::Unregister();
+        Print(Tr(std::string("Связь файлов .asm с AsmEditor убрана.\n")), Out::Info);
+        return;
+    }
+    std::wstring error;
+    if (!FileAssociation::Register(exe, error)) {
+        ShowMessage(hwnd_, std::wstring(Tr(L"Не удалось связать файлы: ")) + error);
+        return;
+    }
+    ShowMessage(hwnd_, Tr(L"Готово: файлы .asm, .inc, .nasm и .mac открываются в AsmEditor (двойной клик в Проводнике). "
+                          L"Если Windows спросит, чем открыть файл, выберите AsmEditor."), false);
 }

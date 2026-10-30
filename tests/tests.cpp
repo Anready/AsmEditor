@@ -548,6 +548,30 @@ TEST(EveryUiTextTranslated) {
     CHECK_EQ(missing, 0);
 }
 
+// Registers under a test key (not the real HKCU\Software\Classes) and removes it again.
+TEST(FileAssociationInTestKey) {
+    const std::wstring classes = L"Software\\AsmEditorTests\\Classes";
+    fs::path exe = L"C:\\Tools\\AsmEditor\\AsmEditor.exe";
+    std::wstring error;
+    CHECK(!FileAssociation::IsRegistered(exe, classes));
+    CHECK(FileAssociation::Register(exe, error, classes));
+    CHECK(FileAssociation::IsRegistered(exe, classes));
+    wchar_t buf[256];
+    DWORD size = sizeof(buf);
+    CHECK(RegGetValueW(HKEY_CURRENT_USER, (classes + L"\\.asm").c_str(), nullptr, RRF_RT_REG_SZ, nullptr, buf, &size) == ERROR_SUCCESS &&
+          std::wstring(buf) == L"AsmEditor.asm");
+    size = sizeof(buf);
+    CHECK(RegGetValueW(HKEY_CURRENT_USER, (classes + L"\\AsmEditor.asm\\shell\\open\\command").c_str(), nullptr, RRF_RT_REG_SZ,
+                       nullptr, buf, &size) == ERROR_SUCCESS &&
+          std::wstring(buf) == L"\"C:\\Tools\\AsmEditor\\AsmEditor.exe\" \"%1\"");
+    FileAssociation::Unregister(classes);
+    CHECK(!FileAssociation::IsRegistered(exe, classes));
+    size = sizeof(buf);
+    CHECK(RegGetValueW(HKEY_CURRENT_USER, (classes + L"\\.asm").c_str(), nullptr, RRF_RT_REG_SZ, nullptr, buf, &size) != ERROR_SUCCESS);
+    RegDeleteTreeW(HKEY_CURRENT_USER, L"Software\\AsmEditorTests");
+    RegDeleteKeyW(HKEY_CURRENT_USER, L"Software\\AsmEditorTests");
+}
+
 TEST(ProjectExcludedAndIncludedFiles) {
     wchar_t tmp[MAX_PATH + 1];
     GetTempPathW(MAX_PATH + 1, tmp);
@@ -855,8 +879,14 @@ TEST(DebuggerProfiler) {
     launch.exe = *exe;
     launch.cwd = exe->parent_path();
     launch.profile = true;
+    auto start = std::chrono::steady_clock::now();
     CHECK(d.Start(launch, host.pty, {}, false, std::nullopt, error));
     CHECK(host.Wait(20000));
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    uint64_t traced = 0;
+    for (const ProfileLine& p : host.profile) traced += p.instructions;
+    printf("    profiled run: %lld ms, %llu instructions on source lines\n", static_cast<long long>(ms),
+           static_cast<unsigned long long>(traced));
     CHECK(host.exited);
     CHECK(host.stops.empty());
     std::map<int, ProfileLine> byLine;

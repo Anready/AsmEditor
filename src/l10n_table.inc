@@ -488,8 +488,8 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
      L"само профилирование замедляет программу). Убрать — Запуск → «Убрать результаты профилирования».",
      L"The notes next to the lines show how many times each line ran, its instructions and its time (including calls "
      L"to printf etc.; profiling itself slows the program down). To remove them: Run → Clear profiler results."},
-    {L"Профилирование остановлено после 20 млн инструкций — дальше программа работала без подсчёта.",
-     L"Profiling stopped after 20 million instructions; the program ran on without counting."},
+    {L"Профилирование остановлено после 1 млн инструкций — дальше программа работала без подсчёта.",
+     L"Profiling stopped after 1 million instructions; the program ran on without counting."},
     // flags tab
     {L"Флаги", L"Flags"},
     {L"Флаги видны, когда программа остановлена.", L"The flags are shown while the program is stopped."},
@@ -583,6 +583,19 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
     {L"11. НОД рекурсией", L"11. GCD by recursion"},
     {L"12. Двоичная запись", L"12. Binary notation"},
     {L"13. Запись и чтение файла", L"13. Writing and reading a file"},
+    // file association
+    {L"Открывать файлы .asm в AsmEditor", L"Open .asm files with AsmEditor"},
+    {L"Исходный код NASM", L"NASM source"},
+    {L"не удалось записать в реестр (HKEY_CURRENT_USER\\Software\\Classes)",
+     L"could not write to the registry (HKEY_CURRENT_USER\\Software\\Classes)"},
+    {L"Файлы .asm уже открываются в AsmEditor. Убрать эту связь?",
+     L".asm files already open with AsmEditor. Remove this association?"},
+    {L"Связь файлов .asm с AsmEditor убрана.", L"The association of .asm files with AsmEditor was removed."},
+    {L"Не удалось связать файлы: ", L"Could not associate the files: "},
+    {L"Готово: файлы .asm, .inc, .nasm и .mac открываются в AsmEditor (двойной клик в Проводнике). Если Windows спросит, "
+     L"чем открыть файл, выберите AsmEditor.",
+     L"Done: .asm, .inc, .nasm and .mac files open with AsmEditor (double-click in Explorer). If Windows asks which "
+     L"program to use, choose AsmEditor."},
     // stack animation, call stack
     {L"call: адрес возврата положен на вершину стека", L"call: the return address was pushed"},
     {L"push: значение положено на вершину стека", L"push: a value was put on top of the stack"},

@@ -1,0 +1,68 @@
+name: release
+
+# Push a tag v<major>.<minor>.<patch> (the numbers of src/version.h) to build, test, sign (when the signing
+# secrets are set) and publish a GitHub release with the portable zip and the installer.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      SIGNING_CERT: ${{ secrets.SIGNING_CERT }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $text = Select-String -Path src/version.h -Pattern 'ASMEDITOR_VERSION_TEXT "([^"]+)"'
+          $version = $text.Matches[0].Groups[1].Value
+          if ($tag -ne $version) { throw "Tag v$tag does not match src/version.h ($version)" }
+          "ASMEDITOR_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install NASM and Inno Setup
+        shell: pwsh
+        run: |
+          choco install nasm innosetup -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build, unit tests, UI test
+        shell: cmd
+        run: build.bat test uitest
+
+      # Optional code signing: SIGNING_CERT = base64 of a .pfx, SIGNING_PASSWORD = its password.
+      - name: Sign AsmEditor.exe
+        if: ${{ env.SIGNING_CERT != '' }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\cert.pfx", [Convert]::FromBase64String($env:SIGNING_CERT))
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          & $signtool.FullName sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:SIGNING_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 AsmEditor.exe
+          if ($LASTEXITCODE) { throw "signtool failed" }
+
+      - name: Portable zip and installer
+        shell: cmd
+        run: build.bat nobuild package installer
+
+      - name: Sign the installer
+        if: ${{ env.SIGNING_CERT != '' }}
+        shell: pwsh
+        run: |
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          & $signtool.FullName sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:SIGNING_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 (Get-ChildItem out\installer\*.exe).FullName
+          if ($LASTEXITCODE) { throw "signtool failed" }
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $files = @("AsmEditor-portable.zip") + (Get-ChildItem out\installer\*.exe).FullName
+          gh release create "${{ github.ref_name }}" $files --title "AsmEditor ${{ env.ASMEDITOR_VERSION }}" --generate-notes

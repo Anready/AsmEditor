@@ -256,6 +256,14 @@ void Write(const std::string& utf8);
 fs::path File();
 }
 
+// "Open with": AsmEditor as the program for .asm, .inc, .nasm and .mac files of the current user (HKCU, no admin
+// rights). `classes` is the registry key under HKEY_CURRENT_USER (another one in the tests).
+namespace FileAssociation {
+bool Register(const fs::path& exe, std::wstring& error, const std::wstring& classes = L"Software\\Classes");
+bool IsRegistered(const fs::path& exe, const std::wstring& classes = L"Software\\Classes");
+void Unregister(const std::wstring& classes = L"Software\\Classes");
+}
+
 // ---- localization ---------------------------------------------------------------------------------------------
 
 // The UI is written in Russian; Tr returns the English text when the English language is selected.

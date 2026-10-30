@@ -12,15 +12,25 @@
 #include <set>
 #include <thread>
 
+class UiTest;
+
 class MainWindow {
 public:
+    MainWindow();
+    ~MainWindow();
     bool Create(HINSTANCE inst, Settings* settings);
     HWND hwnd() const { return hwnd_; }
     bool PreTranslate(MSG& msg);
     void OpenPath(const fs::path& path);
     void RestoreSession();
+    void StartUiTest(const fs::path& out);  // --ui-test: see uitest.cpp
 
 private:
+    friend class UiTest;
+    void UiTestTick();
+    std::unique_ptr<UiTest> uiTest_;
+    int uiTestExit_ = 0;
+
     struct ToolItem {
         int id;
         const wchar_t* text;  // Russian; shown through Tr
@@ -89,6 +99,7 @@ private:
     void CommandPalette();
     void QuickOpen();
     void EditKeys();
+    void ToggleAssociation();  // Help → open .asm files in AsmEditor (HKCU)
 
     // editors
     Editor* Active() const { return active_ >= 0 && active_ < (int)editors_.size() ? editors_[active_].get() : nullptr; }

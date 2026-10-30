@@ -1,10 +1,11 @@
 #include <winres.h>
+#include "version.h"
 
 1 ICON "..\\assets\\app.ico"
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION 1, 1, 0, 0
-PRODUCTVERSION 1, 1, 0, 0
+FILEVERSION ASMEDITOR_VERSION_MAJOR, ASMEDITOR_VERSION_MINOR, ASMEDITOR_VERSION_PATCH, 0
+PRODUCTVERSION ASMEDITOR_VERSION_MAJOR, ASMEDITOR_VERSION_MINOR, ASMEDITOR_VERSION_PATCH, 0
 FILEOS VOS_NT_WINDOWS32
 FILETYPE VFT_APP
 BEGIN
@@ -14,8 +15,8 @@ BEGIN
         BEGIN
             VALUE "FileDescription", "AsmEditor - NASM editor and debugger"
             VALUE "ProductName", "AsmEditor"
-            VALUE "FileVersion", "1.1"
-            VALUE "ProductVersion", "1.1"
+            VALUE "FileVersion", ASMEDITOR_VERSION_TEXT
+            VALUE "ProductVersion", ASMEDITOR_VERSION_TEXT
         END
     END
     BLOCK "VarFileInfo"

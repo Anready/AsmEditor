@@ -25,8 +25,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
 
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argc > 1) window.OpenPath(NormalizePath(argv[1]));
-    else window.RestoreSession();
+    // AsmEditor.exe [project folder] [files…]
+    for (int i = 1; i < argc; i++) window.OpenPath(NormalizePath(argv[i]));
+    if (argc <= 1) window.RestoreSession();
     LocalFree(argv);
 
     MSG msg;

@@ -1,0 +1,33 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NASM
+        shell: pwsh
+        run: |
+          choco install nasm -y --no-progress
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Build and run the tests
+        shell: cmd
+        run: build.bat test
+
+      - name: Portable zip
+        shell: cmd
+        run: build.bat package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AsmEditor
+          path: |
+            AsmEditor.exe
+            AsmEditor-portable.zip

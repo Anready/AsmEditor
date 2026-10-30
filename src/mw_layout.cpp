@@ -2,8 +2,6 @@
 
 namespace {
 
-std::wstring ToolText(const MainWindow* self, int id, const wchar_t* text);
-
 // Width of the mark bar beside each editor's scrollbar.
 constexpr int kMarkBarWidth = 10;
 }
@@ -121,7 +119,7 @@ void MainWindow::Layout() {
             t.rc = {};
             continue;
         }
-        int w = TextWidth(dc, ToolText(this, t.id, t.text)) + S(t.icon ? 36 : 20);
+        int w = TextWidth(dc, ToolLabel(t)) + S(t.icon || t.id == ID_TARGET ? 36 : 20);
         if (t.right) {
             t.rc = {rightEdge - w, S(5), rightEdge, tb - S(5)};
             rightEdge -= w + S(4);
@@ -150,10 +148,16 @@ void MainWindow::InvalidateChrome() {
     if (editors_.empty()) InvalidateRect(hwnd_, &rcEditor_, FALSE);
 }
 
-namespace {
-std::wstring ToolText(const MainWindow*, int id, const wchar_t* text) {
-    return Tr(text);
-}
+std::wstring MainWindow::ToolLabel(const ToolItem& t) const {
+    if (t.id == ID_TARGET) {  // what runs: the main file or the active tab
+        fs::path target = !mainFile_.empty() ? mainFile_ : (Active() ? Active()->file() : fs::path());
+        std::wstring text = target.empty() ? Tr(L"активный файл") : target.filename().wstring();
+        if (runConfig_.Wsl()) text += L" · Linux";
+        if (runConfig_.output != L"exe") text += L" · " + runConfig_.output;
+        return text + L"  ▾";
+    }
+    if (t.id == ID_PROFILE) return runConfig_.profile + L"  ▾";
+    return Tr(t.text);
 }
 
 // Tabs drawn in a panel header ("ПРОЕКТ | СТРУКТУРА" and so on): the active one is bright and underlined.
@@ -251,8 +255,7 @@ void MainWindow::Paint(HDC dc) {
     }
 
     // bottom panel: tabs and the state of the program
-    int problems = static_cast<int>(buildDiagnostics_.size());
-    for (auto& e : editors_) problems += e->Count(Severity::Error) + e->Count(Severity::Warning);
+    int problems = problemCount_;
     std::wstring problemsTitle = Tr(L"Проблемы");
     if (problems) problemsTitle += L" (" + std::to_wstring(problems) + L")";
     RECT tabsArea = rcConsoleHeader_;
@@ -412,19 +415,10 @@ void MainWindow::PaintToolbar(HDC dc) {
             RoundRect(dc, t.rc.left, t.rc.top, t.rc.right, t.rc.bottom, S(6), S(6));
         }
         RECT tr = t.rc;
-        std::wstring text = ToolText(this, t.id, t.text);
+        std::wstring text = ToolLabel(t);
         if (t.id == ID_TARGET || t.id == ID_PROFILE) {  // drop-downs: what runs and the build profile
             SetDCBrushColor(dc, Theme::Border);
             FrameRect(dc, &tr, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-            if (t.id == ID_TARGET) {
-                fs::path target = !mainFile_.empty() ? mainFile_ : (Active() ? Active()->file() : fs::path());
-                text = target.empty() ? Tr(L"активный файл") : target.filename().wstring();
-                if (runConfig_.Wsl()) text += L" · Linux";
-                if (runConfig_.output != L"exe") text += L" · " + runConfig_.output;
-            } else {
-                text = runConfig_.profile;
-            }
-            text += L"  ▾";
             if (t.id == ID_TARGET) {
                 RECT ir{tr.left + S(6), tr.top, tr.left + S(26), tr.bottom};
                 DrawIcon(dc, 2, ir, enabled);

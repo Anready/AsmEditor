@@ -437,6 +437,7 @@ void MainWindow::RefreshProblems() {
             for (const Diagnostic& d : diags) add(name, d);
         }
     }
+    problemCount_ = count;
     if (count == 0) PrintTo(Pane::Problems, Tr(std::string("Проблем нет.\n")), Out::Success);
     else PrintTo(Pane::Problems, "\n" + Tr(std::string("Двойной клик открывает место ошибки.")) + "\n", Out::Info);
     v.Call(SCI_SETFIRSTVISIBLELINE, first);
@@ -690,7 +691,7 @@ void MainWindow::FinishConsole(DWORD exitCode) {
 void MainWindow::OnConsoleDone(DWORD exitCode) {
     EndConsole();
     if (exitCode != static_cast<DWORD>(-1)) {
-        std::string text = "\nПроцесс завершён с кодом " + Narrow(Toolchain::DescribeExitCode(exitCode));
+        std::string text = "\n" + Tr(std::string("Процесс завершён с кодом ")) + Narrow(Toolchain::DescribeExitCode(exitCode));
         if (!exitStats_.empty()) text += " · " + exitStats_;
         Out style = exitCode == 0 ? Out::Info : Out::Error;
         Print(text + "\n", style);

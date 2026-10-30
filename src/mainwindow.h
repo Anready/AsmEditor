@@ -65,6 +65,7 @@ private:
     void PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
                          std::vector<RECT>& rects, int hover);
     void DrawIcon(HDC dc, int icon, const RECT& rc, bool enabled);
+    std::wstring ToolLabel(const ToolItem& t) const;  // text of a toolbar item (drop-downs show their value)
     void OnMouseMove(int x, int y);
     void OnClick(int x, int y, bool middle);
     void OnRightClick(int x, int y);
@@ -358,6 +359,7 @@ private:
     ULONGLONG runStartTick_ = 0;
     std::string exitStats_;
     std::vector<Diagnostic> buildDiagnostics_;  // of the last build, for the Problems tab
+    int problemCount_ = 0;                      // distinct problems listed there
     struct SolutionCheck {
         std::string exercise;
         fs::path exe;

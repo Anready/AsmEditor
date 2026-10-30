@@ -51,11 +51,14 @@ void AddExtended(std::unordered_map<std::string, Entry>& m) {
     set("pusha popa pushad popad", {"pushad / popad",
                                     "Сохранить / восстановить все регистры общего назначения (только 16/32-битный код).",
                                     kNoFlags});
-    set("movs movsd_string", {"movs приёмник, источник", "Общая форма movsb/w/d/q с явными операндами.", kNoFlags});
+    set("movs", {"movs приёмник, источник", "Общая форма movsb/w/d/q с явными операндами.", kNoFlags});
     set("lods", {"lods источник", "Общая форма lodsb/w/d/q.", kNoFlags});
     set("stos", {"stos приёмник", "Общая форма stosb/w/d/q.", kNoFlags});
     set("scas", {"scas приёмник", "Общая форма scasb/w/d/q.", kArith});
-    set("cmps cmpsd_string", {"cmps a, b", "Общая форма cmpsb/w/d/q.", kArith});
+    set("cmps", {"cmps a, b", "Общая форма cmpsb/w/d/q.", kArith});
+    set("cmpsd", {"cmpsd | cmpsd xmm, xmm/m64, предикат",
+                  "Без операндов — строковая инструкция: сравнивает dword [rsi] и [rdi] и сдвигает оба. С операндами xmm — "
+                  "сравнение двух double: младшие 64 бита = все единицы, если условие истинно (cmpltsd, cmpeqsd…).", kArith});
     set("ins insb insw insd", {"insb", "Чтение из порта dx в [rdi] (привилегированная в Windows).", kNoFlags});
     set("outs outsb outsw outsd", {"outsb", "Запись [rsi] в порт dx (привилегированная в Windows).", kNoFlags});
     set("in", {"in al/ax/eax, imm8 | dx", "Чтение из порта ввода-вывода. В пользовательской программе Windows — исключение.",

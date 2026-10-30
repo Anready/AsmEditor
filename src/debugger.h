@@ -3,16 +3,19 @@
 #include "common.h"
 
 #include <condition_variable>
+#include <deque>
 #include <future>
 #include <mutex>
 #include <set>
 #include <thread>
+#include <unordered_map>
 
 // Messages posted to the UI window by the debugger thread.
 constexpr UINT WM_DEBUG_STOPPED = WM_APP + 20;  // lp = DebugStop*
 constexpr UINT WM_DEBUG_EXITED = WM_APP + 21;   // wp = exit code, lp = std::string* (run time and memory)
 constexpr UINT WM_DEBUG_LOG = WM_APP + 22;      // wp = Out, lp = std::string* (UTF-8)
 constexpr UINT WM_DEBUG_ODS = WM_APP + 23;      // lp = std::string* (OutputDebugString text)
+constexpr UINT WM_DEBUG_PROFILE = WM_APP + 24;  // lp = std::vector<ProfileLine>* (before WM_DEBUG_EXITED)
 
 struct SourceLocation {
     fs::path file;
@@ -22,7 +25,7 @@ struct SourceLocation {
 };
 
 struct DebugStop {
-    enum class Reason { Breakpoint, Step, Entry, Pause, Exception, Int3, Watchpoint, RunTo } reason;
+    enum class Reason { Breakpoint, Step, Entry, Pause, Exception, Int3, Watchpoint, RunTo, StepBack } reason;
     std::wstring message;     // extra details (exception text, changed variable)
     SourceLocation location;  // empty when there is no source for the address
     CONTEXT context;
@@ -41,6 +44,15 @@ struct LaunchOptions {
     std::wstring args;         // command line arguments after the program name
     fs::path cwd;
     std::wstring environment;  // CreateProcess block (empty = inherit)
+    bool profile = false;      // trace every instruction of the program's own code and count lines
+};
+
+// Profiler result for one source line.
+struct ProfileLine {
+    SourceLocation location;
+    uint64_t hits = 0;          // times the line was entered
+    uint64_t instructions = 0;  // instructions executed on it
+    double seconds = 0;         // time on it, including the functions it calls outside the program (printf...)
 };
 
 // Source-level debugger for x64 and 32-bit (WOW64) executables built with NASM (-g -F cv8) and link /debug.
@@ -73,6 +85,10 @@ public:
     bool RunTo(const SourceLocation& where);  // continue to a line (false: no code there)
     void Pause();
     void Stop();
+    // Back to the previous stop: registers, the program's global data and the stack are restored (the heap, files
+    // and the console are not). Posts WM_DEBUG_STOPPED. False with a reason when there is nothing to go back to.
+    bool StepBack(std::wstring& error);
+    size_t HistorySize();
     void SetBreakpoints(const fs::path& file, const std::map<int, std::string>& lines);
 
     bool Running() const { return running_; }
@@ -86,6 +102,7 @@ public:
     bool SetRegister(const std::string& lowerName, uint64_t value);  // applied when the program continues
     bool SetNextStatement(const SourceLocation& where, std::wstring& error);
     std::optional<uint64_t> Evaluate(const std::string& expression, std::wstring& error);
+    std::string FormatLogMessage(const std::string& text);  // "{expr}" -> value, with the current context
     std::optional<uint64_t> LookupSymbol(const std::string& name);
     std::wstring SymbolAt(uint64_t address);
     SourceLocation LocationOf(uint64_t address);
@@ -127,6 +144,8 @@ private:
     void Resume(HANDLE thread, CONTEXT& ctx, bool singleStep);
     void ContinueStepping(HANDLE thread, CONTEXT& ctx);
     void RunFree(HANDLE thread, CONTEXT& ctx);
+    void FillDebugRegisters(CONTEXT& ctx);
+    void ApplyWatchesToOtherThreads(HANDLE current, const CONTEXT& ctx);
     bool ConditionHolds(Breakpoint& bp, const CONTEXT& ctx);
     std::wstring WatchHit(uint64_t dr6);
 
@@ -140,6 +159,38 @@ private:
     bool SetContext(HANDLE thread, const CONTEXT& ctx, bool full);
     uint64_t ReadPointer(uint64_t address);
     bool LooksLikeReturnAddress(uint64_t value);
+
+    struct RuntimeFunction {  // IMAGE_RUNTIME_FUNCTION_ENTRY
+        DWORD begin, end, unwind;
+    };
+    uint64_t ModuleBase(uint64_t address);  // 0: not in a loaded module
+    const std::vector<RuntimeFunction>& FunctionTable(uint64_t base);
+    bool UnwindFrame(uint64_t regs[16], uint64_t& rip, bool caller);
+    std::map<uint64_t, std::vector<RuntimeFunction>> functionTables_;
+
+    // Step back: a snapshot per stop.
+    struct Snapshot {
+        HANDLE thread = nullptr;
+        alignas(16) CONTEXT context;
+        std::vector<std::pair<uint64_t, std::vector<uint8_t>>> memory;
+        size_t Bytes() const;
+    };
+    void RecordSnapshot(HANDLE thread, const CONTEXT& ctx);
+    void FindWritableSections();
+    std::deque<Snapshot> history_;
+    std::vector<std::pair<uint64_t, uint64_t>> writable_;  // address, size of the image's writable sections
+    HANDLE stopThread_ = nullptr;
+
+    // Profiler.
+    void ProfileStep(const CONTEXT& ctx);
+    bool profiling_ = false;
+    bool profileLimitHit_ = false;
+    uint64_t profileTotal_ = 0;
+    int profilePrev_ = -1;
+    int64_t profileTick_ = 0;
+    std::unordered_map<uint64_t, int> profileIndex_;  // address -> index in profile_ (-1: no source)
+    std::map<std::pair<std::wstring, int>, int> profileByLine_;
+    std::vector<ProfileLine> profile_;
 
     HWND notify_;
     std::thread thread_;
@@ -169,7 +220,6 @@ private:
     HANDLE mainThread_ = nullptr;
     DWORD mainThreadId_ = 0;
     std::map<DWORD, HANDLE> threads_;
-    std::set<DWORD> watchThreads_;  // threads whose debug registers are up to date
     uint64_t imageBase_ = 0;
     uint64_t imageSize_ = 0;
     std::map<uint64_t, Module> modules_;  // DLLs by base; DbgHelp only handles the main image (it is slow on DLLs)

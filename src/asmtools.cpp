@@ -463,6 +463,112 @@ std::vector<Line> Run(const fs::path& ndisasm, const uint8_t* data, size_t size,
 
 }
 
+// ---- conditions -------------------------------------------------------------------------------------------------
+
+namespace Conditions {
+
+std::vector<Condition> All(uint32_t f) {
+    bool cf = f & 1, pf = (f >> 2) & 1, zf = (f >> 6) & 1, sf = (f >> 7) & 1, of = (f >> 11) & 1;
+    auto v = [](std::initializer_list<std::pair<const char*, bool>> flags) {
+        std::string s;
+        for (auto [name, on] : flags) s += std::string(s.empty() ? "" : " ") + name + (on ? "=1" : "=0");
+        return s;
+    };
+    return {
+        {"o", "", "OF = 1", "переполнение (со знаком)", v({{"OF", of}}), of},
+        {"no", "", "OF = 0", "нет переполнения", v({{"OF", of}}), !of},
+        {"b", "c nae", "CF = 1", "меньше (без знака)", v({{"CF", cf}}), cf},
+        {"ae", "nc nb", "CF = 0", "больше или равно (без знака)", v({{"CF", cf}}), !cf},
+        {"e", "z", "ZF = 1", "равно (результат 0)", v({{"ZF", zf}}), zf},
+        {"ne", "nz", "ZF = 0", "не равно", v({{"ZF", zf}}), !zf},
+        {"be", "na", "CF = 1 или ZF = 1", "меньше или равно (без знака)", v({{"CF", cf}, {"ZF", zf}}), cf || zf},
+        {"a", "nbe", "CF = 0 и ZF = 0", "больше (без знака)", v({{"CF", cf}, {"ZF", zf}}), !cf && !zf},
+        {"s", "", "SF = 1", "результат отрицательный", v({{"SF", sf}}), sf},
+        {"ns", "", "SF = 0", "результат неотрицательный", v({{"SF", sf}}), !sf},
+        {"p", "pe", "PF = 1", "чётное число единиц в младшем байте", v({{"PF", pf}}), pf},
+        {"np", "po", "PF = 0", "нечётное число единиц в младшем байте", v({{"PF", pf}}), !pf},
+        {"l", "nge", "SF ≠ OF", "меньше (со знаком)", v({{"SF", sf}, {"OF", of}}), sf != of},
+        {"ge", "nl", "SF = OF", "больше или равно (со знаком)", v({{"SF", sf}, {"OF", of}}), sf == of},
+        {"le", "ng", "ZF = 1 или SF ≠ OF", "меньше или равно (со знаком)", v({{"ZF", zf}, {"SF", sf}, {"OF", of}}),
+         zf || sf != of},
+        {"g", "nle", "ZF = 0 и SF = OF", "больше (со знаком)", v({{"ZF", zf}, {"SF", sf}, {"OF", of}}), !zf && sf == of},
+    };
+}
+
+std::optional<Instruction> Decode(const uint8_t* code, size_t size, uint32_t eflags, uint64_t rcx, bool is32) {
+    size_t i = 0;
+    bool addr32 = is32;
+    while (i < size && i < 4) {  // prefixes
+        uint8_t b = code[i];
+        if (b == 0x67) addr32 = !is32;
+        else if (b != 0x66 && b != 0xF2 && b != 0xF3 && b != 0x2E && b != 0x3E && !(!is32 && (b & 0xF0) == 0x40)) break;
+        i++;
+    }
+    if (i >= size) return std::nullopt;
+    auto all = All(eflags);
+    Instruction ins;
+    uint8_t op = code[i];
+    if (op >= 0x70 && op <= 0x7F) {
+        ins.condition = all[op & 0xF];
+    } else if (op == 0x0F && i + 1 < size) {
+        uint8_t op2 = code[i + 1];
+        if (op2 >= 0x80 && op2 <= 0x8F) {
+            ins.condition = all[op2 & 0xF];
+        } else if (op2 >= 0x40 && op2 <= 0x4F) {
+            ins.kind = Instruction::Kind::Move;
+            ins.condition = all[op2 & 0xF];
+        } else if (op2 >= 0x90 && op2 <= 0x9F) {
+            ins.kind = Instruction::Kind::Set;
+            ins.condition = all[op2 & 0xF];
+        } else {
+            return std::nullopt;
+        }
+    } else if (op >= 0xE0 && op <= 0xE3) {
+        std::string reg = addr32 ? "ecx" : is32 ? "cx" : "rcx";
+        uint64_t count = addr32 ? (rcx & 0xFFFFFFFF) : is32 ? (rcx & 0xFFFF) : rcx;
+        bool zf = (eflags >> 6) & 1;
+        Condition c;
+        c.values = reg + " = " + std::to_string(count) + (op != 0xE2 && op != 0xE3 ? std::string(" ZF=") + (zf ? "1" : "0") : "");
+        if (op == 0xE3) {
+            ins.mnemonic = addr32 ? "jecxz" : is32 ? "jcxz" : "jrcxz";
+            c.formula = reg + " = 0";
+            c.meaning = "счётчик равен нулю";
+            c.holds = count == 0;
+        } else {
+            ins.kind = Instruction::Kind::Loop;
+            c.formula = reg + " − 1 ≠ 0";
+            c.meaning = "счётчик после уменьшения не ноль";
+            c.holds = count != 1;
+            if (op == 0xE1) {
+                c.formula += " и ZF = 1";
+                c.meaning += ", и было равно";
+                c.holds = c.holds && zf;
+            } else if (op == 0xE0) {
+                c.formula += " и ZF = 0";
+                c.meaning += ", и было не равно";
+                c.holds = c.holds && !zf;
+            }
+            ins.mnemonic = op == 0xE2 ? "loop" : op == 0xE1 ? "loope" : "loopne";
+        }
+        ins.condition = c;
+        return ins;
+    } else if (op == 0xEB || op == 0xE9) {
+        ins.kind = Instruction::Kind::Unconditional;
+        ins.mnemonic = "jmp";
+        ins.condition.formula = "—";
+        ins.condition.meaning = "переход всегда";
+        ins.condition.holds = true;
+        return ins;
+    } else {
+        return std::nullopt;
+    }
+    const char* prefix = ins.kind == Instruction::Kind::Move ? "cmov" : ins.kind == Instruction::Kind::Set ? "set" : "j";
+    ins.mnemonic = prefix + ins.condition.name;
+    return ins;
+}
+
+}
+
 // ---- snippets ---------------------------------------------------------------------------------------------------
 
 namespace Snippets {

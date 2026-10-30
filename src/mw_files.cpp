@@ -141,7 +141,9 @@ Editor* MainWindow::OpenFile(const fs::path& path, int line) {
             ed->SetBreakpoints(bps->second);
             breakpoints_.erase(bps);  // the editor's markers are the source of truth while it is open
         }
+        Editor* added = ed.get();
         AddEditor(std::move(ed));
+        if (!profile_.empty()) ShowProfileNotes(added);
     }
     Editor* ed = editors_[FindByPath(p) >= 0 ? FindByPath(p) : 0].get();
     if (ed && line > 0) ed->GotoLine(line);

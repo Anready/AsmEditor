@@ -43,7 +43,7 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_SETMOUSEDWELLTIME, 450);
     Call(SCI_SETMARGINS, 4);
     Call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_SYMBOL);  // breakpoints and the execution arrow
-    Call(SCI_SETMARGINMASKN, 0, (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerExecArrow));
+    Call(SCI_SETMARGINMASKN, 0, (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerLogpoint) | (1 << kMarkerExecArrow));
     Call(SCI_SETMARGINSENSITIVEN, 0, 1);
     Call(SCI_SETMARGINCURSORN, 0, SC_CURSORARROW);
     Call(SCI_SETMARGINTYPEN, 1, SC_MARGIN_NUMBER);
@@ -62,6 +62,7 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_MARKERDEFINE, kMarkerWarning, SC_MARK_BACKGROUND);
     Call(SCI_MARKERDEFINE, kMarkerBreakpoint, SC_MARK_CIRCLE);
     Call(SCI_MARKERDEFINE, kMarkerConditional, SC_MARK_CIRCLE);
+    Call(SCI_MARKERDEFINE, kMarkerLogpoint, SC_MARK_SMALLRECT);
     Call(SCI_MARKERDEFINE, kMarkerExecArrow, SC_MARK_SHORTARROW);
     Call(SCI_MARKERDEFINE, kMarkerExecLine, SC_MARK_BACKGROUND);
 
@@ -168,6 +169,10 @@ void Editor::ApplyStyles(int fontSize) {
     Call(SCI_STYLESETBACK, STYLE_BRACELIGHT, Theme::Blend(Theme::EditorBg, Theme::Accent, 30));
     Call(SCI_STYLESETBOLD, STYLE_BRACELIGHT, 1);
     Call(SCI_STYLESETFORE, STYLE_BRACEBAD, Theme::Error);
+    Call(SCI_STYLESETFORE, kStyleNote, Theme::Muted);
+    Call(SCI_STYLESETBACK, kStyleNote, Theme::Blend(Theme::EditorBg, Theme::Muted, 10));
+    Call(SCI_STYLESETITALIC, kStyleNote, 1);
+    Call(SCI_STYLESETSIZE, kStyleNote, std::max(6, fontSize - 1));
     Call(SCI_CALLTIPSETBACK, Theme::CallTipBg);
     Call(SCI_CALLTIPSETFORE, Theme::Bright);
     Call(SCI_CALLTIPSETFOREHLT, Theme::Link);  // syntax line of instruction hints
@@ -178,6 +183,8 @@ void Editor::ApplyStyles(int fontSize) {
     Call(SCI_MARKERSETBACK, kMarkerBreakpoint, Theme::Breakpoint);
     Call(SCI_MARKERSETFORE, kMarkerConditional, Theme::ConditionalBreakpoint);
     Call(SCI_MARKERSETBACK, kMarkerConditional, Theme::ConditionalBreakpoint);
+    Call(SCI_MARKERSETFORE, kMarkerLogpoint, Theme::ConditionalBreakpoint);
+    Call(SCI_MARKERSETBACK, kMarkerLogpoint, Theme::ConditionalBreakpoint);
     Call(SCI_MARKERSETFORE, kMarkerExecArrow, Theme::EditorBg);
     Call(SCI_MARKERSETBACK, kMarkerExecArrow, Theme::ExecArrow);
     Call(SCI_MARKERSETBACK, kMarkerExecLine, Theme::ExecLine);
@@ -522,7 +529,7 @@ void Editor::ToggleComment() {
 
 std::map<int, std::string> Editor::Breakpoints() const {
     std::map<int, std::string> lines;
-    int mask = (1 << kMarkerBreakpoint) | (1 << kMarkerConditional);
+    int mask = (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerLogpoint);
     for (Sci_Position l = Call(SCI_MARKERNEXT, 0, mask); l >= 0; l = Call(SCI_MARKERNEXT, l + 1, mask)) {
         std::string condition;
         for (int i = 0;; i++) {
@@ -539,6 +546,7 @@ std::map<int, std::string> Editor::Breakpoints() const {
 void Editor::SetBreakpoints(const std::map<int, std::string>& lines) {
     Call(SCI_MARKERDELETEALL, kMarkerBreakpoint);
     Call(SCI_MARKERDELETEALL, kMarkerConditional);
+    Call(SCI_MARKERDELETEALL, kMarkerLogpoint);
     conditions_.clear();
     Sci_Position count = Call(SCI_GETLINECOUNT);
     for (const auto& [line, condition] : lines) {
@@ -546,14 +554,16 @@ void Editor::SetBreakpoints(const std::map<int, std::string>& lines) {
         if (condition.empty()) {
             Call(SCI_MARKERADD, line - 1, kMarkerBreakpoint);
         } else {
-            int handle = static_cast<int>(Call(SCI_MARKERADD, line - 1, kMarkerConditional));
+            int marker = IsLogpoint(condition) ? kMarkerLogpoint : kMarkerConditional;
+            int handle = static_cast<int>(Call(SCI_MARKERADD, line - 1, marker));
             conditions_[handle] = condition;
         }
     }
 }
 
 bool Editor::HasBreakpoint(int line) const {
-    return (Call(SCI_MARKERGET, line - 1) & ((1 << kMarkerBreakpoint) | (1 << kMarkerConditional))) != 0;
+    return (Call(SCI_MARKERGET, line - 1) &
+            ((1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerLogpoint))) != 0;
 }
 
 void Editor::ToggleBreakpoint(int line) {
@@ -574,12 +584,24 @@ void Editor::SetBreakpointCondition(int line, const std::string& condition) {
         conditions_.erase(handle);
     }
     Call(SCI_MARKERDELETE, l, kMarkerConditional);
+    Call(SCI_MARKERDELETE, l, kMarkerLogpoint);
     Call(SCI_MARKERDELETE, l, kMarkerBreakpoint);
     if (condition.empty()) {
         Call(SCI_MARKERADD, l, kMarkerBreakpoint);
     } else {
-        int handle = static_cast<int>(Call(SCI_MARKERADD, l, kMarkerConditional));
+        int handle = static_cast<int>(Call(SCI_MARKERADD, l, IsLogpoint(condition) ? kMarkerLogpoint : kMarkerConditional));
         conditions_[handle] = condition;
+    }
+}
+
+void Editor::SetLineNotes(const std::map<int, std::string>& notes) {
+    Call(SCI_EOLANNOTATIONCLEARALL);
+    Call(SCI_EOLANNOTATIONSETVISIBLE, notes.empty() ? EOLANNOTATION_HIDDEN : EOLANNOTATION_BOXED);
+    Sci_Position count = Call(SCI_GETLINECOUNT);
+    for (const auto& [line, text] : notes) {
+        if (line < 1 || line > count) continue;
+        Call(SCI_EOLANNOTATIONSETTEXT, line - 1, reinterpret_cast<sptr_t>(text.c_str()));
+        Call(SCI_EOLANNOTATIONSETSTYLE, line - 1, kStyleNote);
     }
 }
 

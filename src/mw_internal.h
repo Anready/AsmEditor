@@ -29,6 +29,7 @@ enum : int {
     ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_SHOW_PROBLEMS, ID_SHOW_TERMINAL, ID_SHOW_OUTPUT,
     // learning & help
     ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_KEYS, ID_CHECK_UPDATES, ID_OPEN_LOG, ID_ABOUT, ID_LANGUAGE,
+    ID_STEP_BACK, ID_PROFILE_RUN, ID_PROFILE_CLEAR,
     ID_MENU_FILE = 300, ID_MENU_EDIT, ID_MENU_VIEW, ID_MENU_RUN, ID_MENU_HELP, ID_TARGET, ID_PROFILE,
     ID_RECENT = 400,
     ID_TREE_NEW_FILE = 500, ID_TREE_NEW_FOLDER, ID_TREE_OPEN, ID_TREE_MAIN, ID_TREE_RENAME, ID_TREE_DELETE,
@@ -39,7 +40,8 @@ enum : int {
 
 // Styles of the debug panel views.
 enum PanelStyle : int {
-    P_TEXT = 0, P_LABEL, P_CHANGED, P_HEADER, P_SYMBOL, P_FLAG_ON, P_DIM, P_ERROR, P_ADDR, P_CURRENT, P_CODE
+    P_TEXT = 0, P_LABEL, P_CHANGED, P_HEADER, P_SYMBOL, P_FLAG_ON, P_DIM, P_ERROR, P_ADDR, P_CURRENT, P_CODE,
+    P_YES, P_NO
 };
 
 enum : UINT {
@@ -61,6 +63,7 @@ constexpr UINT_PTR kOccurrenceTimer = 3;  // highlight uses of the word under th
 constexpr UINT_PTR kOutlineTimer = 4;     // rebuild the outline after edits
 constexpr UINT_PTR kBackupTimer = 5;      // write unsaved texts for crash recovery
 constexpr UINT_PTR kRepaintTimer = 6;
+constexpr UINT_PTR kStackFlashTimer = 7;  // fades the highlight of stack slots that changed
 
 struct BuildDone {
     BuildResult result;

@@ -20,6 +20,9 @@ public:
     static constexpr int kMarkerExecArrow = 4;    // current execution line (margin)
     static constexpr int kMarkerExecLine = 5;     // current execution line (background)
     static constexpr int kMarkerConditional = 6;  // breakpoint with a condition (orange dot)
+    static constexpr int kStyleNote = 70;         // end-of-line notes
+    static constexpr int kMarkerLogpoint = 7;     // breakpoint that only prints ("log: ...", orange square)
+    static bool IsLogpoint(const std::string& condition) { return condition.find("log:") != std::string::npos; }
     static constexpr int kFoldMargin = 2;
     static constexpr int kGapMargin = 3;
 
@@ -74,6 +77,8 @@ public:
     void SetBreakpointCondition(int line, const std::string& condition);
     bool HasBreakpoint(int line) const;
     void SetExecutionLine(int line);    // 0 clears
+    // Grey notes after the end of lines (profiler results): 1-based line -> text. An empty map clears them.
+    void SetLineNotes(const std::map<int, std::string>& notes);
     std::string WordAt(Sci_Position pos) const;
     bool WordRange(Sci_Position pos, Sci_Position& start, Sci_Position& end) const;
 

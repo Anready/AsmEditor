@@ -112,7 +112,7 @@ void MainWindow::CreateChildren() {
     SetWindowSubclass(View(Pane::Terminal).hwnd(), ConsoleProc, 3, reinterpret_cast<DWORD_PTR>(this));
     ShowPane(Pane::Output);
 
-    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_}) {
+    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_, &flagsView_}) {
         *v = std::make_unique<Editor>(hwnd_, settings_->fontSize);
         SetupPanelView(**v);
     }
@@ -198,18 +198,23 @@ void MainWindow::SetupPanelView(Editor& v) {
     const std::pair<int, COLORREF> colors[] = {
         {P_TEXT, Theme::Text}, {P_LABEL, Theme::Register}, {P_CHANGED, Theme::Changed}, {P_HEADER, Theme::Muted},
         {P_SYMBOL, Theme::Link}, {P_FLAG_ON, Theme::Success}, {P_DIM, Theme::Dim}, {P_ERROR, Theme::Error},
-        {P_ADDR, Theme::Muted}, {P_CURRENT, Theme::ExecArrow}, {P_CODE, Theme::Instruction}};
+        {P_ADDR, Theme::Muted}, {P_CURRENT, Theme::ExecArrow}, {P_CODE, Theme::Instruction},
+        {P_YES, Theme::Success}, {P_NO, Theme::Error}};
     for (auto [style, color] : colors) {
         v.Call(SCI_STYLESETFORE, style, color);
         v.Call(SCI_STYLESETITALIC, style, 0);
-        v.Call(SCI_STYLESETBOLD, style, style == P_HEADER || style == P_CHANGED || style == P_CURRENT);
+        v.Call(SCI_STYLESETBOLD, style, style == P_HEADER || style == P_CHANGED || style == P_CURRENT || style == P_YES);
         v.Call(SCI_STYLESETSIZE, style, std::max(6, settings_->fontSize - 1));
     }
+    // Indicator 9: the fading highlight of stack slots that changed at this step (registers view).
+    v.Call(SCI_INDICSETSTYLE, 9, INDIC_ROUNDBOX);
+    v.Call(SCI_INDICSETFORE, 9, Theme::Changed);
+    v.Call(SCI_INDICSETUNDER, 9, 1);
 }
 
 std::vector<Editor*> MainWindow::PanelViews() const {
     std::vector<Editor*> out;
-    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_}) {
+    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_, &flagsView_}) {
         if (*v) out.push_back(v->get());
     }
     return out;
@@ -263,8 +268,8 @@ void MainWindow::BuildMenus() {
     CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
 
     runMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, 0, ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT,
-                   ID_SET_NEXT, ID_PAUSE, ID_STOP, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
+    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_PROFILE_RUN, ID_PROFILE_CLEAR, 0, ID_STEP_OVER, ID_STEP_INTO,
+                   ID_STEP_OUT, ID_STEP_BACK, ID_SET_NEXT, ID_PAUSE, ID_STOP, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
                    0, ID_CHOOSE_TARGET, ID_RUN_CONFIG, ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_RESET_MAIN, 0,
                    ID_CHECK_SOLUTION, ID_NEW_EXERCISE, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
         if (id) AppendCommand(runMenu_, id);
@@ -466,6 +471,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        if (wp == kStackFlashTimer) {
+            if (--stackFlash_ <= 0) KillTimer(hwnd_, wp);
+            regsView_->Call(SCI_INDICSETALPHA, 9, std::max(0, stackFlash_) * 30);
+            regsView_->Call(SCI_INDICSETOUTLINEALPHA, 9, std::max(0, stackFlash_) * 40);
+            return 0;
+        }
         if (wp == kOccurrenceTimer) {
             KillTimer(hwnd_, wp);
             if (Editor* ed = Active()) HighlightOccurrences(ed);
@@ -557,6 +568,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
         PrintTo(Pane::DebugOutput, *text, static_cast<Out>(wp));
         if (static_cast<Out>(wp) == Out::Warning || static_cast<Out>(wp) == Out::Error) Print(*text, static_cast<Out>(wp));
+        return 0;
+    }
+    case WM_DEBUG_PROFILE: {
+        std::unique_ptr<std::vector<ProfileLine>> lines(reinterpret_cast<std::vector<ProfileLine>*>(lp));
+        OnProfile(std::move(*lines));
         return 0;
     }
     case WM_DEBUG_ODS: {
@@ -765,6 +781,9 @@ void MainWindow::OnCommand(int id) {
         break;
     case ID_RUN_TO_CURSOR: RunToCursor(); break;
     case ID_SET_NEXT: SetNextStatement(); break;
+    case ID_STEP_BACK: StepBack(); break;
+    case ID_PROFILE_RUN: if (!debugging_) StartBuild(After::Profile); break;
+    case ID_PROFILE_CLEAR: ClearProfile(); break;
     case ID_TOGGLE_BP:
         if (ed) ToggleBreakpoint(ed, ed->CaretLine());
         break;

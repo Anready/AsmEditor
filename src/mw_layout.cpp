@@ -56,7 +56,7 @@ void MainWindow::Layout() {
     bool watchTab = panel && debugTab_ == DebugTab::Watch;
     for (HWND h : {memView_->hwnd(), memExpr_}) ShowWindow(h, panel ? SW_SHOW : SW_HIDE);
     ShowWindow(watchExpr_, watchTab ? SW_SHOW : SW_HIDE);
-    Editor* tabViews[] = {regsView_.get(), stackView_.get(), watchView_.get(), disasmView_.get()};
+    Editor* tabViews[] = {regsView_.get(), stackView_.get(), watchView_.get(), disasmView_.get(), flagsView_.get()};
     for (int i = 0; i < static_cast<int>(DebugTab::Count); i++) {
         ShowWindow(tabViews[i]->hwnd(), panel && i == static_cast<int>(debugTab_) ? SW_SHOW : SW_HIDE);
     }
@@ -225,7 +225,7 @@ void MainWindow::Paint(HDC dc) {
         FillRectColor(dc, {mid, rcSplitD_.top, mid + 1, rcSplitD_.bottom}, Theme::Border);
         RECT tabs = rcDebugHeader_;
         tabs.right -= S(4);
-        PaintHeaderTabs(dc, tabs, {Tr(L"Регистры"), Tr(L"Стек вызовов"), Tr(L"Наблюдение"), Tr(L"Код")},
+        PaintHeaderTabs(dc, tabs, {Tr(L"Регистры"), Tr(L"Стек вызовов"), Tr(L"Наблюдение"), Tr(L"Код"), Tr(L"Флаги")},
                         static_cast<int>(debugTab_), debugTabRects_, hoverDebugTab_);
         SelectObject(dc, uiBold_);
         RECT m = rcMemHeader_;

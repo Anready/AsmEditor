@@ -90,6 +90,7 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
     case DebugStop::Reason::Exception: debugStatus_ = Tr(L"исключение"); break;
     case DebugStop::Reason::Watchpoint: debugStatus_ = Tr(L"изменились данные"); break;
     case DebugStop::Reason::RunTo: debugStatus_ = Tr(L"до курсора"); break;
+    case DebugStop::Reason::StepBack: debugStatus_ = Tr(L"шаг назад"); break;
     }
     debugStatusColor_ = stop->reason == DebugStop::Reason::Exception ? Theme::Error : Theme::Warning;
 
@@ -150,14 +151,18 @@ void MainWindow::ToggleBreakpoint(Editor* ed, int line) {
     InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
 }
 
-// Condition of the breakpoint on a line: an expression ("rcx == 5"), a hit number ("#10") or both.
-void MainWindow::EditBreakpointCondition(Editor* ed, int line) {
+// Condition of the breakpoint on a line: an expression ("rcx == 5"), a hit number ("#10") or both; "log: ..."
+// turns it into a logpoint that prints to "Debug output" instead of stopping.
+void MainWindow::EditBreakpointCondition(Editor* ed, int line, bool logpoint) {
     if (!ed || line <= 0) return;
     std::string current;
     auto bps = ed->Breakpoints();
     if (bps.count(line)) current = bps[line];
-    auto text = InputBox(hwnd_, Tr(L"Условие точки останова"),
-                         Tr(L"Останавливаться, когда (rcx == 5, [counter] > 3, #10 — на 10-й раз; пусто — всегда):"),
+    if (logpoint && !Editor::IsLogpoint(current)) current += current.empty() ? "log: " : " log: ";
+    auto text = InputBox(hwnd_, logpoint ? Tr(L"Точка останова с выводом") : Tr(L"Условие точки останова"),
+                         logpoint ? Tr(L"Печатать без остановки (log: rcx = {rcx}, {[counter]:x} — в hex; "
+                                       L"перед log: можно условие):")
+                                  : Tr(L"Останавливаться, когда (rcx == 5, [counter] > 3, #10 — на 10-й раз; пусто — всегда):"),
                          Widen(current));
     if (!text) return;
     ed->SetBreakpointCondition(line, Narrow(Trim(*text)));
@@ -170,9 +175,10 @@ void MainWindow::EditBreakpointCondition(Editor* ed, int line) {
 void MainWindow::BreakpointMenu(Editor* ed, int line) {
     bool has = ed->HasBreakpoint(line);
     HMENU menu = CreatePopupMenu();
-    enum { kToggle = 1, kCondition, kRunTo, kSetNext, kClearAll };
+    enum { kToggle = 1, kCondition, kLogpoint, kRunTo, kSetNext, kClearAll };
     AppendMenuW(menu, MF_STRING, kToggle, has ? Tr(L"Убрать точку останова") : Tr(L"Поставить точку останова"));
     AppendMenuW(menu, MF_STRING, kCondition, has ? Tr(L"Изменить условие…") : Tr(L"Точка останова с условием…"));
+    AppendMenuW(menu, MF_STRING, kLogpoint, Tr(L"Точка останова с выводом (без остановки)…"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kRunTo, MenuText(ID_RUN_TO_CURSOR).c_str());
     AppendMenuW(menu, MF_STRING | (DebugStopped() ? 0 : MF_GRAYED), kSetNext, MenuText(ID_SET_NEXT).c_str());
@@ -188,6 +194,10 @@ void MainWindow::BreakpointMenu(Editor* ed, int line) {
     case kCondition:
         if (!has) ed->ToggleBreakpoint(line);
         EditBreakpointCondition(ed, line);
+        break;
+    case kLogpoint:
+        if (!has) ed->ToggleBreakpoint(line);
+        EditBreakpointCondition(ed, line, true);
         break;
     case kRunTo:
         caretToLine();
@@ -260,6 +270,152 @@ void MainWindow::SetNextStatement() {
     RenderDebugPanel();
 }
 
+// Ctrl+Shift+F11: back to the previous stop (registers, global variables and the stack are restored).
+void MainWindow::StepBack() {
+    if (!DebugStopped()) return;
+    std::wstring error;
+    if (!debugger_->StepBack(error)) {
+        ShowMessage(hwnd_, std::wstring(Tr(L"Шаг назад невозможен: ")) + Tr(error.c_str()), false);
+        return;
+    }
+    static bool explained = false;
+    if (!explained) {
+        explained = true;
+        PrintTo(Pane::DebugOutput, Tr(std::string("Шаг назад восстанавливает регистры, глобальные переменные и стек. "
+                                                  "Вывод в консоль, файлы и память из кучи не откатываются.\n")),
+                Out::Info);
+    }
+}
+
+// The flags and what every condition code gives with them; on a conditional instruction, whether it will jump.
+void MainWindow::RenderFlags() {
+    flagLines_.clear();
+    PanelText r;
+    auto mark = [&](int bit) {
+        if (static_cast<int>(flagLines_.size()) <= r.line) flagLines_.resize(r.line + 1, -1);
+        flagLines_[r.line] = bit;
+    };
+    if (!DebugStopped()) {
+        RenderPanel(*flagsView_, {{Tr(std::string("Флаги видны, когда программа остановлена.\n")), P_DIM}});
+        return;
+    }
+    const CONTEXT& c = debugger_->Context();
+    uint32_t f = c.EFlags;
+    const CONTEXT* prev = haveLastContext_ ? &lastContext_ : nullptr;
+
+    // The instruction about to run.
+    uint8_t code[16]{};
+    size_t got = debugger_->ReadMemory(c.Rip, code, sizeof(code));
+    if (auto ins = Conditions::Decode(code, got, f, c.Rcx, debugger_->Is32())) {
+        using Kind = Conditions::Instruction::Kind;
+        const Conditions::Condition& cond = ins->condition;
+        r.Add(Tr(std::string("СЛЕДУЮЩАЯ ИНСТРУКЦИЯ")) + "\n", P_HEADER);
+        r.Add(ins->mnemonic, P_CODE);
+        if (ins->kind != Kind::Unconditional) {
+            r.Add("   " + cond.formula + "   (" + cond.values + ")", P_TEXT);
+        }
+        r.Add("\n", P_TEXT);
+        std::string verdict;
+        switch (ins->kind) {
+        case Kind::Jump:
+        case Kind::Loop:
+        case Kind::Unconditional:
+            verdict = cond.holds ? Tr(std::string("→ переход будет")) : Tr(std::string("→ перехода не будет, выполнится следующая строка"));
+            break;
+        case Kind::Move:
+            verdict = cond.holds ? Tr(std::string("→ значение будет скопировано")) : Tr(std::string("→ регистр не изменится"));
+            break;
+        case Kind::Set:
+            verdict = cond.holds ? Tr(std::string("→ в байт запишется 1")) : Tr(std::string("→ в байт запишется 0"));
+            break;
+        }
+        r.Add(verdict + "   ", cond.holds ? P_YES : P_NO);
+        r.Add(Tr(cond.meaning) + "\n\n", P_DIM);
+    }
+
+    r.Add(Tr(std::string("ФЛАГИ")) + "  " + Tr(std::string("(двойной клик — переключить)")) + "\n", P_HEADER);
+    static const struct {
+        const char* name;
+        int bit;
+        const char* meaning;
+    } flags[] = {
+        {"CF", 0, "перенос: беззнаковый результат не поместился (или был заём при вычитании)"},
+        {"PF", 2, "чётность: в младшем байте результата чётное число единиц"},
+        {"AF", 4, "вспомогательный перенос из бита 3 (для BCD-арифметики)"},
+        {"ZF", 6, "ноль: результат равен 0 (после cmp — операнды равны)"},
+        {"SF", 7, "знак: старший бит результата (результат отрицательный)"},
+        {"DF", 10, "направление строковых инструкций: 1 — к меньшим адресам"},
+        {"OF", 11, "переполнение: знаковый результат не поместился"},
+    };
+    for (const auto& fl : flags) {
+        bool on = (f >> fl.bit) & 1;
+        bool changed = prev && (((prev->EFlags >> fl.bit) & 1) != on);
+        mark(fl.bit);
+        r.Add(std::string(fl.name) + (on ? " = 1  " : " = 0  "), changed ? P_CHANGED : on ? P_FLAG_ON : P_DIM);
+        r.Add(Tr(std::string(fl.meaning)) + "\n", P_DIM);
+    }
+    r.Add("\n" + Tr(std::string("УСЛОВИЯ (jcc, cmovcc, setcc)")) + "\n", P_HEADER);
+    for (const Conditions::Condition& cond : Conditions::All(f)) {
+        std::string names = "j" + cond.name;
+        std::istringstream aliases(cond.aliases);
+        for (std::string alias; aliases >> alias;) names += "/j" + alias;
+        r.Add(cond.holds ? "✓ " : "✗ ", cond.holds ? P_YES : P_NO);
+        r.Add(PadRight(names, 12), P_CODE);
+        r.Add(PadRight(cond.formula, 20), P_TEXT);
+        r.Add(Tr(cond.meaning) + "\n", P_DIM);
+    }
+    r.Add("\n" + Tr(std::string("Флаги выставляет последняя арифметическая или логическая инструкция (cmp, test, add, sub, "
+                                "and…); mov, lea, push, pop и переходы их не меняют.\n")),
+          P_DIM);
+    RenderPanel(*flagsView_, r.runs);
+}
+
+// ---- profiler ---------------------------------------------------------------------------------------------------
+
+void MainWindow::OnProfile(std::vector<ProfileLine> lines) {
+    profile_ = std::move(lines);
+    for (auto& e : editors_) ShowProfileNotes(e.get());
+    uint64_t total = 0;
+    for (const ProfileLine& p : profile_) total += p.instructions;
+    std::vector<const ProfileLine*> byTime;
+    for (const ProfileLine& p : profile_) byTime.push_back(&p);
+    std::sort(byTime.begin(), byTime.end(), [](auto* a, auto* b) { return a->seconds > b->seconds; });
+    std::string text = "\n" + Tr(std::string("Профиль: выполнено инструкций — ")) + std::to_string(total) + ". " +
+                       Tr(std::string("Дольше всего:")) + "\n";
+    for (size_t i = 0; i < byTime.size() && i < 8; i++) {
+        const ProfileLine& p = *byTime[i];
+        char buf[160];
+        sprintf_s(buf, "  %s:%d  × %llu, %llu %s, %.3f %s\n", Narrow(p.location.file.filename().wstring()).c_str(),
+                  p.location.line, static_cast<unsigned long long>(p.hits), static_cast<unsigned long long>(p.instructions),
+                  Tr(std::string("инстр.")).c_str(), p.seconds * 1000, Tr(std::string("мс")).c_str());
+        text += buf;
+    }
+    text += Tr(std::string("Числа у строк в редакторе: сколько раз выполнилась строка, сколько инструкций и время "
+                           "(с вызовами printf и т. п.; само профилирование замедляет программу). Убрать — "
+                           "Запуск → «Убрать результаты профилирования».\n"));
+    Print(text, Out::Info);
+}
+
+void MainWindow::ShowProfileNotes(Editor* ed) {
+    if (!ed || ed->file().empty()) return;
+    std::map<int, std::string> notes;
+    for (const ProfileLine& p : profile_) {
+        if (!SamePath(p.location.file, ed->file())) continue;
+        char buf[128];
+        sprintf_s(buf, " × %llu · %llu %s · %.3f %s ", static_cast<unsigned long long>(p.hits),
+                  static_cast<unsigned long long>(p.instructions), Tr(std::string("инстр.")).c_str(), p.seconds * 1000,
+                  Tr(std::string("мс")).c_str());
+        notes[p.location.line] = buf;
+    }
+    ed->SetLineNotes(notes);
+}
+
+void MainWindow::ClearProfile() {
+    if (profile_.empty()) return;
+    profile_.clear();
+    for (auto& e : editors_) e->SetLineNotes({});
+}
+
 void MainWindow::RenderPanel(Editor& v, const Runs& runs) {
     Sci_Position first = v.Call(SCI_GETFIRSTVISIBLELINE);
     v.Call(SCI_SETREADONLY, 0);
@@ -279,6 +435,7 @@ void MainWindow::RenderDebugPanel() {
     RenderCallStack();
     RenderWatches();
     if (debugTab_ == DebugTab::Disasm) RenderDisassembly();
+    RenderFlags();
     RenderMemory();
 }
 
@@ -338,14 +495,49 @@ void MainWindow::RenderRegisters() {
     }
 
     // The stack with what is known about it: return addresses of the call stack (frame boundaries) and rbp.
+    // Slots that changed since the previous stop flash and fade out; a line says what happened to rsp.
     r.Add("\n\n" + Tr(std::string("СТЕК")) + "\n", P_HEADER);
     int ptr = debugger_->PointerSize();
     uint64_t stack[24]{};
     std::vector<uint8_t> raw(24 * ptr);
     size_t got = debugger_->ReadMemory(c.Rsp, raw.data(), raw.size()) / ptr;
+    raw.resize(got * ptr);
+    bool fresh = prev && prevStackRsp_ == prev->Rsp && !prevStack_.empty() && prev->Rip != c.Rip;
+    auto prevSlot = [&](uint64_t address, uint64_t& value) {
+        if (address < prevStackRsp_ || address + ptr > prevStackRsp_ + prevStack_.size()) return false;
+        value = 0;
+        memcpy(&value, prevStack_.data() + (address - prevStackRsp_), ptr);
+        return true;
+    };
+    if (fresh && prev->Rsp != c.Rsp) {
+        int64_t delta = static_cast<int64_t>(c.Rsp - prev->Rsp);
+        uint64_t top = 0, oldTop = 0;
+        if (got) memcpy(&top, raw.data(), ptr);
+        prevSlot(prev->Rsp, oldTop);
+        std::string what;
+        char n[32];
+        sprintf_s(n, "%lld", static_cast<long long>(delta < 0 ? -delta : delta));
+        if (delta == -ptr && top > prev->Rip && top <= prev->Rip + 64 && (c.Rip < prev->Rip || c.Rip > prev->Rip + 64)) {
+            what = Tr(std::string("call: адрес возврата положен на вершину стека"));
+        } else if (delta == -ptr) {
+            what = Tr(std::string("push: значение положено на вершину стека"));
+        } else if (delta == ptr && c.Rip == oldTop) {
+            what = Tr(std::string("ret: адрес возврата снят со стека, переход по нему"));
+        } else if (delta == ptr) {
+            what = Tr(std::string("pop: значение снято с вершины стека"));
+        } else if (delta < 0) {
+            what = Tr(std::string("в стеке выделено место"));
+        } else {
+            what = Tr(std::string("место в стеке освобождено"));
+        }
+        r.Add(std::string(is32 ? "esp " : "rsp ") + (delta < 0 ? "− " : "+ ") + n + ":  " + what + "\n", P_CHANGED);
+    }
+    std::vector<int> flashLines;
     for (size_t i = 0; i < got; i++) {
         memcpy(&stack[i], raw.data() + i * ptr, ptr);
         uint64_t address = c.Rsp + i * ptr;
+        uint64_t old = 0;
+        if (fresh && (!prevSlot(address, old) || old != stack[i] || address < prev->Rsp)) flashLines.push_back(r.line);
         const Debugger::Frame* returnOf = nullptr;
         for (size_t k = 1; k < frames_.size(); k++) {
             if (frames_[k].returnSlot == address) returnOf = &frames_[k];
@@ -377,6 +569,21 @@ void MainWindow::RenderRegisters() {
         r.Add(buf, P_DIM);
     }
     RenderPanel(*regsView_, r.runs);
+    // Remembered for the next stop: which slots changed, and what a pop or ret took.
+    prevStack_.assign(raw.begin(), raw.end());
+    prevStackRsp_ = c.Rsp;
+    regsView_->Call(SCI_SETINDICATORCURRENT, 9);
+    regsView_->Call(SCI_INDICATORCLEARRANGE, 0, regsView_->Call(SCI_GETLENGTH));
+    for (int line : flashLines) {
+        Sci_Position start = regsView_->Call(SCI_POSITIONFROMLINE, line);
+        regsView_->Call(SCI_INDICATORFILLRANGE, start, regsView_->Call(SCI_GETLINEENDPOSITION, line) - start);
+    }
+    if (!flashLines.empty()) {
+        stackFlash_ = 8;
+        regsView_->Call(SCI_INDICSETALPHA, 9, 240);
+        regsView_->Call(SCI_INDICSETOUTLINEALPHA, 9, 255);
+        SetTimer(hwnd_, kStackFlashTimer, 90, nullptr);
+    }
 }
 
 void MainWindow::RenderCallStack() {
@@ -400,7 +607,8 @@ void MainWindow::RenderCallStack() {
         }
         r.Add("\n", P_TEXT);
     }
-    r.Add("\n" + Tr(std::string("Кадры найдены по адресам возврата в стеке (у NASM-кода нет таблиц раскрутки).\n")), P_DIM);
+    r.Add("\n" + Tr(std::string("Кадры DLL и C runtime — по их таблицам раскрутки (.pdata), кадры NASM-кода — по адресам "
+                                 "возврата в стеке.\n")), P_DIM);
     RenderPanel(*stackView_, r.runs);
 }
 
@@ -656,6 +864,12 @@ void MainWindow::PanelDoubleClick(Editor& view, Sci_Position pos) {
             else if (memFormat_ == MemFormat::Dwords) index = std::clamp((column - 18) / 23, 0, 1);
             else if (memFormat_ == MemFormat::Float) index = std::clamp((column - 18) / 16, 0, 1);
             EditMemory(memLines_[line] + static_cast<uint64_t>(index) * size);
+        }
+    } else if (&view == flagsView_.get()) {
+        if (line < static_cast<int>(flagLines_.size()) && flagLines_[line] >= 0 && DebugStopped()) {
+            debugger_->SetRegister("rflags", debugger_->Context().EFlags ^ (1u << flagLines_[line]));
+            RenderFlags();
+            RenderRegisters();
         }
     } else if (&view == stackView_.get()) {
         if (line < static_cast<int>(stackLines_.size()) && stackLines_[line] >= 0) {

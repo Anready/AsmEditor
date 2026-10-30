@@ -299,6 +299,40 @@ TEST(ReferenceCoversEveryInstruction) {
 
 // ---- expressions -----------------------------------------------------------------------------------------------
 
+TEST(ConditionsExplainJumps) {
+    const uint32_t SF = 1 << 7, ZF = 1 << 6, OF = 1 << 11, CF = 1;
+    auto all = Conditions::All(SF);
+    CHECK_EQ(all.size(), 16u);
+    CHECK(all[12].name == "l" && all[12].holds);    // SF != OF
+    CHECK(all[13].name == "ge" && !all[13].holds);
+    uint8_t jl[] = {0x7C, 0x05};
+    auto j = Conditions::Decode(jl, 2, SF, 0, false);
+    CHECK(j && j->mnemonic == "jl" && j->condition.holds && j->condition.values == "SF=1 OF=0");
+    j = Conditions::Decode(jl, 2, SF | OF, 0, false);
+    CHECK(j && !j->condition.holds);
+    uint8_t jle[] = {0x0F, 0x8E, 0, 0, 0, 0};
+    j = Conditions::Decode(jle, 6, ZF, 0, false);
+    CHECK(j && j->mnemonic == "jle" && j->condition.holds);
+    uint8_t cmovge[] = {0x48, 0x0F, 0x4D, 0xC1};
+    j = Conditions::Decode(cmovge, 4, SF | OF, 0, false);
+    CHECK(j && j->mnemonic == "cmovge" && j->kind == Conditions::Instruction::Kind::Move && j->condition.holds);
+    uint8_t setb[] = {0x0F, 0x92, 0xC0};
+    j = Conditions::Decode(setb, 3, CF, 0, false);
+    CHECK(j && j->mnemonic == "setb" && j->condition.holds);
+    uint8_t loop[] = {0xE2, 0xFE};
+    j = Conditions::Decode(loop, 2, 0, 1, false);
+    CHECK(j && j->mnemonic == "loop" && !j->condition.holds);  // rcx becomes 0
+    j = Conditions::Decode(loop, 2, 0, 5, false);
+    CHECK(j && j->condition.holds);
+    uint8_t jrcxz[] = {0xE3, 0x02};
+    j = Conditions::Decode(jrcxz, 2, 0, 0, false);
+    CHECK(j && j->mnemonic == "jrcxz" && j->condition.holds);
+    j = Conditions::Decode(jrcxz, 2, 0, 0, true);
+    CHECK(j && j->mnemonic == "jecxz");
+    uint8_t mov[] = {0x48, 0x89, 0xC8};
+    CHECK(!Conditions::Decode(mov, 3, 0, 0, false));
+}
+
 TEST(ExpressionsWithoutProcess) {
     Debugger d(nullptr);
     std::wstring err;
@@ -332,6 +366,60 @@ TEST(Localization) {
     CHECK_EQ(Narrow(Tr(L"Собрать")), std::string("Собрать"));
 }
 
+// Every Tr("…") with a literal Russian text in the sources has an English translation.
+TEST(EveryUiTextTranslated) {
+    fs::path srcDir = fs::path(__FILE__).parent_path().parent_path() / L"src";
+    SetLanguage(L"en");
+    int missing = 0;
+    for (const auto& entry : fs::directory_iterator(srcDir)) {
+        if (entry.path().extension() != L".cpp") continue;
+        std::ifstream in(entry.path(), std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        for (size_t at = text.find("Tr("); at != std::string::npos; at = text.find("Tr(", at + 3)) {
+            if (at > 0 && (isalnum(static_cast<unsigned char>(text[at - 1])) || text[at - 1] == '_')) continue;
+            size_t i = at + 3;
+            bool wide = false;
+            if (text.compare(i, 12, "std::string(") == 0) i += 12;
+            std::string value;
+            bool any = false;
+            for (;;) {  // adjacent literals: "a" "b"
+                while (i < text.size() && isspace(static_cast<unsigned char>(text[i]))) i++;
+                if (text[i] == 'L' && text[i + 1] == '"') {
+                    wide = true;
+                    i++;
+                }
+                if (text[i] != '"') break;
+                any = true;
+                for (i++; i < text.size() && text[i] != '"'; i++) {
+                    if (text[i] == '\\') {
+                        char e = text[++i];
+                        value += e == 'n' ? '\n' : e == 't' ? '\t' : e;
+                    } else {
+                        value += text[i];
+                    }
+                }
+                i++;
+            }
+            while (i < text.size() && isspace(static_cast<unsigned char>(text[i]))) i++;
+            if (!any || text[i] != ')') continue;  // not a plain literal
+            if (value.find('\xD0') == std::string::npos && value.find('\xD1') == std::string::npos) continue;
+            bool ok = wide ? std::wstring(Tr(Widen(value).c_str())) != Widen(value) : Tr(value) != value;
+            if (!ok) {
+                missing++;
+                printf("    untranslated (%s): %s\n", Narrow(entry.path().filename().wstring()).c_str(), value.c_str());
+            }
+        }
+    }
+    for (const Conditions::Condition& c : Conditions::All(0)) {
+        if (Tr(c.meaning) == c.meaning) {
+            missing++;
+            printf("    untranslated condition: %s\n", c.meaning.c_str());
+        }
+    }
+    SetLanguage(L"ru");
+    CHECK_EQ(missing, 0);
+}
+
 TEST(ProjectExcludedAndIncludedFiles) {
     wchar_t tmp[MAX_PATH + 1];
     GetTempPathW(MAX_PATH + 1, tmp);
@@ -363,6 +451,8 @@ struct DebugHost {
     bool exited = false;
     DWORD exitCode = 0;
     std::string stats;
+    std::vector<std::string> output;  // OutputDebugString and logpoint lines
+    std::vector<ProfileLine> profile;
 
     DebugHost() {
         hwnd = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
@@ -400,7 +490,13 @@ struct DebugHost {
                     exitCode = static_cast<DWORD>(msg.wParam);
                     std::unique_ptr<std::string> s(reinterpret_cast<std::string*>(msg.lParam));
                     if (s) stats = *s;
-                } else if (msg.message == WM_DEBUG_LOG || msg.message == WM_DEBUG_ODS) {
+                } else if (msg.message == WM_DEBUG_ODS) {
+                    std::unique_ptr<std::string> s(reinterpret_cast<std::string*>(msg.lParam));
+                    output.push_back(*s);
+                } else if (msg.message == WM_DEBUG_PROFILE) {
+                    std::unique_ptr<std::vector<ProfileLine>> p(reinterpret_cast<std::vector<ProfileLine>*>(msg.lParam));
+                    profile = *p;
+                } else if (msg.message == WM_DEBUG_LOG) {
                     delete reinterpret_cast<std::string*>(msg.lParam);
                 }
             }
@@ -411,11 +507,25 @@ struct DebugHost {
     }
 };
 
-std::optional<fs::path> BuildProgram(const std::string& name, const std::string& source) {
+std::optional<fs::path> BuildProgram(const std::string& name, const std::string& source, bool x86 = false) {
     Settings s;
     s.Load();
     Toolchain::ApplyDefaults(s);
-    if (!Toolchain::NasmAvailable(s) || !Toolchain::LinkerAvailable(s) || s.linkerPreset != L"MSVC_CRT") {
+    if (x86) {  // the "MSVC link x86" preset, as the settings dialog sets it up
+        auto msvc = Toolchain::FindMsvc(true);
+        if (!msvc) {
+            printf("    (skipped: needs the 32-bit MSVC tools)\n");
+            return std::nullopt;
+        }
+        s.linkerPreset = L"MSVC_X86_CRT";
+        s.linkerPath = msvc->link.wstring();
+        s.linkerArgs = FindPreset(L"MSVC_X86_CRT")->args;
+        s.libPaths.clear();
+        for (const fs::path& p : msvc->libPaths) s.libPaths.push_back(p.wstring());
+        s.nasmArgs = L"-f win32 -g -F cv8";
+    }
+    if (!Toolchain::NasmAvailable(s) || !Toolchain::LinkerAvailable(s) ||
+        s.linkerPreset != (x86 ? L"MSVC_X86_CRT" : L"MSVC_CRT")) {
         printf("    (skipped: needs NASM and MSVC link with the C runtime preset)\n");
         return std::nullopt;
     }
@@ -523,6 +633,325 @@ TEST(DebuggerConditionsWatchpointsCallStack) {
     CHECK(host.exited);
     CHECK_EQ(host.exitCode, 0ul);
     CHECK(host.stats.find("пик памяти") != std::string::npos || host.stats.find("peak") != std::string::npos);
+}
+
+// A logpoint prints on every pass and does not stop; a condition in front of "log:" filters the passes.
+TEST(DebuggerLogpoints) {
+    auto exe = BuildProgram("counter", kCounterProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    Debugger::Breakpoints bps{{Debugger::Key(src),
+                               {{13, "log: rbx={rbx} c={qword [counter]:x}"}, {24, "rbx >= 4 log: helper {rbx}"}, {20, ""}}}};
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, bps, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    CHECK_EQ(host.stops.size(), 1u);
+    CHECK_EQ(host.stops.back()->location.line, 20);
+    host.Wait(200);
+    std::vector<std::string> lines;
+    for (const auto& s : host.output) lines.push_back(s);
+    CHECK_EQ(lines.size(), 7u);
+    if (lines.size() == 7) {
+        CHECK_EQ(lines[0], std::string("rbx=0 c=0x1\n"));
+        CHECK_EQ(lines[3], std::string("rbx=3 c=0x4\n"));
+        CHECK_EQ(lines[4], std::string("helper 4\n"));
+        CHECK_EQ(lines[5], std::string("rbx=4 c=0x5\n"));
+        CHECK_EQ(lines[6], std::string("helper 5\n"));
+    }
+    d.Stop();
+    host.Wait(5000);
+}
+
+// Step back restores registers and the program's variables to the previous stop.
+TEST(DebuggerStepBack) {
+    auto exe = BuildProgram("counter", kCounterProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, {{Debugger::Key(src), {{12, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    auto counter = [&] {
+        auto v = d.Evaluate("qword [counter]", error);
+        return v ? *v : 999;
+    };
+    CHECK_EQ(counter(), 0ull);
+    d.SetBreakpoints(src, {});
+    d.StepOver();  // -> 13, counter 1
+    CHECK(host.Wait(10000));
+    d.StepOver();  // -> 14, rbx 1
+    CHECK(host.Wait(10000));
+    CHECK_EQ(host.stops.back()->location.line, 14);
+    CHECK_EQ(d.Context().Rbx, 1ull);
+    CHECK(d.StepBack(error));
+    CHECK(host.Wait(5000));
+    CHECK(host.stops.back()->reason == DebugStop::Reason::StepBack);
+    CHECK_EQ(host.stops.back()->location.line, 13);
+    CHECK_EQ(d.Context().Rbx, 0ull);
+    CHECK_EQ(counter(), 1ull);
+    CHECK(d.StepBack(error));
+    CHECK(host.Wait(5000));
+    CHECK_EQ(host.stops.back()->location.line, 12);
+    CHECK_EQ(counter(), 0ull);
+    CHECK(!d.StepBack(error));  // nothing earlier
+    // forward again from the restored state
+    d.StepOver();
+    CHECK(host.Wait(10000));
+    CHECK_EQ(host.stops.back()->location.line, 13);
+    CHECK_EQ(counter(), 1ull);
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.exited);
+    CHECK_EQ(host.exitCode, 0ul);
+}
+
+// The profiler counts how often each line ran and how many instructions it took.
+TEST(DebuggerProfiler) {
+    auto exe = BuildProgram("counter", kCounterProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    launch.profile = true;
+    CHECK(d.Start(launch, host.pty, {}, false, std::nullopt, error));
+    CHECK(host.Wait(20000));
+    CHECK(host.exited);
+    CHECK(host.stops.empty());
+    std::map<int, ProfileLine> byLine;
+    for (const ProfileLine& p : host.profile) byLine[p.location.line] = p;
+    CHECK_EQ(byLine[9].hits, 1ull);
+    CHECK_EQ(byLine[12].hits, 5ull);
+    CHECK_EQ(byLine[12].instructions, 5ull);
+    CHECK_EQ(byLine[24].hits, 5ull);
+    CHECK_EQ(byLine[19].hits, 1ull);
+    CHECK(byLine[19].seconds > 0);  // printf, run untraced, is timed on its call line
+    CHECK_EQ(host.exitCode, 0ul);
+}
+
+const char* kCounterProgram32 =
+    "extern _printf\n"            // 1
+    "global _main\n"              // 2
+    "section .data\n"             // 3
+    "    counter dd 0\n"          // 4
+    "    fmt db \"%d\", 10, 0\n"  // 5
+    "section .text\n"             // 6
+    "_main:\n"                    // 7
+    "    push ebx\n"              // 8
+    "    xor ebx, ebx\n"          // 9
+    ".loop:\n"                    // 10
+    "    inc dword [counter]\n"   // 11
+    "    inc ebx\n"               // 12
+    "    call helper\n"           // 13
+    "    cmp ebx, 5\n"            // 14
+    "    jl .loop\n"              // 15
+    "    push dword [counter]\n"  // 16
+    "    push fmt\n"              // 17
+    "    call _printf\n"          // 18
+    "    add esp, 8\n"            // 19
+    "    pop ebx\n"               // 20
+    "    xor eax, eax\n"          // 21
+    "    ret\n"                   // 22
+    "helper:\n"                   // 23
+    "    nop\n"                   // 24
+    "    ret\n";                  // 25
+
+// The same scenario on a 32-bit program (WOW64 contexts, 4-byte pointers, STATUS_WX86_* events).
+TEST(Debugger32Bit) {
+    auto exe = BuildProgram("counter32", kCounterProgram32, true);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    Debugger::Breakpoints bps{{Debugger::Key(src), {{14, "ebx == 3"}, {24, "#2"}}}};
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, bps, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    CHECK(d.Is32());
+    CHECK_EQ(d.PointerSize(), 4);
+    CHECK_EQ(host.stops.back()->location.line, 24);
+    CHECK_EQ(d.Context().Rbx, 2ull);
+    auto frames = d.CallStack();
+    CHECK(frames.size() >= 2u);
+    if (frames.size() >= 2) CHECK_EQ(frames[1].location.line, 13);
+    // step out of helper: back in main after the call
+    d.StepOut();
+    CHECK(host.Wait(10000));
+    CHECK_EQ(host.stops.back()->location.line, 14);
+    // the breakpoint on line 14 with ebx == 3
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK_EQ(host.stops.back()->location.line, 14);
+    CHECK_EQ(d.Context().Rbx, 3ull);
+    std::wstring err;
+    auto counter = d.LookupSymbol("counter");
+    CHECK(counter.has_value());
+    if (counter) {
+        CHECK_EQ(*counter >> 32, 0ull);
+        DataWatch w;
+        w.expression = "counter";
+        w.address = *counter;
+        w.size = 4;
+        CHECK(d.AddDataWatch(w, err));
+        d.Continue();
+        CHECK(host.Wait(10000));
+        CHECK(host.stops.back()->reason == DebugStop::Reason::Watchpoint);
+        CHECK_EQ(host.stops.back()->location.line, 12);
+        auto v = d.Evaluate("dword [counter]", err);
+        CHECK(v && *v == 4);
+        d.RemoveDataWatch(0);
+    }
+    CHECK(d.SetRegister("ebx", 4));
+    d.SetBreakpoints(src, {});
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.exited);
+    CHECK_EQ(host.exitCode, 0ul);
+}
+
+const char* kQsortProgram =
+    "default rel\n"              // 1
+    "extern qsort\n"             // 2
+    "global main\n"              // 3
+    "section .data\n"            // 4
+    "    arr dq 3, 1, 2\n"       // 5
+    "section .text\n"            // 6
+    "main:\n"                    // 7
+    "    sub rsp, 40\n"          // 8
+    "    lea rcx, [arr]\n"       // 9
+    "    mov edx, 3\n"           // 10
+    "    mov r8d, 8\n"           // 11
+    "    lea r9, [compare]\n"    // 12
+    "    call qsort\n"           // 13
+    "    add rsp, 40\n"          // 14
+    "    xor eax, eax\n"         // 15
+    "    ret\n"                  // 16
+    "compare:\n"                 // 17
+    "    mov rax, [rcx]\n"       // 18
+    "    sub rax, [rdx]\n"       // 19
+    "    ret\n";                 // 20
+
+// A callback from the C runtime: the frames inside ucrtbase come from its unwind information (.pdata).
+TEST(DebuggerCallStackThroughDll) {
+    auto exe = BuildProgram("qsort", kQsortProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, {{Debugger::Key(src), {{18, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    CHECK_EQ(host.stops.back()->location.line, 18);
+    auto frames = d.CallStack();
+    size_t mainAt = 0;
+    for (size_t i = 1; i < frames.size(); i++) {
+        if (frames[i].location.line == 13) {
+            mainAt = i;
+            break;
+        }
+    }
+    CHECK(mainAt >= 2);  // compare <- qsort (one or more frames in ucrtbase) <- main
+    for (size_t i = 1; i < mainAt; i++) {
+        CHECK(Lower(frames[i].function).find(L"ucrtbase") != std::wstring::npos);
+    }
+    CHECK(frames.size() > mainAt + 1);  // and on into the C runtime startup
+    for (const auto& f : frames) printf("    %s\n", Narrow(f.function).c_str());
+    d.SetBreakpoints(src, {});
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.exited);
+}
+
+const char* kThreadProgram =
+    "default rel\n"                    // 1
+    "extern CreateThread\n"            // 2
+    "extern WaitForSingleObject\n"     // 3
+    "extern Sleep\n"                   // 4
+    "global main\n"                    // 5
+    "section .data\n"                  // 6
+    "    shared dq 0\n"                // 7
+    "section .text\n"                  // 8
+    "main:\n"                          // 9
+    "    sub rsp, 56\n"                // 10
+    "    xor ecx, ecx\n"               // 11
+    "    xor edx, edx\n"               // 12
+    "    lea r8, [worker]\n"           // 13
+    "    xor r9d, r9d\n"               // 14
+    "    mov qword [rsp+32], 0\n"      // 15
+    "    mov qword [rsp+40], 0\n"      // 16
+    "    call CreateThread\n"          // 17
+    "    mov [rsp+48], rax\n"          // 18
+    "    mov ecx, 100\n"               // 19
+    "    call Sleep\n"                 // 20
+    "    mov rcx, [rsp+48]\n"          // 21
+    "    mov edx, -1\n"                // 22
+    "    call WaitForSingleObject\n"   // 23
+    "    add rsp, 56\n"                // 24
+    "    xor eax, eax\n"               // 25
+    "    ret\n"                        // 26
+    "worker:\n"                        // 27
+    "    sub rsp, 40\n"                // 28
+    "    mov ecx, 600\n"               // 29
+    "    call Sleep\n"                 // 30
+    "    inc qword [shared]\n"         // 31
+    "    nop\n"                        // 32
+    "    add rsp, 40\n"                // 33
+    "    xor eax, eax\n"               // 34
+    "    ret\n";                       // 35
+
+// A data breakpoint set while the main thread is stopped also fires in a thread that was already running.
+TEST(DebuggerWatchInOtherThread) {
+    auto exe = BuildProgram("thread", kThreadProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, {{Debugger::Key(src), {{21, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    CHECK_EQ(host.stops.back()->location.line, 21);
+    auto shared = d.LookupSymbol("shared");
+    CHECK(shared.has_value());
+    if (!shared) return;
+    DataWatch w;
+    w.expression = "shared";
+    w.address = *shared;
+    w.size = 8;
+    CHECK(d.AddDataWatch(w, error));
+    d.SetBreakpoints(src, {});
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.stops.back()->reason == DebugStop::Reason::Watchpoint);
+    CHECK_EQ(host.stops.back()->location.line, 32);
+    d.RemoveDataWatch(0);
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.exited);
 }
 
 const char* kSleepProgram =

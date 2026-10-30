@@ -35,6 +35,28 @@ std::vector<Line> Parse(const std::string& ndisasmOutput);
 std::vector<Line> Run(const fs::path& ndisasm, const uint8_t* data, size_t size, uint64_t address, int bits);
 }
 
+namespace Conditions {
+struct Condition {
+    std::string name;     // "l" (as in jl, cmovl, setl)
+    std::string aliases;  // "nge"
+    std::string formula;  // "SF ≠ OF"
+    std::string meaning;  // "меньше (со знаком)" (Russian; the UI translates it)
+    std::string values;   // "SF=1 OF=0"
+    bool holds = false;
+};
+// The 16 condition codes (o no b ae e ne be a s ns p np l ge le g), evaluated for these flags.
+std::vector<Condition> All(uint32_t eflags);
+
+struct Instruction {
+    enum class Kind { Jump, Move, Set, Loop, Unconditional } kind = Kind::Jump;
+    std::string mnemonic;  // "jl", "cmovge", "loop", "jrcxz"
+    Condition condition;   // for loops and jrcxz: formula and values about rcx
+};
+// Decodes a conditional instruction (jcc, cmovcc, setcc, loop/loope/loopne, jrcxz/jecxz, jmp) at the start of
+// `code` and evaluates its condition. Nothing for other instructions.
+std::optional<Instruction> Decode(const uint8_t* code, size_t size, uint32_t eflags, uint64_t rcx, bool is32);
+}
+
 namespace Snippets {
 struct Snippet {
     const char* name;   // what is typed / shown in the list

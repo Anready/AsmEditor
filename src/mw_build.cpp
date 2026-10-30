@@ -40,6 +40,7 @@ void MainWindow::StartBuild(After after, bool rebuild) {
     }
     StopProgram();
     SaveAll();
+    ClearProfile();  // the code may change: old counts would sit on the wrong lines
     bool project = IsUnder(src, projectRoot_);
     fs::path outDir = (project ? projectRoot_ : src.parent_path()) / L"build";
     if (runConfig_.Wsl()) outDir /= L"linux";
@@ -160,12 +161,14 @@ void MainWindow::FeedStdin() {
 }
 
 void MainWindow::RunProgram(const fs::path& exe, const fs::path& cwd, After mode) {
-    bool debug = mode == After::Debug || mode == After::DebugEntry || mode == After::RunToCursor;
+    bool debug = mode == After::Debug || mode == After::DebugEntry || mode == After::RunToCursor ||
+                 mode == After::Profile;
     if (settings_->externalConsole && !debug) {
         RunExternal(exe, cwd);
         return;
     }
-    Print("\n" + Tr(std::string(debug ? "Отладка " : "Запуск ")) + Narrow(exe.filename().wstring()) +
+    Print("\n" + Tr(std::string(mode == After::Profile ? "Профилирование " : debug ? "Отладка " : "Запуск ")) +
+              Narrow(exe.filename().wstring()) +
               (runConfig_.args.empty() ? "" : " " + Narrow(runConfig_.args)) + "\n", Out::Info);
     ClearPane(Pane::Terminal);
     if (!StartConsole()) {
@@ -175,6 +178,7 @@ void MainWindow::RunProgram(const fs::path& exe, const fs::path& cwd, After mode
     UINT codePage = ProgramCodePage();
     Toolchain::SetConsoleCodePage(pty_, codePage);
     LaunchOptions launch = MakeLaunch(exe, cwd);
+    launch.profile = mode == After::Profile;
     runStartTick_ = GetTickCount64();
     Log::Write("run " + Narrow(exe.wstring()) + (debug ? " (debug)" : ""));
 

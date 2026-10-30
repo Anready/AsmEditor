@@ -7,6 +7,7 @@ namespace {
 constexpr DWORD kTrapFlag = 0x100;
 constexpr DWORD kStatusWx86SingleStep = 0x4000001E;
 constexpr DWORD kStatusWx86Breakpoint = 0x4000001F;
+constexpr uint64_t kProfileLimit = 20000000;  // traced instructions; then the program runs on untraced
 
 struct SymbolBuffer {
     SYMBOL_INFOW info;
@@ -482,6 +483,151 @@ void Debugger::SetBreakpoints(const fs::path& file, const std::map<int, std::str
     InstallFile(key, lines);
 }
 
+// ---- step back --------------------------------------------------------------------------------------------------
+
+size_t Debugger::Snapshot::Bytes() const {
+    size_t n = sizeof(*this);
+    for (const auto& [a, bytes] : memory) n += bytes.size();
+    return n;
+}
+
+// The writable sections of the program's image (.data, .bss): where its global variables live.
+void Debugger::FindWritableSections() {
+    writable_.clear();
+    IMAGE_DOS_HEADER dos{};
+    if (ReadMemory(imageBase_, &dos, sizeof(dos)) != sizeof(dos) || dos.e_magic != IMAGE_DOS_SIGNATURE) return;
+    IMAGE_FILE_HEADER file{};
+    uint64_t at = imageBase_ + dos.e_lfanew + 4;
+    if (ReadMemory(at, &file, sizeof(file)) != sizeof(file)) return;
+    at += sizeof(file) + file.SizeOfOptionalHeader;
+    for (int i = 0; i < file.NumberOfSections && i < 96; i++) {
+        IMAGE_SECTION_HEADER sec{};
+        if (ReadMemory(at + i * sizeof(sec), &sec, sizeof(sec)) != sizeof(sec)) break;
+        if (!(sec.Characteristics & IMAGE_SCN_MEM_WRITE)) continue;
+        uint64_t size = std::max<uint64_t>(sec.Misc.VirtualSize, sec.SizeOfRawData);
+        if (size && size <= (16u << 20)) writable_.push_back({imageBase_ + sec.VirtualAddress, size});
+    }
+}
+
+void Debugger::RecordSnapshot(HANDLE thread, const CONTEXT& ctx) {
+    constexpr size_t kMaxSnapshots = 2000, kMaxBytes = 256u << 20, kStackBytes = 64u << 10;
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    Snapshot snap;
+    snap.thread = thread;
+    snap.context = ctx;
+    for (auto [address, size] : writable_) {
+        std::vector<uint8_t> bytes(size);
+        bytes.resize(ReadMemory(address, bytes.data(), size));
+        snap.memory.push_back({address, std::move(bytes)});
+    }
+    // The used part of the stack: from a little below rsp up to the end of its committed region.
+    MEMORY_BASIC_INFORMATION mbi{};
+    uint64_t from = (ctx.Rsp - 256) & ~15ull;
+    if (VirtualQueryEx(process_, reinterpret_cast<void*>(ctx.Rsp), &mbi, sizeof(mbi))) {
+        uint64_t end = reinterpret_cast<uint64_t>(mbi.BaseAddress) + mbi.RegionSize;
+        from = std::max<uint64_t>(from, reinterpret_cast<uint64_t>(mbi.BaseAddress));
+        std::vector<uint8_t> bytes(std::min<uint64_t>(end - from, kStackBytes));
+        bytes.resize(ReadMemory(from, bytes.data(), bytes.size()));
+        snap.memory.push_back({from, std::move(bytes)});
+    }
+    history_.push_back(std::move(snap));
+    size_t total = 0;
+    for (const Snapshot& s : history_) total += s.Bytes();
+    while (history_.size() > 1 && (history_.size() > kMaxSnapshots || total > kMaxBytes)) {
+        total -= history_.front().Bytes();
+        history_.pop_front();
+    }
+}
+
+size_t Debugger::HistorySize() {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return history_.size();
+}
+
+bool Debugger::StepBack(std::wstring& error) {
+    if (!stopped_) return false;
+    if (foreignStop_) {
+        error = L"программа остановлена внутри системного вызова — сначала сделайте шаг";
+        return false;
+    }
+    DebugStop* stop = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        if (history_.size() < 2) {
+            error = L"нет более ранней остановки";
+            return false;
+        }
+        const Snapshot& prev = history_[history_.size() - 2];
+        if (prev.thread != stopThread_) {
+            error = L"предыдущая остановка была в другом потоке";
+            return false;
+        }
+        history_.pop_back();
+        for (const auto& [address, bytes] : prev.memory) {
+            // Write only what differs: most of the image's data is unchanged.
+            std::vector<uint8_t> now(bytes.size());
+            size_t got = std::min(ReadMemory(address, now.data(), now.size()), bytes.size());
+            for (size_t i = 0; i < got;) {
+                if (now[i] == bytes[i]) {
+                    i++;
+                    continue;
+                }
+                size_t j = i;
+                while (j < got && now[j] != bytes[j]) j++;
+                WriteMemory(address + i, bytes.data() + i, j - i);
+                i = j;
+            }
+        }
+        context_ = prev.context;
+        contextChanged_ = true;
+        for (DataWatch& w : watches_) ReadMemory(w.address, &w.value, w.size);
+        stop = new DebugStop{DebugStop::Reason::StepBack, L"", LocationOf(context_.Rip), context_};
+    }
+    PostMessageW(notify_, WM_DEBUG_STOPPED, 0, reinterpret_cast<LPARAM>(stop));
+    return true;
+}
+
+// ---- profiler ---------------------------------------------------------------------------------------------------
+
+// Called for every traced instruction: rip is the next instruction to run, the time since the previous call belongs
+// to the previous one's line. A call out of the program runs at full speed until it returns.
+void Debugger::ProfileStep(const CONTEXT& ctx) {
+    LARGE_INTEGER now, freq;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    if (profilePrev_ >= 0) profile_[profilePrev_].seconds += double(now.QuadPart - profileTick_) / freq.QuadPart;
+    profileTick_ = now.QuadPart;
+    if (profileLimitHit_) return;
+    if (!InMainImage(ctx.Rip)) {
+        uint64_t ret = ReadPointer(ctx.Rsp);
+        if (InMainImage(ret)) Install(ret, false, false, true);
+        return;
+    }
+    if (++profileTotal_ >= kProfileLimit) profileLimitHit_ = true;
+    int index = -1;
+    auto it = profileIndex_.find(ctx.Rip);
+    if (it != profileIndex_.end()) {
+        index = it->second;
+    } else {
+        SourceLocation loc = LocationOf(ctx.Rip);
+        if (loc.valid()) {
+            auto key = std::make_pair(Key(loc.file), loc.line);
+            auto byLine = profileByLine_.find(key);
+            if (byLine == profileByLine_.end()) {
+                byLine = profileByLine_.emplace(key, static_cast<int>(profile_.size())).first;
+                profile_.push_back({loc});
+            }
+            index = byLine->second;
+        }
+        profileIndex_[ctx.Rip] = index;
+    }
+    if (index >= 0) {
+        profile_[index].instructions++;
+        if (index != profilePrev_) profile_[index].hits++;
+    }
+    profilePrev_ = index;
+}
+
 bool Debugger::RunTo(const SourceLocation& where) {
     auto address = AddressOfLine(where);
     if (!address || !stopped_) return false;
@@ -626,7 +772,9 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
                 }
                 if (wow64_) PostLog(notify_, "32-битная программа (WOW64)\n", Out::Info);
                 for (const auto& [key, lines] : bps) InstallFile(key, lines);
-                if (stopAtEntry) {
+                FindWritableSections();
+                profiling_ = launch.profile;
+                if (stopAtEntry || profiling_) {
                     SymbolBuffer sym;
                     uint64_t entry = reinterpret_cast<uint64_t>(info.lpStartAddress);
                     for (const wchar_t* name : {L"main", L"_main", L"wmain", L"WinMain", L"_WinMain@16"}) {
@@ -635,7 +783,8 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
                             break;
                         }
                     }
-                    Install(entry, false, true, false);
+                    // The profiler starts tracing at main (a temporary breakpoint does not stop).
+                    Install(entry, false, stopAtEntry, profiling_ && !stopAtEntry);
                 }
                 if (runTo) {
                     if (auto a = AddressOfLine(*runTo); a && Install(*a, false, false, false)) {
@@ -647,12 +796,23 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
             if (info.hFile) CloseHandle(info.hFile);
             break;
         }
-        case CREATE_THREAD_DEBUG_EVENT:
-            threads_[ev.dwThreadId] = ev.u.CreateThread.hThread;
+        case CREATE_THREAD_DEBUG_EVENT: {
+            HANDLE t = ev.u.CreateThread.hThread;
+            threads_[ev.dwThreadId] = t;
+            bool watching = false;
+            {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                watching = !watches_.empty();
+            }
+            alignas(16) CONTEXT ctx;
+            if (watching && GetContext(t, ctx)) {  // the new thread reported the event: its context is cheap to set
+                FillDebugRegisters(ctx);
+                SetContext(t, ctx, false);
+            }
             break;
+        }
         case EXIT_THREAD_DEBUG_EVENT:
             threads_.erase(ev.dwThreadId);
-            watchThreads_.erase(ev.dwThreadId);
             break;
         case LOAD_DLL_DEBUG_EVENT: {
             const auto& info = ev.u.LoadDll;
@@ -672,6 +832,7 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
         case UNLOAD_DLL_DEBUG_EVENT: {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             modules_.erase(reinterpret_cast<uint64_t>(ev.u.UnloadDll.lpBaseOfDll));
+            functionTables_.erase(reinterpret_cast<uint64_t>(ev.u.UnloadDll.lpBaseOfDll));
             break;
         }
         case OUTPUT_DEBUG_STRING_EVENT: {
@@ -697,6 +858,14 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
             exitCode = ev.u.ExitProcess.dwExitCode;
+            if (profiling_) {
+                auto* lines = new std::vector<ProfileLine>(profile_);
+                if (profileLimitHit_) {
+                    PostLog(notify_, "Профилирование остановлено после " + std::to_string(kProfileLimit / 1000000) +
+                                         " млн инструкций — дальше программа работала без подсчёта.\n", Out::Warning);
+                }
+                PostMessageW(notify_, WM_DEBUG_PROFILE, 0, reinterpret_cast<LPARAM>(lines));
+            }
             stats = Toolchain::ProcessStats(process_, startTick_);
             done = true;
             break;
@@ -711,6 +880,7 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
         process_ = nullptr;
         breakpoints_.clear();
         fileBreakpoints_.clear();
+        functionTables_.clear();
     }
     stopped_ = false;
     running_ = false;
@@ -797,6 +967,7 @@ DWORD Debugger::OnException(const DEBUG_EVENT& ev) {
             StopAt(thread, ctx, step ? DebugStop::Reason::Step : DebugStop::Reason::Pause, L"");
         } else {
             if (bp.temp) RemoveTemps();  // the return address of a stepped-over call
+            if (profiling_ && stepMode_ == StepMode::None) ProfileStep(ctx);
             if (stepMode_ == StepMode::Out) ContinueStepping(thread, ctx);
             else if (stepMode_ != StepMode::None) CheckStop(thread, ctx);
             else RunFree(thread, ctx);
@@ -824,8 +995,12 @@ DWORD Debugger::OnException(const DEBUG_EVENT& ev) {
                 return DBG_CONTINUE;
             }
         }
-        if (stepMode_ == StepMode::None) Resume(thread, ctx, false);
-        else OnStep(thread, ctx);
+        if (stepMode_ == StepMode::None) {
+            if (profiling_) ProfileStep(ctx);
+            Resume(thread, ctx, false);
+        } else {
+            OnStep(thread, ctx);
+        }
         return DBG_CONTINUE;
     }
     default: {
@@ -847,30 +1022,80 @@ DWORD Debugger::OnException(const DEBUG_EVENT& ev) {
 }
 
 // A user breakpoint's condition: "#N" stops on the N-th hit, an expression stops when it is not 0.
+// "log: text {expr} {expr:x}" (after an optional condition) makes a logpoint: it prints instead of stopping.
 bool Debugger::ConditionHolds(Breakpoint& bp, const CONTEXT& ctx) {
     bp.hits++;
-    std::string cond = bp.condition;
-    size_t first = cond.find_first_not_of(" \t");
-    if (first == std::string::npos) return true;
-    cond = cond.substr(first);
-    if (cond[0] == '#') {
-        size_t end = 1;
-        while (end < cond.size() && isdigit(static_cast<unsigned char>(cond[end]))) end++;
-        int target = atoi(cond.substr(1, end - 1).c_str());
-        if (target > 0 && bp.hits != target) return false;
-        cond = cond.substr(end);
-        if (cond.find_first_not_of(" \t") == std::string::npos) return true;
+    std::string cond = bp.condition, message;
+    bool logpoint = false;
+    if (size_t log = cond.find("log:"); log != std::string::npos) {
+        logpoint = true;
+        message = cond.substr(log + 4);
+        if (!message.empty() && message[0] == ' ') message.erase(0, 1);
+        cond.erase(log);
     }
+    size_t first = cond.find_first_not_of(" \t");
+    bool holds = true;
     alignas(16) CONTEXT saved = context_;
     context_ = ctx;
-    std::wstring error;
-    auto v = Evaluate(cond, error);
-    context_ = saved;
-    if (!v) {
-        PostLog(notify_, "Условие точки останова «" + bp.condition + "»: " + Narrow(error) + " — остановка\n", Out::Warning);
-        return true;
+    if (first != std::string::npos) {
+        cond = cond.substr(first);
+        if (cond[0] == '#') {
+            size_t end = 1;
+            while (end < cond.size() && isdigit(static_cast<unsigned char>(cond[end]))) end++;
+            int target = atoi(cond.substr(1, end - 1).c_str());
+            if (target > 0 && bp.hits != target) holds = false;
+            cond = cond.substr(end);
+        }
+        if (holds && cond.find_first_not_of(" \t") != std::string::npos) {
+            std::wstring error;
+            auto v = Evaluate(cond, error);
+            if (!v) {
+                PostLog(notify_, "Условие точки останова «" + bp.condition + "»: " + Narrow(error) + " — остановка\n",
+                        Out::Warning);
+                context_ = saved;
+                return true;
+            }
+            holds = *v != 0;
+        }
     }
-    return *v != 0;
+    if (holds && logpoint) {
+        PostMessageW(notify_, WM_DEBUG_ODS, 0, reinterpret_cast<LPARAM>(new std::string(FormatLogMessage(message) + "\n")));
+        holds = false;
+    }
+    context_ = saved;
+    return holds;
+}
+
+// Replaces {expr} with its value (decimal, signed) and {expr:x} with hex; {{ and }} are literal braces.
+std::string Debugger::FormatLogMessage(const std::string& text) {
+    std::string out;
+    for (size_t i = 0; i < text.size(); i++) {
+        char ch = text[i];
+        if ((ch == '{' || ch == '}') && i + 1 < text.size() && text[i + 1] == ch) {
+            out += ch;
+            i++;
+            continue;
+        }
+        size_t close = ch == '{' ? text.find('}', i) : std::string::npos;
+        if (close == std::string::npos) {
+            out += ch;
+            continue;
+        }
+        std::string expr = text.substr(i + 1, close - i - 1);
+        bool hex = false;
+        if (expr.size() > 2 && (expr.substr(expr.size() - 2) == ":x" || expr.substr(expr.size() - 2) == ":X")) {
+            hex = true;
+            expr.resize(expr.size() - 2);
+        }
+        std::wstring error;
+        auto v = Evaluate(expr, error);
+        char buf[40];
+        if (!v) out += "<" + Narrow(error) + ">";
+        else if (hex) sprintf_s(buf, "0x%llX", static_cast<unsigned long long>(*v)), out += buf;
+        else sprintf_s(buf, "%lld", static_cast<long long>(*v)), out += buf;
+        i = close;
+    }
+    return out;
 }
 
 // Which watched variables changed (DR6 bits 0-3 name the debug registers that fired).
@@ -954,6 +1179,8 @@ void Debugger::StopAt(HANDLE thread, CONTEXT& ctx, DebugStop::Reason reason, con
     pauseRequested_ = false;
     RemoveTemps();
     context_ = ctx;
+    stopThread_ = thread;
+    if (!foreignStop_) RecordSnapshot(thread, ctx);
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (DataWatch& w : watches_) ReadMemory(w.address, &w.value, w.size);
@@ -1015,23 +1242,70 @@ void Debugger::Resume(HANDLE thread, CONTEXT& ctx, bool singleStep) {
             reinsertAt_ = ctx.Rip;
             singleStep = true;
         }
-        // Data breakpoints live in the debug registers of the thread (DR7: enable, write-only, length).
-        ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0;
-        ctx.Dr6 = 0;
-        ctx.Dr7 = 0;
-        DWORD64* dr[] = {&ctx.Dr0, &ctx.Dr1, &ctx.Dr2, &ctx.Dr3};
-        for (size_t i = 0; i < watches_.size() && i < 4; i++) {
-            const DataWatch& w = watches_[i];
-            uint64_t len = w.size == 1 ? 0 : w.size == 2 ? 1 : w.size == 8 ? 2 : 3;
-            *dr[i] = w.address;
-            ctx.Dr7 |= (1ull << (i * 2)) | (1ull << (16 + i * 4)) | (len << (18 + i * 4));
-        }
+        FillDebugRegisters(ctx);
+        if (watchesChanged_) ApplyWatchesToOtherThreads(thread, ctx);
         watchesChanged_ = false;
     }
+    if (profiling_ && !profileLimitHit_ && InMainImage(ctx.Rip)) singleStep = true;  // trace the program's own code
     if (singleStep) ctx.EFlags |= kTrapFlag;
     else ctx.EFlags &= ~kTrapFlag;
     SetContext(thread, ctx, contextChanged_);
     contextChanged_ = false;
+}
+
+// Data breakpoints live in the debug registers of each thread (DR7: enable, write-only, length).
+void Debugger::FillDebugRegisters(CONTEXT& ctx) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = 0;
+    ctx.Dr6 = 0;
+    ctx.Dr7 = 0;
+    DWORD64* dr[] = {&ctx.Dr0, &ctx.Dr1, &ctx.Dr2, &ctx.Dr3};
+    for (size_t i = 0; i < watches_.size() && i < 4; i++) {
+        const DataWatch& w = watches_[i];
+        uint64_t len = w.size == 1 ? 0 : w.size == 2 ? 1 : w.size == 8 ? 2 : 3;
+        *dr[i] = w.address;
+        ctx.Dr7 |= (1ull << (i * 2)) | (1ull << (16 + i * 4)) | (len << (18 + i * 4));
+    }
+}
+
+// The other threads did not report the event, and setting their context blocks until they run again (a kernel
+// APC), so it is done from a helper thread after the program continues. Debug registers only, nothing else.
+void Debugger::ApplyWatchesToOtherThreads(HANDLE current, const CONTEXT& ctx) {
+    std::vector<HANDLE> others;
+    for (const auto& [id, h] : threads_) {
+        HANDLE dup = nullptr;
+        if (h != current && DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup, 0, FALSE,
+                                            DUPLICATE_SAME_ACCESS)) {
+            others.push_back(dup);
+        }
+    }
+    if (others.empty()) return;
+    DWORD64 dr[5] = {ctx.Dr0, ctx.Dr1, ctx.Dr2, ctx.Dr3, ctx.Dr7};
+    bool wow = wow64_;
+    std::thread([others, dr, wow] {
+        for (HANDLE h : others) {
+            if (wow) {
+                WOW64_CONTEXT w{};
+                w.ContextFlags = WOW64_CONTEXT_DEBUG_REGISTERS;
+                w.Dr0 = static_cast<DWORD>(dr[0]);
+                w.Dr1 = static_cast<DWORD>(dr[1]);
+                w.Dr2 = static_cast<DWORD>(dr[2]);
+                w.Dr3 = static_cast<DWORD>(dr[3]);
+                w.Dr7 = static_cast<DWORD>(dr[4]);
+                Wow64SetThreadContext(h, &w);
+            } else {
+                alignas(16) CONTEXT c{};
+                c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+                c.Dr0 = dr[0];
+                c.Dr1 = dr[1];
+                c.Dr2 = dr[2];
+                c.Dr3 = dr[3];
+                c.Dr7 = dr[4];
+                SetThreadContext(h, &c);
+            }
+            CloseHandle(h);
+        }
+    }).detach();
 }
 
 void Debugger::ContinueStepping(HANDLE thread, CONTEXT& ctx) {
@@ -1245,9 +1519,197 @@ bool Debugger::LooksLikeReturnAddress(uint64_t value) {
     return EndsWithIndirectCall(before, 8, wow64_);
 }
 
-// Call stack found by scanning the stack for return addresses. NASM code has no unwind information, so this is a
-// heuristic: a return address is kept only if its call instruction (when it is a direct call) targets the function
-// of the frame above it, which drops stale addresses left on the stack by earlier calls.
+uint64_t Debugger::ModuleBase(uint64_t address) {
+    if (InMainImage(address)) return imageBase_;
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    auto it = modules_.upper_bound(address);
+    if (it == modules_.begin()) return 0;
+    --it;
+    return address < it->second.base + it->second.size ? it->second.base : 0;
+}
+
+// The x64 exception directory (.pdata) of a loaded module, read from the program's memory once.
+const std::vector<Debugger::RuntimeFunction>& Debugger::FunctionTable(uint64_t base) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    auto it = functionTables_.find(base);
+    if (it != functionTables_.end()) return it->second;
+    std::vector<RuntimeFunction>& table = functionTables_[base];
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (ReadMemory(base, &dos, sizeof(dos)) != sizeof(dos) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        ReadMemory(base + dos.e_lfanew, &nt, sizeof(nt)) != sizeof(nt) ||
+        nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt.OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION) {
+        return table;
+    }
+    const IMAGE_DATA_DIRECTORY& dir = nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    size_t count = std::min<size_t>(dir.Size / sizeof(RuntimeFunction), 1 << 20);
+    table.resize(count);
+    size_t got = ReadMemory(base + dir.VirtualAddress, table.data(), count * sizeof(RuntimeFunction));
+    table.resize(got / sizeof(RuntimeFunction));
+    return table;
+}
+
+// One frame of x64 unwinding from the module's unwind information (what RtlVirtualUnwind does, but on another
+// process's memory). regs are in unwind-code order: rax rcx rdx rbx rsp rbp rsi rdi r8-r15. False: no unwind
+// information for this address (NASM code, or a leaf function).
+bool Debugger::UnwindFrame(uint64_t regs[16], uint64_t& rip, bool caller) {
+    uint64_t base = ModuleBase(rip);
+    if (!base) return false;
+    const auto& table = FunctionTable(base);
+    uint32_t rva = static_cast<uint32_t>(rip - base - (caller ? 1 : 0));
+    auto it = std::upper_bound(table.begin(), table.end(), rva,
+                               [](uint32_t v, const RuntimeFunction& f) { return v < f.begin; });
+    if (it == table.begin()) return false;
+    --it;
+    if (rva >= it->end) return false;
+    auto read64 = [&](uint64_t a) {
+        uint64_t v = 0;
+        ReadMemory(a, &v, 8);
+        return v;
+    };
+    uint64_t& rsp = regs[4];
+    uint64_t offset = rip - (base + it->begin);
+
+    // In an epilog (add/lea rsp, pops, ret) the prolog's work is partly undone: emulate the rest of the epilog.
+    uint8_t code[48]{};
+    size_t n = ReadMemory(rip, code, sizeof(code));
+    if (offset > 0 && n >= 1) {
+        size_t i = 0;
+        uint64_t sp = rsp;
+        bool ok = true;
+        if (n > 4 && code[0] == 0x48 && code[1] == 0x83 && code[2] == 0xC4) {  // add rsp, imm8
+            sp += static_cast<int8_t>(code[3]);
+            i = 4;
+        } else if (n > 7 && code[0] == 0x48 && code[1] == 0x81 && code[2] == 0xC4) {  // add rsp, imm32
+            int32_t imm;
+            memcpy(&imm, code + 3, 4);
+            sp += imm;
+            i = 7;
+        } else if (n > 4 && (code[0] & 0xFE) == 0x48 && code[1] == 0x8D && (code[2] & 0x38) == 0x20) {  // lea rsp, [r+d]
+            int reg = (code[2] & 7) + ((code[0] & 1) ? 8 : 0);
+            int mod = code[2] >> 6;
+            size_t at = 3;
+            if ((code[2] & 7) == 4) at++;  // SIB (rsp-based)
+            int64_t disp = 0;
+            if (mod == 1) disp = static_cast<int8_t>(code[at++]);
+            else if (mod == 2) {
+                int32_t d32;
+                memcpy(&d32, code + at, 4);
+                disp = d32;
+                at += 4;
+            } else ok = false;
+            sp = regs[reg] + disp;
+            i = at;
+        }
+        std::vector<int> pops;
+        while (ok && i < n) {
+            if (code[i] >= 0x58 && code[i] <= 0x5F) {
+                pops.push_back(code[i] - 0x58);
+                i++;
+            } else if (code[i] == 0x41 && i + 1 < n && code[i + 1] >= 0x58 && code[i + 1] <= 0x5F) {
+                pops.push_back(code[i + 1] - 0x58 + 8);
+                i += 2;
+            } else {
+                break;
+            }
+        }
+        if (ok && i < n && code[i] == 0xC3) {
+            for (int r : pops) {
+                regs[r] = read64(sp);
+                sp += 8;
+            }
+            rip = read64(sp);
+            rsp = sp + 8;
+            return true;
+        }
+    }
+
+    bool machineFrame = false;
+    uint32_t unwind = it->unwind;
+    bool chained = false;
+    for (int depth = 0; depth < 32; depth++) {
+        uint8_t head[4]{};
+        if (ReadMemory(base + unwind, head, 4) != 4) return false;
+        int version = head[0] & 7, flags = head[0] >> 3, count = head[2];
+        int frameReg = head[3] & 0xF, frameOffset = head[3] >> 4;
+        std::vector<uint16_t> codes(count + 2);
+        ReadMemory(base + unwind + 4, codes.data(), codes.size() * 2);
+        for (int i = 0; i < count;) {
+            int at = codes[i] & 0xFF, op = (codes[i] >> 8) & 0xF, info = codes[i] >> 12;
+            bool apply = chained || static_cast<uint64_t>(at) <= offset;
+            int slots = 1;
+            switch (op) {
+            case 0:  // UWOP_PUSH_NONVOL
+                if (apply) {
+                    regs[info] = read64(rsp);
+                    rsp += 8;
+                }
+                break;
+            case 1:  // UWOP_ALLOC_LARGE
+                if (info == 0) {
+                    slots = 2;
+                    if (apply) rsp += codes[i + 1] * 8ull;
+                } else {
+                    slots = 3;
+                    if (apply) rsp += codes[i + 1] | (static_cast<uint64_t>(codes[i + 2]) << 16);
+                }
+                break;
+            case 2:  // UWOP_ALLOC_SMALL
+                if (apply) rsp += info * 8ull + 8;
+                break;
+            case 3:  // UWOP_SET_FPREG
+                if (apply) rsp = regs[frameReg] - frameOffset * 16ull;
+                break;
+            case 4:  // UWOP_SAVE_NONVOL
+                slots = 2;
+                if (apply) regs[info] = read64(rsp + codes[i + 1] * 8ull);
+                break;
+            case 5:  // UWOP_SAVE_NONVOL_FAR
+                slots = 3;
+                if (apply) regs[info] = read64(rsp + (codes[i + 1] | (static_cast<uint64_t>(codes[i + 2]) << 16)));
+                break;
+            case 6:  // v2: UWOP_EPILOG; v1: UWOP_SAVE_XMM
+                slots = version == 2 ? 1 : 2;
+                break;
+            case 7:  // UWOP_SPARE_CODE / UWOP_SAVE_XMM_FAR
+                slots = version == 2 ? 2 : 3;
+                break;
+            case 8:  // UWOP_SAVE_XMM128
+                slots = 2;
+                break;
+            case 9:  // UWOP_SAVE_XMM128_FAR
+                slots = 3;
+                break;
+            case 10:  // UWOP_PUSH_MACHFRAME (interrupt or exception frame)
+                if (apply) {
+                    uint64_t sp = rsp + (info ? 8 : 0);
+                    rip = read64(sp);
+                    rsp = read64(sp + 24);
+                    machineFrame = true;
+                }
+                break;
+            default:
+                return false;
+            }
+            i += slots;
+        }
+        if (!(flags & 0x4)) break;  // UNW_FLAG_CHAININFO
+        RuntimeFunction parent{};
+        if (ReadMemory(base + unwind + 4 + ((count + 1) & ~1) * 2, &parent, sizeof(parent)) != sizeof(parent)) break;
+        unwind = parent.unwind;
+        chained = true;
+    }
+    if (!machineFrame) {
+        rip = read64(rsp);
+        rsp += 8;
+    }
+    return true;
+}
+
+// Call stack. Code with unwind information (the C runtime, Windows DLLs) is unwound exactly; NASM code has none,
+// so for its frames the stack is scanned for the nearest return address whose call instruction (when it is a
+// direct call) targets the function of the frame above, which skips stale addresses left by earlier calls.
 std::vector<Debugger::Frame> Debugger::CallStack() {
     std::vector<Frame> frames;
     if (!stopped_) return frames;
@@ -1264,30 +1726,49 @@ std::vector<Debugger::Frame> Debugger::CallStack() {
     top.function = SymbolAt(top.pc);
     frames.push_back(top);
 
+    const CONTEXT& c = context_;
+    uint64_t regs[16] = {c.Rax, c.Rcx, c.Rdx, c.Rbx, c.Rsp, c.Rbp, c.Rsi, c.Rdi,
+                         c.R8, c.R9, c.R10, c.R11, c.R12, c.R13, c.R14, c.R15};
+    uint64_t pc = c.Rip;
     int ptr = PointerSize();
-    std::vector<uint8_t> stack(ptr * 2048);
-    size_t got = ReadMemory(context_.Rsp, stack.data(), stack.size());
-    for (size_t off = 0; off + ptr <= got && frames.size() < 32; off += ptr) {
-        uint64_t value = 0;
-        memcpy(&value, stack.data() + off, ptr);
-        if (!LooksLikeReturnAddress(value)) continue;
-        uint8_t call[5]{};
-        if (ReadMemory(value - 5, call, 5) == 5 && call[0] == 0xE8) {  // direct call: check its target
-            int32_t rel;
-            memcpy(&rel, call + 1, 4);
-            uint64_t target = value + static_cast<int64_t>(rel);
-            if (ptr == 4) target &= 0xFFFFFFFF;
-            const Frame& callee = frames.back();
-            std::wstring calleeName = globalPart(callee.function);
-            std::wstring targetName = globalPart(SymbolAt(target));
-            bool calleeInMain = InMainImage(callee.pc);
-            if (calleeInMain && InMainImage(target) && !calleeName.empty() && calleeName != targetName) continue;
+    while (frames.size() < 64) {
+        uint64_t sp = regs[4], next = 0, slot = 0;
+        if (!wow64_ && UnwindFrame(regs, pc, frames.size() > 1)) {
+            next = pc;
+            slot = regs[4] - 8;
+        } else {
+            std::vector<uint8_t> stack(ptr * 1024);
+            size_t got = ReadMemory(sp, stack.data(), stack.size());
+            for (size_t off = 0; off + ptr <= got; off += ptr) {
+                uint64_t value = 0;
+                memcpy(&value, stack.data() + off, ptr);
+                if (!LooksLikeReturnAddress(value)) continue;
+                uint8_t call[5]{};
+                if (ReadMemory(value - 5, call, 5) == 5 && call[0] == 0xE8) {  // direct call: check its target
+                    int32_t rel;
+                    memcpy(&rel, call + 1, 4);
+                    uint64_t target = value + static_cast<int64_t>(rel);
+                    if (ptr == 4) target &= 0xFFFFFFFF;
+                    const Frame& callee = frames.back();
+                    std::wstring calleeName = globalPart(callee.function);
+                    std::wstring targetName = globalPart(SymbolAt(target));
+                    if (InMainImage(callee.pc) && InMainImage(target) && !calleeName.empty() && calleeName != targetName) {
+                        continue;
+                    }
+                }
+                next = value;
+                slot = sp + off;
+                break;
+            }
+            pc = next;
+            regs[4] = slot + ptr;
         }
+        if (next < 0x10000 || !ModuleBase(next) || regs[4] <= sp) break;
         Frame f;
-        f.pc = value;
-        f.returnSlot = context_.Rsp + off;
-        f.location = LocationOf(value - 1);  // the call instruction's line
-        f.function = SymbolAt(value);
+        f.pc = next;
+        f.returnSlot = slot;
+        f.location = LocationOf(next - 1);  // the call instruction's line
+        f.function = SymbolAt(next);
         frames.push_back(f);
     }
     return frames;

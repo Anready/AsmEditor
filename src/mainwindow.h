@@ -30,7 +30,7 @@ private:
         int show = 0;  // 0 always, 1 only while debugging, 2 only when not debugging
         RECT rc{};
     };
-    enum class After { Nothing, Run, Debug, DebugEntry, RunToCursor };
+    enum class After { Nothing, Run, Debug, DebugEntry, RunToCursor, Profile };
     using Runs = std::vector<std::pair<std::string, int>>;  // text + panel style
     struct CheckJob {
         int editorId;
@@ -44,7 +44,7 @@ private:
     // Tabs of the bottom panel. The terminal shows only the program's console; messages go to the others.
     enum class Pane { Output, Terminal, Problems, Search, DebugOutput, Count };
     enum class LeftTab { Project, Outline };
-    enum class DebugTab { Registers, Stack, Watch, Disasm, Count };
+    enum class DebugTab { Registers, Stack, Watch, Disasm, Flags, Count };
     enum class MemFormat { Bytes, Words, Dwords, Qwords, Float, Double, Text, Count };
 
     // window plumbing
@@ -192,7 +192,7 @@ private:
     void SetDebugging(bool on);
     void ClearExecutionLine();
     void ToggleBreakpoint(Editor* ed, int line);
-    void EditBreakpointCondition(Editor* ed, int line);
+    void EditBreakpointCondition(Editor* ed, int line, bool logpoint = false);
     void BreakpointMenu(Editor* ed, int line);
     void StashBreakpoints(Editor* ed);
     Debugger::Breakpoints CollectBreakpoints() const;
@@ -205,6 +205,11 @@ private:
     void RenderWatches();
     void RenderDisassembly();
     void RenderMemory();
+    void RenderFlags();
+    void StepBack();
+    void OnProfile(std::vector<ProfileLine> lines);
+    void ShowProfileNotes(Editor* ed);
+    void ClearProfile();
     void ShowDebugTab(DebugTab tab);
     void PanelDoubleClick(Editor& view, Sci_Position pos);
     void EditRegister(const std::string& name);
@@ -282,7 +287,7 @@ private:
     bool debugging_ = false;
     bool showDebugPanel_ = false;
     DebugTab debugTab_ = DebugTab::Registers;
-    std::unique_ptr<Editor> regsView_, memView_, stackView_, watchView_, disasmView_;
+    std::unique_ptr<Editor> regsView_, memView_, stackView_, watchView_, disasmView_, flagsView_;
     HWND memExpr_ = nullptr, watchExpr_ = nullptr;
     MemFormat memFormat_ = MemFormat::Bytes;
     std::vector<uint8_t> prevMem_;    // bytes shown at the previous stop, to highlight changes
@@ -292,6 +297,7 @@ private:
     std::vector<uint64_t> memLines_;         // address per line of the memory view
     std::vector<int> stackLines_;            // frame per line of the call stack view (-1: none)
     std::vector<int> watchLines_;            // watch (>= 0) or data breakpoint (-2 - index) per line
+    std::vector<int> flagLines_;             // flag bit per line of the flags view (-1: none)
     std::vector<uint64_t> disasmLines_;      // address per line of the disassembly
     std::vector<Debugger::Frame> frames_;
     std::wstring debugStatus_;
@@ -299,6 +305,10 @@ private:
     fs::path execFile_;
     alignas(16) CONTEXT lastContext_{};
     bool haveLastContext_ = false;
+    std::vector<ProfileLine> profile_;          // last profiler run (notes in the editors)
+    std::vector<uint8_t> prevStack_;            // stack bytes at the previous stop (for the stack animation)
+    uint64_t prevStackRsp_ = 0;
+    int stackFlash_ = 0;                        // frames left of the fading highlight of changed stack slots
     std::optional<SourceLocation> runTo_;    // "run to cursor" requested before the program was started
     Debugger::Breakpoints breakpoints_;  // Debugger::Key(path) -> lines, for files not open
     std::set<std::wstring> excludedFromBuild_;  // Project::Key of files the user excluded from the build

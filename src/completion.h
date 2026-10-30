@@ -6,7 +6,7 @@
 namespace Completion {
 
 enum class Kind : int {  // also the Scintilla image id of the list icon
-    Instruction = 1, Register, Directive, Preprocessor, Keyword, Label, Macro, Function, Section
+    Instruction = 1, Register, Directive, Preprocessor, Keyword, Label, Macro, Function, Section, Snippet
 };
 
 struct Symbol {

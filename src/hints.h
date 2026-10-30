@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 // Short Russian reference for x86-64 instructions, registers and NASM directives.
 namespace Hints {
@@ -14,5 +15,12 @@ std::string Signature(const std::string& mnemonic);
 
 // Length in bytes of the first line of a card (to highlight it).
 size_t HeaderLength(const std::string& card);
+
+// C runtime / WinAPI function: prototype and in which registers (Win64 calling convention) the arguments go.
+// Empty for unknown names.
+std::string Function(const std::string& name);
+
+// Every instruction mnemonic the reference knows (for tests and completeness checks).
+std::vector<std::string> KnownInstructions();
 
 }

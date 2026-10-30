@@ -279,15 +279,16 @@ bool IsReservedWord(const std::string& name) {
 
 COLORREF KindColor(Kind kind) {
     switch (kind) {
-    case Kind::Instruction: return Hex(0xCF8E6D);
-    case Kind::Register: return Hex(0xC77DBB);
+    case Kind::Instruction: return Theme::Instruction;
+    case Kind::Register: return Theme::Register;
     case Kind::Directive:
-    case Kind::Section: return Hex(0x56A8F5);
-    case Kind::Preprocessor: return Hex(0xB3AE60);
-    case Kind::Keyword: return Hex(0xE0957B);
-    case Kind::Label: return Hex(0xFFC66D);
-    case Kind::Macro: return Hex(0x2AACB8);
-    case Kind::Function: return Hex(0x6AAB73);
+    case Kind::Section: return Theme::Directive;
+    case Kind::Preprocessor: return Theme::Preprocessor;
+    case Kind::Keyword: return Theme::Keyword;
+    case Kind::Label: return Theme::Label;
+    case Kind::Macro: return Theme::Macro;
+    case Kind::Function: return Theme::Function;
+    case Kind::Snippet: return Theme::Accent;
     }
     return Theme::Text;
 }

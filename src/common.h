@@ -48,24 +48,27 @@ constexpr COLORREF Hex(uint32_t rgb) {
     return RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
 }
 
+// Colors of the current theme (see Theme::Apply). Everything paints from these, so switching the theme only needs
+// the styles re-applied and a repaint.
 namespace Theme {
-inline constexpr COLORREF EditorBg = Hex(0x1E1F22);
-inline constexpr COLORREF PanelBg = Hex(0x2B2D30);
-inline constexpr COLORREF InputBg = Hex(0x1E1F22);
-inline constexpr COLORREF Border = Hex(0x393B40);
-inline constexpr COLORREF Hover = Hex(0x3C3F45);
-inline constexpr COLORREF Pressed = Hex(0x4A4D54);
-inline constexpr COLORREF Text = Hex(0xBCBEC4);
-inline constexpr COLORREF Bright = Hex(0xDFE1E5);
-inline constexpr COLORREF Muted = Hex(0x868A91);
-inline constexpr COLORREF Dim = Hex(0x5F6369);
-inline constexpr COLORREF Accent = Hex(0x3574F0);
-inline constexpr COLORREF Selection = Hex(0x214283);
-inline constexpr COLORREF CurrentLine = Hex(0x26282E);
-inline constexpr COLORREF Error = Hex(0xF75464);
-inline constexpr COLORREF Warning = Hex(0xE0B44A);
-inline constexpr COLORREF Success = Hex(0x5FB865);
-inline constexpr COLORREF Link = Hex(0x56A8F5);
+extern COLORREF EditorBg, PanelBg, InputBg, Border, Hover, Pressed, Text, Bright, Muted, Dim, Accent, Selection,
+    InactiveSelection, CurrentLine, Error, Warning, Success, Link, CallTipBg, LineNumber, Changed;
+// syntax
+extern COLORREF Comment, String, Number, Register, Instruction, Directive, Preprocessor, Label, Keyword, Macro,
+    Function;
+// markers
+extern COLORREF ErrorLine, WarningLine, Breakpoint, ConditionalBreakpoint, ExecArrow, ExecLine, ListSelected,
+    Occurrence;
+extern COLORREF Ansi[16];
+extern bool Dark;
+
+struct Info {
+    const wchar_t* id;
+    const wchar_t* title;
+};
+const std::vector<Info>& All();
+void Apply(const std::wstring& id);  // unknown ids fall back to the default dark theme
+COLORREF Blend(COLORREF a, COLORREF b, int percentOfB);
 }
 
 void InitDarkMode();
@@ -101,9 +104,20 @@ struct Settings {
     std::wstring linkerPath;
     std::wstring linkerArgs;
     std::vector<std::wstring> libPaths;
+    std::wstring releaseNasmArgs;    // empty: the debug arguments without -g / -F
+    std::wstring releaseLinkerArgs;  // empty: the debug arguments without /debug
     std::wstring programEncoding = L"UTF-8";
     bool externalConsole = false;
     bool liveCheck = true;
+    bool stackCheck = true;       // warn about a misaligned stack / missing shadow space before call
+    bool autosave = false;        // save every file when the window loses focus
+    bool log = false;             // write %APPDATA%\AsmEditor\asmeditor.log
+    std::wstring theme = L"dark";
+    std::wstring language = L"ru";
+    int formatIndent = 4;         // code formatter: column of mnemonics,
+    int formatOperands = 12;      // of operands
+    int formatComments = 40;      // and of trailing comments (0-based)
+    std::map<std::wstring, std::wstring> keys;  // command name -> shortcut ("" = none), only changed ones
     int fontSize = 11;
     std::vector<std::wstring> recent;
     std::wstring lastProject;
@@ -156,13 +170,29 @@ struct MsvcInfo {
     std::vector<fs::path> libPaths;
 };
 
+// Per-project settings of how the program is built and started (stored in .asmeditor/project.ini).
+struct RunConfig {
+    std::wstring args;       // command line arguments
+    std::wstring workDir;    // relative to the project; empty = project folder
+    std::wstring env;        // NAME=value lines
+    std::wstring stdinFile;  // its contents are typed into the program at start
+    std::wstring output = L"exe";       // exe | dll | lib
+    std::wstring profile = L"Debug";    // Debug | Release
+    std::wstring platform = L"windows"; // windows | wsl (Linux, -f elf64)
+    std::wstring preBuild;   // commands run in the project folder before / after the build
+    std::wstring postBuild;
+    bool Release() const { return profile == L"Release"; }
+    bool Wsl() const { return platform == L"wsl"; }
+};
+
 struct BuildPlan {
     std::vector<fs::path> sources;    // assembled separately and linked together; the first is the target
     fs::path root;                    // object files mirror the folders below it
     fs::path outDir;                  // build folder
-    fs::path exe;
+    fs::path exe;                     // output file (.exe, .dll, .lib or a Linux program)
     std::vector<fs::path> includes;   // extra %include search folders (the project root)
     bool rebuild = false;             // ignore up-to-date object files
+    RunConfig config;
 };
 
 struct BuildResult {
@@ -176,7 +206,7 @@ inline const wchar_t* kDefaultNasmArgs = L"-f win64 -g -F cv8";
 
 std::optional<fs::path> FindNasm();
 std::optional<fs::path> FindOnPath(const wchar_t* exe);
-std::optional<MsvcInfo> FindMsvc();
+std::optional<MsvcInfo> FindMsvc(bool x86 = false);  // x86: 32-bit link.exe and libraries
 void ApplyDefaults(Settings& s);
 void DetectLinker(Settings& s);
 bool NasmAvailable(const Settings& s);
@@ -191,7 +221,7 @@ bool Spawn(const std::wstring& commandLine, const fs::path& cwd, HANDLE in, HAND
            DWORD flags, PROCESS_INFORMATION& pi);
 // Starts a process attached to a pseudoconsole (ConPTY) instead of pipes.
 bool SpawnInConsole(const std::wstring& commandLine, const fs::path& cwd, HPCON console, DWORD flags,
-                    PROCESS_INFORMATION& pi);
+                    PROCESS_INFORMATION& pi, const std::wstring& environment = {});
 // Sets the input/output code page of a pseudoconsole before the program is started in it.
 void SetConsoleCodePage(HPCON console, UINT codePage);
 // Runs a tool to completion; each output line (converted to UTF-8) goes to onLine and into capture.
@@ -200,10 +230,38 @@ int Exec(const std::vector<std::wstring>& cmd, const fs::path& cwd,
 
 std::vector<Diagnostic> ParseNasm(const std::string& output);
 BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink);
-std::vector<Diagnostic> Check(const Settings& s, const std::string& text, int id,
+std::vector<Diagnostic> Check(const Settings& s, const RunConfig& config, const std::string& text, int id,
                               const std::vector<fs::path>& includes);
 std::wstring DescribeExitCode(DWORD code);
+// NASM / linker arguments for the profile (Release drops the debug information switches).
+std::wstring NasmArgs(const Settings& s, const RunConfig& c);
+std::wstring LinkerArgs(const Settings& s, const RunConfig& c);
+std::wstring WslPath(const fs::path& windowsPath);  // D:\a\b -> /mnt/d/a/b
+std::optional<fs::path> FindNdisasm(const Settings& s);
+// Environment block for CreateProcess: the current environment plus NAME=value lines.
+std::wstring EnvironmentBlock(const std::wstring& extraLines);
+// "1.2 с · пик памяти 3.4 МБ" for a finished process (handle still open).
+std::string ProcessStats(HANDLE process, ULONGLONG startTick);
 }
+
+// ---- log ------------------------------------------------------------------------------------------------------
+
+// Diagnostic log of the editor itself (%APPDATA%\AsmEditor\asmeditor.log), on when Settings::log is set or
+// ASMEDITOR_LOG=1.
+namespace Log {
+void Enable(bool on);
+bool Enabled();
+void Write(const std::string& utf8);
+fs::path File();
+}
+
+// ---- localization ---------------------------------------------------------------------------------------------
+
+// The UI is written in Russian; Tr returns the English text when the English language is selected.
+void SetLanguage(const std::wstring& id);  // "ru" | "en"
+bool English();
+const wchar_t* Tr(const wchar_t* russian);
+std::string Tr(const std::string& russianUtf8);
 
 // ---- dialogs --------------------------------------------------------------------------------------------------
 
@@ -211,3 +269,17 @@ std::optional<std::wstring> InputBox(HWND owner, const std::wstring& title, cons
                                      const std::wstring& initial);
 bool ShowSettingsDialog(HWND owner, Settings& settings);
 void ShowMessage(HWND owner, const std::wstring& text, bool error = true);
+
+// Popup list with a filter box (command palette, quick open, templates). Items are "text\tdetail".
+// Returns the index of the chosen item.
+std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std::vector<std::wstring>& items,
+                                const std::wstring& placeholder = L"");
+
+struct FindInFilesRequest {
+    std::wstring what, replaceWith;
+    bool matchCase = false, wholeWord = false, regex = false, replace = false;
+};
+std::optional<FindInFilesRequest> ShowFindInFilesDialog(HWND owner, const FindInFilesRequest& initial);
+bool ShowRunConfigDialog(HWND owner, RunConfig& config);
+// Edits Settings::keys; `commands` are (name, default shortcut).
+bool ShowKeysDialog(HWND owner, Settings& settings, const std::vector<std::pair<std::wstring, std::wstring>>& commands);

@@ -15,14 +15,16 @@ void MainWindow::ClearUsageHighlight() {
 }
 
 // The user-defined name under the caret and, for a local label (.loop), the global label it belongs to.
-bool MainWindow::SymbolUnderCaret(Editor* ed, Sci_Position pos, std::string& word, std::string& scope) {
+bool MainWindow::SymbolUnderCaret(Editor* ed, Sci_Position pos, std::string& word, std::string& scope, bool quiet) {
     word = ed->WordAt(pos);
     while (!word.empty() && word.back() == '.') word.pop_back();
     int style = static_cast<int>(ed->Call(SCI_GETSTYLEAT, pos > 0 && ed->Call(SCI_GETCHARAT, pos) == ' ' ? pos - 1 : pos));
     if (word.empty() || isdigit(static_cast<unsigned char>(word[0])) || style == T_REGISTER ||
         style == T_INSTRUCTION || style == T_KEYWORD || style == T_DIRECTIVE || style == T_COMMENT || style == T_STRING) {
-        std::string tip = "Поставьте курсор на метку, константу или макрос";
-        ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
+        if (!quiet) {
+            std::string tip = Tr(std::string("Поставьте курсор на метку, константу или макрос"));
+            ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
+        }
         return false;
     }
     scope.clear();
@@ -90,11 +92,13 @@ void MainWindow::FindUsages(Editor* ed, Sci_Position pos) {
         ed->Call(SCI_INDICATORFILLRANGE, lineStart + h.occ.column, h.occ.length);
     }
 
-    Sci_Position headerLine = console_->Call(SCI_GETLINECOUNT) - 1;
-    std::string what = local && !scope.empty() ? word + "» в " + scope : word + "»";
-    Print("\nИспользования «" + what + ": " + std::to_string(hits.size()) + " в " + std::to_string(files) +
-              (files == 1 ? " файле" : " файлах") + " — двойной клик открывает место\n",
-          Out::Info);
+    ClearPane(Pane::Search);
+    ShowPane(Pane::Search);
+    std::string what = local && !scope.empty() ? word + "» (" + scope + ")" : word + "»";
+    PrintTo(Pane::Search, Tr(std::string("Использования")) + " «" + what + ": " + std::to_string(hits.size()) + ", " +
+                              Tr(std::string("в файлах:")) + " " + std::to_string(files) + " — " +
+                              Tr(std::string("двойной клик открывает место")) + "\n",
+            Out::Info);
     for (const Hit& h : hits) {
         fs::path shown = h.source->file;
         if (!shown.empty() && IsUnder(shown, projectRoot_)) shown = NormalizePath(shown).lexically_relative(NormalizePath(projectRoot_));
@@ -102,12 +106,12 @@ void MainWindow::FindUsages(Editor* ed, Sci_Position pos) {
         std::string code = h.occ.lineText;
         size_t first = code.find_first_not_of(" \t");
         code = first == std::string::npos ? std::string() : code.substr(first);
-        Print(where + " ", Out::Input);
-        Print(code + (h.occ.definition ? "" : "\n"), Out::Normal);
-        if (h.occ.definition) Print("   ← определение\n", Out::Success);
+        PrintTo(Pane::Search, where + " ", Out::Input);
+        PrintTo(Pane::Search, code + (h.occ.definition ? "" : "\n"), Out::Normal);
+        if (h.occ.definition) PrintTo(Pane::Search, "   ← " + Tr(std::string("определение")) + "\n", Out::Success);
     }
-    if (hits.empty()) Print("ничего не найдено\n", Out::Warning);
-    console_->Call(SCI_SETFIRSTVISIBLELINE, headerLine);
+    if (hits.empty()) PrintTo(Pane::Search, Tr(std::string("ничего не найдено\n")), Out::Warning);
+    View(Pane::Search).Call(SCI_SETFIRSTVISIBLELINE, 0);
 }
 
 // F2: renames a label, constant or macro everywhere in the project. Changed files are left unsaved (and open),
@@ -466,6 +470,14 @@ LRESULT CALLBACK MainWindow::EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
                 if (pos >= 0) self->GoToDefinition(ed, pos);
                 return 0;
             }
+            if (GetKeyState(VK_MENU) < 0 && !(wp & MK_SHIFT)) {  // Alt+click: one more caret
+                Sci_Position pos = ed->Call(SCI_POSITIONFROMPOINT, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+                if (pos >= 0) {
+                    SetFocus(hwnd);
+                    ed->Call(SCI_ADDSELECTION, pos, pos);
+                    return 0;
+                }
+            }
             break;
         }
     }
@@ -492,24 +504,361 @@ void MainWindow::Complete(Editor* ed, bool explicitRequest) {
     std::vector<Completion::Symbol> symbols = Completion::ScanSymbols(ed->Text());
     for (auto& sym : OtherFileSymbols(ed)) symbols.push_back(std::move(sym));
     std::string list = Completion::BuildList(line.substr(0, start), prefix, symbols);
+    // At the start of a statement the snippets are offered too ("loop…").
+    if (!prefix.empty() && prefix[0] != '%' && line.substr(0, start).find_first_not_of(" \t") == std::string::npos) {
+        for (const Snippets::Snippet& s : Snippets::All()) {
+            if (_strnicmp(s.name, prefix.c_str(), prefix.size()) != 0) continue;
+            if (!list.empty()) list += ' ';
+            list += std::string(s.name) + "…?" + std::to_string(static_cast<int>(Completion::Kind::Snippet));
+        }
+    }
     if (list.empty()) {
         if (active) ed->Call(SCI_AUTOCCANCEL);
         return;
     }
+    ed->Call(SCI_AUTOCSETORDER, SC_ORDER_PERFORMSORT);
     ed->Call(SCI_AUTOCSHOW, prefix.size(), reinterpret_cast<sptr_t>(list.c_str()));
-    // The list is a popup created by Scintilla: give it (and its scrollbar) the dark theme.
-    EnumThreadWindows(GetCurrentThreadId(), [](HWND w, LPARAM) -> BOOL {
-        wchar_t cls[32];
-        if (GetClassNameW(w, cls, 32) && wcscmp(cls, L"ListBoxX") == 0 && !GetPropW(w, L"AsmDark")) {
-            SetPropW(w, L"AsmDark", reinterpret_cast<HANDLE>(1));
-            ApplyDarkControl(w);
-            EnumChildWindows(w, [](HWND child, LPARAM) -> BOOL {
-                ApplyDarkControl(child);
-                return TRUE;
-            }, 0);
+}
+
+// ---- snippets, formatting, carets, occurrences, folding -------------------------------------------------------------
+
+void MainWindow::ShowSnippets(Editor* ed) {
+    std::string list;
+    for (const Snippets::Snippet& s : Snippets::All()) {
+        if (!list.empty()) list += ' ';
+        list += std::string(s.name) + "?" + std::to_string(static_cast<int>(Completion::Kind::Snippet));
+    }
+    ed->Call(SCI_AUTOCSETORDER, SC_ORDER_PERFORMSORT);
+    ed->Call(SCI_USERLISTSHOW, 1, reinterpret_cast<sptr_t>(list.c_str()));
+    // A hint with what each snippet is.
+    std::string tip = Tr(std::string("Шаблоны кода:"));
+    for (const Snippets::Snippet& s : Snippets::All()) tip += "\n" + std::string(s.name) + " — " + Tr(std::string(s.title));
+    ed->Call(SCI_CALLTIPSHOW, ed->Call(SCI_GETCURRENTPOS), reinterpret_cast<sptr_t>(tip.c_str()));
+}
+
+// Replaces the current line's leading blanks by the snippet and puts the caret at its "|" mark.
+void MainWindow::InsertSnippet(Editor* ed, const std::string& name) {
+    const Snippets::Snippet* snippet = nullptr;
+    for (const Snippets::Snippet& s : Snippets::All()) {
+        if (name == s.name) snippet = &s;
+    }
+    if (!snippet) return;
+    ed->Call(SCI_CALLTIPCANCEL);
+    std::string eol = ed->Call(SCI_GETEOLMODE) == SC_EOL_LF ? "\n" : "\r\n";
+    size_t caret = 0;
+    std::string text = Snippets::Expand(*snippet, eol, caret);
+    Sci_Position line = ed->Call(SCI_LINEFROMPOSITION, ed->Call(SCI_GETCURRENTPOS));
+    Sci_Position start = ed->Call(SCI_POSITIONFROMLINE, line), end = ed->Call(SCI_GETLINEENDPOSITION, line);
+    std::string current = ed->LineText(line);
+    bool blank = current.find_first_not_of(" \t") == std::string::npos;
+    ed->Call(SCI_BEGINUNDOACTION);
+    if (blank) {
+        ed->Call(SCI_SETTARGETRANGE, start, end);
+        ed->Call(SCI_REPLACETARGET, text.size(), reinterpret_cast<sptr_t>(text.c_str()));
+    } else {  // the line has code: insert below it
+        text = eol + text;
+        caret += eol.size();
+        start = end;
+        ed->Call(SCI_INSERTTEXT, start, reinterpret_cast<sptr_t>(text.c_str()));
+    }
+    ed->Call(SCI_ENDUNDOACTION);
+    ed->Call(SCI_GOTOPOS, start + static_cast<Sci_Position>(caret));
+    SetFocus(ed->hwnd());
+}
+
+// Ctrl+Alt+L: aligns mnemonics, operands and comments (the selected lines, or the whole file).
+void MainWindow::FormatCode(Editor* ed) {
+    AsmFormat::Options o{settings_->formatIndent, settings_->formatOperands, settings_->formatComments};
+    std::string eol = ed->Call(SCI_GETEOLMODE) == SC_EOL_LF ? "\n" : "\r\n";
+    Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
+    Sci_Position first = 0, last = ed->Call(SCI_GETLINECOUNT) - 1;
+    if (e > s) {
+        first = ed->Call(SCI_LINEFROMPOSITION, s);
+        last = ed->Call(SCI_LINEFROMPOSITION, e);
+        if (last > first && ed->Call(SCI_POSITIONFROMLINE, last) == e) last--;
+    }
+    Sci_Position from = ed->Call(SCI_POSITIONFROMLINE, first), to = ed->Call(SCI_GETLINEENDPOSITION, last);
+    std::string text(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, from, to - from)), to - from);
+    std::string formatted = AsmFormat::Format(text, o, eol);
+    if (formatted == text) return;
+    Sci_Position caretLine = ed->Call(SCI_LINEFROMPOSITION, ed->Call(SCI_GETCURRENTPOS));
+    Sci_Position top = ed->Call(SCI_GETFIRSTVISIBLELINE);
+    ed->Call(SCI_SETTARGETRANGE, from, to);
+    ed->Call(SCI_REPLACETARGET, formatted.size(), reinterpret_cast<sptr_t>(formatted.c_str()));
+    ed->Call(SCI_GOTOPOS, ed->Call(SCI_GETLINEENDPOSITION, caretLine));
+    ed->Call(SCI_SETFIRSTVISIBLELINE, top);
+}
+
+// Ctrl+Alt+Up/Down: a caret on the line above / below the main one, at the same column.
+void MainWindow::AddCaret(Editor* ed, bool down) {
+    Sci_Position caret = ed->Call(SCI_GETSELECTIONNCARET, ed->Call(SCI_GETMAINSELECTION));
+    Sci_Position line = ed->Call(SCI_LINEFROMPOSITION, caret) + (down ? 1 : -1);
+    if (line < 0 || line >= ed->Call(SCI_GETLINECOUNT)) return;
+    Sci_Position column = ed->Call(SCI_GETCOLUMN, caret);
+    Sci_Position pos = ed->Call(SCI_FINDCOLUMN, line, column);
+    ed->Call(SCI_ADDSELECTION, pos, pos);
+    ed->Call(SCI_SCROLLCARET);
+}
+
+// Uses of the word under the caret are boxed in the whole file (a short pause after the caret stops).
+void MainWindow::HighlightOccurrences(Editor* ed) {
+    Sci_Position len = ed->Call(SCI_GETLENGTH);
+    ed->Call(SCI_SETINDICATORCURRENT, Editor::kIndicatorOccurrence);
+    ed->Call(SCI_INDICATORCLEARRANGE, 0, len);
+    if (ed->Call(SCI_GETSELECTIONS) > 1 || len > 2'000'000) return;
+    Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
+    Sci_Position pos = ed->Call(SCI_GETCURRENTPOS);
+    Sci_Position ws, we;
+    if (!ed->WordRange(pos, ws, we) && !(pos > 0 && ed->WordRange(pos - 1, ws, we))) return;
+    if (e > s && (s != ws || e != we)) return;  // a selection that is not the word
+    int style = static_cast<int>(ed->Call(SCI_GETSTYLEAT, ws));
+    if (style == T_COMMENT || style == T_STRING || style == T_NUMBER) return;
+    std::string word(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, ws, we - ws)), we - ws);
+    while (!word.empty() && word.back() == '.') word.pop_back();
+    if (word.empty()) return;
+    std::string text = ed->Text();
+    std::vector<Completion::Occurrence> hits;
+    if (style == T_REGISTER || style == T_INSTRUCTION || style == T_DIRECTIVE || style == T_KEYWORD) {
+        // Built-in words: every token with the same text, ignoring case.
+        std::vector<Token> tokens;
+        Sci_Position lines = ed->Call(SCI_GETLINECOUNT);
+        for (Sci_Position l = 0; l < lines; l++) {
+            std::string lt = ed->LineText(l);
+            Tokenize(lt.data(), static_cast<int>(lt.size()), tokens);
+            for (const Token& t : tokens) {
+                if (t.type == style && t.end - t.start == static_cast<int>(word.size()) &&
+                    _strnicmp(lt.c_str() + t.start, word.c_str(), word.size()) == 0) {
+                    hits.push_back({static_cast<int>(l) + 1, t.start, t.end - t.start, false, false, {}});
+                }
+            }
         }
-        return TRUE;
-    }, 0);
+    } else {
+        std::string sym, scope;
+        if (!SymbolUnderCaret(ed, ws, sym, scope, true)) return;
+        hits = Completion::FindOccurrences(text, sym, scope);
+    }
+    if (hits.size() < 2) return;
+    for (const auto& h : hits) {
+        Sci_Position at = ed->Call(SCI_POSITIONFROMLINE, h.line - 1) + h.column;
+        ed->Call(SCI_INDICATORFILLRANGE, at, h.length);
+    }
+    InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
+}
+
+// Brackets next to the caret and the pairs %if/%endif, %macro/%endmacro, %rep/%endrep.
+void MainWindow::UpdateBracePairs(Editor* ed) {
+    Sci_Position len = ed->Call(SCI_GETLENGTH);
+    ed->Call(SCI_SETINDICATORCURRENT, Editor::kIndicatorPair);
+    ed->Call(SCI_INDICATORCLEARRANGE, 0, len);
+    Sci_Position pos = ed->Call(SCI_GETCURRENTPOS);
+    auto isBrace = [&](Sci_Position p) {
+        int c = static_cast<int>(ed->Call(SCI_GETCHARAT, p));
+        int style = static_cast<int>(ed->Call(SCI_GETSTYLEAT, p));
+        return (c == '[' || c == ']' || c == '(' || c == ')') && style != T_COMMENT && style != T_STRING;
+    };
+    Sci_Position at = isBrace(pos) ? pos : (pos > 0 && isBrace(pos - 1) ? pos - 1 : -1);
+    if (at >= 0) {
+        Sci_Position match = ed->Call(SCI_BRACEMATCH, at, 0);
+        if (match >= 0) ed->Call(SCI_BRACEHIGHLIGHT, at, match);
+        else ed->Call(SCI_BRACEBADLIGHT, at);
+    } else {
+        ed->Call(SCI_BRACEHIGHLIGHT, INVALID_POSITION, INVALID_POSITION);
+    }
+
+    // Directive pairs: find the directive on the caret line, then walk with a depth counter.
+    Sci_Position line = ed->Call(SCI_LINEFROMPOSITION, pos);
+    auto directive = [&](Sci_Position l, Sci_Position& start) -> std::string {
+        std::string t = ed->LineText(l);
+        size_t i = t.find_first_not_of(" \t");
+        if (i == std::string::npos || t[i] != '%') return {};
+        size_t j = i + 1;
+        while (j < t.size() && isalpha(static_cast<unsigned char>(t[j]))) j++;
+        start = ed->Call(SCI_POSITIONFROMLINE, l) + static_cast<Sci_Position>(i);
+        std::string w = t.substr(i, j - i);
+        for (char& c : w) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        return w;
+    };
+    auto kind = [](const std::string& w) {  // 1 open, -1 close, 2 middle (%else) — per family
+        if (w == "%macro" || w == "%imacro" || w == "%rep" || w.rfind("%if", 0) == 0) return 1;
+        if (w == "%endmacro" || w == "%endrep" || w == "%endif") return -1;
+        if (w == "%else" || w.rfind("%elif", 0) == 0) return 2;
+        return 0;
+    };
+    auto family = [](const std::string& w) {
+        if (w.find("macro") != std::string::npos) return 1;
+        if (w.find("rep") != std::string::npos) return 2;
+        return 3;  // %if / %elif / %else / %endif
+    };
+    Sci_Position start = 0;
+    std::string w = directive(line, start);
+    int k = kind(w);
+    if (!k) return;
+    std::vector<std::pair<Sci_Position, size_t>> marks{{start, w.size()}};
+    int fam = family(w);
+    Sci_Position lines = ed->Call(SCI_GETLINECOUNT);
+    auto walk = [&](int dir) {
+        int depth = 0;
+        for (Sci_Position l = line + dir; l >= 0 && l < lines; l += dir) {
+            Sci_Position s2 = 0;
+            std::string w2 = directive(l, s2);
+            int k2 = kind(w2);
+            if (!k2 || family(w2) != fam) continue;
+            if ((dir == 1 && k2 == 1) || (dir == -1 && k2 == -1)) {
+                depth++;
+                continue;
+            }
+            if ((dir == 1 && k2 == -1) || (dir == -1 && k2 == 1)) {
+                if (depth == 0) {
+                    marks.push_back({s2, w2.size()});
+                    return;
+                }
+                depth--;
+                continue;
+            }
+            if (k2 == 2 && depth == 0) marks.push_back({s2, w2.size()});
+        }
+    };
+    if (k == 1 || k == 2) walk(1);
+    if (k == -1 || k == 2) walk(-1);
+    if (marks.size() < 2) return;
+    for (auto [s2, n] : marks) ed->Call(SCI_INDICATORFILLRANGE, s2, n);
+}
+
+void MainWindow::FoldAll(Editor* ed, bool fold) {
+    ed->Call(SCI_COLOURISE, 0, -1);  // fold levels come from the lexer
+    ed->Call(SCI_FOLDALL, fold ? SC_FOLDACTION_CONTRACT : SC_FOLDACTION_EXPAND);
+}
+
+// ---- find in files ------------------------------------------------------------------------------------------------
+
+// Ctrl+Shift+F: every match in the project's text files goes to the Search tab; "replace" edits the files in
+// tabs (unsaved, so it can be reviewed and undone).
+void MainWindow::FindInFiles() {
+    FindInFilesRequest initial = lastFindInFiles_;
+    if (Editor* ed = Active()) {
+        Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
+        if (e > s && e - s < 200) {
+            std::string sel(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, s, e - s)), e - s);
+            if (sel.find('\n') == std::string::npos) initial.what = Widen(sel);
+        } else {
+            std::string w = ed->WordAt(ed->Call(SCI_GETCURRENTPOS));
+            if (!w.empty() && initial.what.empty()) initial.what = Widen(w);
+        }
+    }
+    auto request = ShowFindInFilesDialog(hwnd_, initial);
+    if (!request || request->what.empty()) return;
+    lastFindInFiles_ = *request;
+    const FindInFilesRequest& r = *request;
+
+    // Sources: open tabs (their current text) and the project's text files from disk.
+    std::vector<UsageSource> sources;
+    std::set<std::wstring> seen;
+    for (const auto& e : editors_) {
+        if (!e->file().empty()) seen.insert(Debugger::Key(e->file()));
+        sources.push_back({e->file(), e.get(), e->Text()});
+    }
+    static const std::set<std::wstring> kText = {L".asm", L".inc", L".mac", L".s", L".nasm", L".txt", L".md", L".bat",
+                                                 L".c", L".h", L".cpp", L".ini", L".def"};
+    for (const fs::path& p : ProjectFiles()) {
+        if (!kText.count(Lower(p.extension().wstring())) || !seen.insert(Debugger::Key(p)).second) continue;
+        std::error_code ec;
+        if (fs::file_size(p, ec) > 4'000'000 || ec) continue;
+        std::ifstream in(p, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        sources.push_back({p, nullptr, ss.str()});
+    }
+
+    std::regex re;
+    std::string needle = Narrow(r.what);
+    try {
+        auto flags = std::regex::ECMAScript | (r.matchCase ? std::regex::flag_type{} : std::regex::icase);
+        std::string pattern = r.regex ? needle : std::regex_replace(needle, std::regex(R"([.^$|()\[\]{}*+?\\])"), R"(\$&)");
+        if (r.wholeWord) pattern = "\\b(?:" + pattern + ")\\b";
+        re = std::regex(pattern, flags);
+    } catch (const std::regex_error&) {
+        ShowMessage(hwnd_, Tr(L"Неверное регулярное выражение."));
+        return;
+    }
+    struct Match {
+        int line, column, length;
+    };
+    ClearPane(Pane::Search);
+    ShowPane(Pane::Search);
+    size_t total = 0, files = 0;
+    std::vector<std::pair<const UsageSource*, std::vector<Match>>> found;
+    for (const UsageSource& src : sources) {
+        std::vector<Match> matches;
+        int lineNo = 0;
+        size_t pos = 0;
+        while (pos <= src.text.size()) {
+            size_t end = src.text.find('\n', pos);
+            if (end == std::string::npos) end = src.text.size();
+            std::string line = src.text.substr(pos, end - pos);
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            lineNo++;
+            for (auto it = std::sregex_iterator(line.begin(), line.end(), re); it != std::sregex_iterator(); ++it) {
+                if (it->length(0) == 0) break;
+                matches.push_back({lineNo, static_cast<int>(it->position(0)), static_cast<int>(it->length(0))});
+            }
+            pos = end + 1;
+        }
+        if (matches.empty()) continue;
+        files++;
+        total += matches.size();
+        std::wstring name = src.file.empty() ? src.editor->Title()
+                          : (!projectRoot_.empty() && IsUnder(src.file, projectRoot_)
+                                 ? NormalizePath(src.file).lexically_relative(NormalizePath(projectRoot_)).wstring()
+                                 : src.file.wstring());
+        int lastLine = 0;
+        for (const Match& m : matches) {
+            if (m.line == lastLine) continue;  // one line in the list per line of text
+            lastLine = m.line;
+            size_t ls = 0;
+            for (int l = 1; l < m.line; l++) ls = src.text.find('\n', ls) + 1;
+            std::string code = src.text.substr(ls, src.text.find('\n', ls) - ls);
+            if (!code.empty() && code.back() == '\r') code.pop_back();
+            size_t first = code.find_first_not_of(" \t");
+            code = first == std::string::npos ? std::string() : code.substr(first);
+            PrintTo(Pane::Search, Narrow(name) + ":" + std::to_string(m.line) + ": ", Out::Input);
+            PrintTo(Pane::Search, code + "\n", Out::Normal);
+        }
+        found.push_back({&src, std::move(matches)});
+    }
+    std::string header = (r.replace ? Tr(std::string("Заменено")) : Tr(std::string("Найдено"))) + " «" + needle + "»: " +
+                         std::to_string(total) + " " + Tr(std::string("в файлах:")) + " " + std::to_string(files);
+    if (!r.replace) {
+        PrintTo(Pane::Search, "\n" + header + " — " + Tr(std::string("двойной клик открывает место")) + "\n", Out::Info);
+        // Mark the hits in open tabs.
+        for (const auto& [src, matches] : found) {
+            if (!src->editor) continue;
+            src->editor->Call(SCI_SETINDICATORCURRENT, Editor::kIndicatorSearch);
+            src->editor->Call(SCI_INDICATORCLEARRANGE, 0, src->editor->Call(SCI_GETLENGTH));
+            for (const Match& m : matches) {
+                Sci_Position at = src->editor->Call(SCI_POSITIONFROMLINE, m.line - 1) + m.column;
+                src->editor->Call(SCI_INDICATORFILLRANGE, at, m.length);
+            }
+        }
+        return;
+    }
+    // Replace: open each file and edit it from the end, so earlier offsets stay valid.
+    std::string with = Narrow(r.replaceWith);
+    for (const auto& [src, matches] : found) {
+        Editor* target = src->editor ? src->editor : OpenFile(src->file);
+        if (!target) continue;
+        target->Call(SCI_BEGINUNDOACTION);
+        for (auto it = matches.rbegin(); it != matches.rend(); ++it) {
+            Sci_Position at = target->Call(SCI_POSITIONFROMLINE, it->line - 1) + it->column;
+            std::string original(reinterpret_cast<const char*>(target->Call(SCI_GETRANGEPOINTER, at, it->length)), it->length);
+            std::string replacement = r.regex ? std::regex_replace(original, re, with, std::regex_constants::format_first_only) : with;
+            target->Call(SCI_SETTARGETRANGE, at, at + it->length);
+            target->Call(SCI_REPLACETARGET, replacement.size(), reinterpret_cast<sptr_t>(replacement.c_str()));
+        }
+        target->Call(SCI_ENDUNDOACTION);
+    }
+    InvalidateChrome();
+    PrintTo(Pane::Search, "\n" + header + ". " + Tr(std::string("Файлы не сохранены: Ctrl+Z — отменить, «Сохранить всё» — сохранить.")) +
+                              "\n", Out::Success);
 }
 
 // ---- find & replace ---------------------------------------------------------------------------------------------

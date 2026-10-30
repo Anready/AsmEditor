@@ -1,10 +1,13 @@
 #include "common.h"
 
+#include <psapi.h>
+
 #include <chrono>
 #include <fstream>
 #include <future>
 #include <regex>
 
+#include "asmtools.h"
 #include "project.h"
 
 const LinkerPreset kLinkerPresets[] = {
@@ -14,6 +17,9 @@ const LinkerPreset kLinkerPresets[] = {
     {L"MSVC_WINAPI", L"MSVC link, только WinAPI (без CRT, точка входа main)",
      L"/nologo /subsystem:console /entry:main /largeaddressaware:no /debug /incremental:no \"${obj}\" "
      L"/out:\"${exe}\" kernel32.lib user32.lib"},
+    {L"MSVC_X86_CRT", L"MSVC link x86 (32 бит) + C runtime (-f win32; точка входа _main)",
+     L"/nologo /subsystem:console /debug /incremental:no /safeseh:no \"${obj}\" /out:\"${exe}\" "
+     L"msvcrt.lib legacy_stdio_definitions.lib kernel32.lib user32.lib"},
     {L"GCC", L"MinGW gcc (точка входа main)", L"\"${obj}\" -o \"${exe}\""},
     {L"CUSTOM", L"Свои параметры", nullptr},
 };
@@ -83,7 +89,8 @@ static std::optional<fs::path> Newest(const std::vector<fs::path>& dirs, const s
     return best;
 }
 
-std::optional<MsvcInfo> FindMsvc() {
+std::optional<MsvcInfo> FindMsvc(bool x86) {
+    const wchar_t* arch = x86 ? L"x86" : L"x64";
     std::wstring pf86 = Env(L"ProgramFiles(x86)");
     if (pf86.empty()) pf86 = L"C:\\Program Files (x86)";
     std::vector<fs::path> installs;
@@ -100,19 +107,20 @@ std::optional<MsvcInfo> FindMsvc() {
         }
     }
     for (const fs::path& inst : installs) {
-        auto ver = Newest(SubDirs(inst / L"VC" / L"Tools" / L"MSVC"), [](const fs::path& v) {
-            return FileExists((v / L"bin" / L"Hostx64" / L"x64" / L"link.exe").wstring());
+        auto ver = Newest(SubDirs(inst / L"VC" / L"Tools" / L"MSVC"), [&](const fs::path& v) {
+            return FileExists((v / L"bin" / L"Hostx64" / arch / L"link.exe").wstring()) &&
+                   FileExists((v / L"lib" / arch / L"msvcrt.lib").wstring());
         });
         if (!ver) continue;
         MsvcInfo info;
-        info.link = *ver / L"bin" / L"Hostx64" / L"x64" / L"link.exe";
-        info.libPaths.push_back(*ver / L"lib" / L"x64");
-        auto sdk = Newest(SubDirs(fs::path(pf86) / L"Windows Kits" / L"10" / L"Lib"), [](const fs::path& v) {
-            return FileExists((v / L"um" / L"x64" / L"kernel32.lib").wstring());
+        info.link = *ver / L"bin" / L"Hostx64" / arch / L"link.exe";
+        info.libPaths.push_back(*ver / L"lib" / arch);
+        auto sdk = Newest(SubDirs(fs::path(pf86) / L"Windows Kits" / L"10" / L"Lib"), [&](const fs::path& v) {
+            return FileExists((v / L"um" / arch / L"kernel32.lib").wstring());
         });
         if (sdk) {
-            info.libPaths.push_back(*sdk / L"um" / L"x64");
-            info.libPaths.push_back(*sdk / L"ucrt" / L"x64");
+            info.libPaths.push_back(*sdk / L"um" / arch);
+            info.libPaths.push_back(*sdk / L"ucrt" / arch);
         }
         return info;
     }
@@ -233,10 +241,68 @@ std::wstring QuoteCommandLine(const std::vector<std::wstring>& args) {
     return cmd;
 }
 
-static std::vector<std::wstring> NasmCommand(const Settings& s, const fs::path& src, const fs::path& obj,
-                                             const std::vector<fs::path>& includes) {
+std::wstring NasmArgs(const Settings& s, const RunConfig& c) {
+    std::wstring base = s.nasmArgs.empty() ? kDefaultNasmArgs : s.nasmArgs;
+    std::vector<std::wstring> args;
+    if (c.Release() && !s.releaseNasmArgs.empty()) {
+        args = SplitArgs(s.releaseNasmArgs);
+    } else {
+        std::vector<std::wstring> all = SplitArgs(base);
+        for (size_t i = 0; i < all.size(); i++) {
+            if (c.Release() && all[i] == L"-g") continue;  // Release: no debug information
+            if (c.Release() && all[i] == L"-F") {
+                i++;
+                continue;
+            }
+            args.push_back(all[i]);
+        }
+    }
+    if (c.Wsl()) {  // Linux object files: ELF with DWARF line information
+        for (std::wstring& a : args) {
+            if (a == L"win64") a = L"elf64";
+            else if (a == L"win32") a = L"elf32";
+            else if (a == L"cv8") a = L"dwarf";
+            else if (a == L"-fwin64") a = L"-felf64";
+        }
+    }
+    return QuoteCommandLine(args);
+}
+
+std::wstring LinkerArgs(const Settings& s, const RunConfig& c) {
+    if (!c.Release()) return s.linkerArgs;
+    if (!s.releaseLinkerArgs.empty()) return s.releaseLinkerArgs;
+    std::vector<std::wstring> kept;
+    for (const std::wstring& a : SplitArgs(s.linkerArgs)) {
+        std::wstring l = Lower(a);
+        if (l == L"/debug" || l.rfind(L"/debug:", 0) == 0 || l == L"-g") continue;
+        kept.push_back(a);
+    }
+    return QuoteCommandLine(kept);
+}
+
+std::wstring WslPath(const fs::path& windowsPath) {
+    std::wstring p = NormalizePath(windowsPath).wstring();
+    if (p.size() >= 2 && p[1] == L':') {
+        std::wstring rest = p.substr(2);
+        std::replace(rest.begin(), rest.end(), L'\\', L'/');
+        return L"/mnt/" + std::wstring(1, static_cast<wchar_t>(towlower(p[0]))) + rest;
+    }
+    std::replace(p.begin(), p.end(), L'\\', L'/');
+    return p;
+}
+
+std::optional<fs::path> FindNdisasm(const Settings& s) {
+    if (!s.nasmPath.empty()) {
+        fs::path p = fs::path(s.nasmPath).parent_path() / L"ndisasm.exe";
+        if (FileExists(p.wstring())) return p;
+    }
+    return FindOnPath(L"ndisasm.exe");
+}
+
+static std::vector<std::wstring> NasmCommand(const Settings& s, const RunConfig& c, const fs::path& src,
+                                             const fs::path& obj, const std::vector<fs::path>& includes) {
     std::vector<std::wstring> cmd{s.nasmPath};
-    for (const std::wstring& a : SplitArgs(s.nasmArgs.empty() ? kDefaultNasmArgs : s.nasmArgs)) cmd.push_back(a);
+    for (const std::wstring& a : SplitArgs(NasmArgs(s, c))) cmd.push_back(a);
     for (const fs::path& inc : includes) cmd.push_back(L"-I" + inc.wstring() + L"\\");
     cmd.push_back(L"-o");
     cmd.push_back(obj.wstring());
@@ -248,23 +314,73 @@ static void ReplaceAll(std::wstring& s, const std::wstring& from, const std::wst
     for (size_t pos = 0; (pos = s.find(from, pos)) != std::wstring::npos; pos += to.size()) s.replace(pos, from.size(), to);
 }
 
-static std::vector<std::wstring> LinkCommand(const Settings& s, const std::vector<fs::path>& objs, const fs::path& exe) {
+static bool IsMsvcLink(const Settings& s) {
+    return _wcsicmp(fs::path(s.linkerPath).filename().c_str(), L"link.exe") == 0;
+}
+
+static std::vector<std::wstring> LinkCommand(const Settings& s, const RunConfig& c, const std::vector<fs::path>& objs,
+                                             const fs::path& exe) {
+    bool msvc = IsMsvcLink(s);
+    if (c.output == L"lib") {  // static library: lib.exe next to link.exe, or ar next to gcc
+        if (msvc) {
+            std::vector<std::wstring> cmd{(fs::path(s.linkerPath).parent_path() / L"lib.exe").wstring(), L"/nologo",
+                                          L"/out:" + exe.wstring()};
+            for (const fs::path& o : objs) cmd.push_back(o.wstring());
+            return cmd;
+        }
+        fs::path ar = fs::path(s.linkerPath).parent_path() / L"ar.exe";
+        std::vector<std::wstring> cmd{FileExists(ar.wstring()) ? ar.wstring() : L"ar", L"rcs", exe.wstring()};
+        for (const fs::path& o : objs) cmd.push_back(o.wstring());
+        return cmd;
+    }
     std::vector<std::wstring> cmd{s.linkerPath};
-    for (std::wstring arg : SplitArgs(s.linkerArgs)) {
+    bool dll = c.output == L"dll";
+    for (std::wstring arg : SplitArgs(LinkerArgs(s, c))) {
         if (arg == L"${obj}" || arg == L"${objs}") {  // one argument per object file
             for (const fs::path& o : objs) cmd.push_back(o.wstring());
             continue;
         }
+        if (dll && msvc && _wcsnicmp(arg.c_str(), L"/entry:", 7) == 0) arg = L"/noentry";  // a DLL without DllMain
         ReplaceAll(arg, L"${obj}", objs.empty() ? L"" : objs.front().wstring());
         ReplaceAll(arg, L"${exe}", exe.wstring());
         ReplaceAll(arg, L"${name}", exe.stem().wstring());
         ReplaceAll(arg, L"${dir}", exe.parent_path().wstring());
         cmd.push_back(arg);
     }
-    if (_wcsicmp(fs::path(s.linkerPath).filename().c_str(), L"link.exe") == 0) {
+    if (dll) cmd.push_back(msvc ? L"/dll" : L"-shared");
+    if (msvc) {
         for (const std::wstring& lib : s.libPaths) cmd.push_back(L"/LIBPATH:" + lib);
     }
     return cmd;
+}
+
+// Linux program: the ELF objects are linked inside WSL, with gcc when the program has main (C library),
+// otherwise with ld (_start).
+static std::vector<std::wstring> WslLinkCommand(const BuildPlan& plan, const std::vector<fs::path>& objs) {
+    bool hasMain = false;
+    for (const fs::path& src : plan.sources) hasMain |= Project::DefinesMain(src);
+    std::vector<std::wstring> cmd{L"wsl.exe", L"--exec", hasMain ? L"gcc" : L"ld"};
+    if (hasMain) cmd.push_back(L"-no-pie");
+    if (plan.config.output == L"dll") cmd.push_back(L"-shared");
+    cmd.push_back(L"-o");
+    cmd.push_back(WslPath(plan.exe));
+    for (const fs::path& o : objs) cmd.push_back(WslPath(o));
+    return cmd;
+}
+
+// Pre-/post-build commands: one per line, run with cmd.exe in the project folder.
+static bool RunUserCommands(const std::wstring& commands, const fs::path& cwd, const char* what, const Sink& sink) {
+    for (const std::wstring& line : Split(commands, L'\n')) {
+        sink(std::string(what) + ": " + Narrow(line) + "\n", Out::Command);
+        int code = Exec({L"cmd.exe", L"/d", L"/s", L"/c", line}, cwd,
+                        [&](const std::string& out) { sink(out + "\n", Out::Normal); }, nullptr);
+        if (code != 0) {
+            sink(std::string(what) + ": " + Tr(std::string("команда завершилась с кодом")) + " " + std::to_string(code) +
+                     "\n", Out::Error);
+            return false;
+        }
+    }
+    return true;
 }
 
 // ---- processes ------------------------------------------------------------------------------------------------
@@ -301,7 +417,7 @@ bool Spawn(const std::wstring& commandLine, const fs::path& cwd, HANDLE in, HAND
 }
 
 bool SpawnInConsole(const std::wstring& commandLine, const fs::path& cwd, HPCON console, DWORD flags,
-                    PROCESS_INFORMATION& pi) {
+                    PROCESS_INFORMATION& pi, const std::wstring& environment) {
     SIZE_T size = 0;
     InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
     std::vector<char> buffer(size);
@@ -312,10 +428,65 @@ bool SpawnInConsole(const std::wstring& commandLine, const fs::path& cwd, HPCON 
     si.StartupInfo.cb = sizeof(si);
     si.lpAttributeList = attrs;
     std::wstring cmd = commandLine;
+    std::wstring env = environment;
+    if (!env.empty()) flags |= CREATE_UNICODE_ENVIRONMENT;
     BOOL ok = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, flags | EXTENDED_STARTUPINFO_PRESENT,
-                             nullptr, cwd.empty() ? nullptr : cwd.c_str(), &si.StartupInfo, &pi);
+                             env.empty() ? nullptr : env.data(), cwd.empty() ? nullptr : cwd.c_str(),
+                             &si.StartupInfo, &pi);
     DeleteProcThreadAttributeList(attrs);
     return ok != FALSE;
+}
+
+std::wstring EnvironmentBlock(const std::wstring& extraLines) {
+    struct Less {
+        bool operator()(const std::wstring& a, const std::wstring& b) const { return _wcsicmp(a.c_str(), b.c_str()) < 0; }
+    };
+    std::map<std::wstring, std::wstring, Less> vars;
+    if (wchar_t* block = GetEnvironmentStringsW()) {
+        for (const wchar_t* p = block; *p; p += wcslen(p) + 1) {
+            std::wstring entry = p;
+            size_t eq = entry.find(L'=', 1);  // "=C:=C:\..." entries start with '='
+            if (eq != std::wstring::npos) vars[entry.substr(0, eq)] = entry.substr(eq + 1);
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    for (const std::wstring& line : Split(extraLines, L'\n')) {
+        size_t eq = line.find(L'=');
+        if (eq == std::wstring::npos || eq == 0) continue;
+        std::wstring name = Trim(line.substr(0, eq)), value = line.substr(eq + 1);
+        if (value.empty()) vars.erase(name);
+        else vars[name] = value;
+    }
+    std::wstring out;
+    for (const auto& [name, value] : vars) out += name + L"=" + value + L'\0';
+    out += L'\0';
+    return out;
+}
+
+std::string ProcessStats(HANDLE process, ULONGLONG startTick) {
+    char buf[160];
+    double wall = (GetTickCount64() - startTick) / 1000.0;
+    FILETIME created, exited, kernel, user;
+    double cpu = -1;
+    if (GetProcessTimes(process, &created, &exited, &kernel, &user)) {
+        auto ticks = [](FILETIME f) { return (static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+        cpu = (ticks(kernel) + ticks(user)) / 1e7;
+    }
+    PROCESS_MEMORY_COUNTERS mem{sizeof(mem)};
+    bool haveMem = K32GetProcessMemoryInfo(process, &mem, sizeof(mem)) != FALSE;
+    std::string s;
+    sprintf_s(buf, "%s %.2f %s", Tr(std::string("время")).c_str(), wall, Tr(std::string("с")).c_str());
+    s = buf;
+    if (cpu >= 0) {
+        sprintf_s(buf, " (%s %.2f %s)", Tr(std::string("процессор")).c_str(), cpu, Tr(std::string("с")).c_str());
+        s += buf;
+    }
+    if (haveMem) {
+        sprintf_s(buf, " · %s %.1f %s", Tr(std::string("пик памяти")).c_str(), mem.PeakWorkingSetSize / (1024.0 * 1024.0),
+                  Tr(std::string("МБ")).c_str());
+        s += buf;
+    }
+    return s;
 }
 
 void SetConsoleCodePage(HPCON console, UINT codePage) {
@@ -406,7 +577,7 @@ static Out Classify(const std::string& line) {
 // Object file for a source: build/obj/<path relative to the root>.obj, so equal names in subfolders don't clash.
 static fs::path ObjectPath(const BuildPlan& plan, const fs::path& src) {
     fs::path rel = IsUnder(src, plan.root) ? NormalizePath(src).lexically_relative(NormalizePath(plan.root)) : src.filename();
-    rel.replace_extension(L".obj");
+    rel.replace_extension(plan.config.Wsl() ? L".o" : L".obj");
     return plan.outDir / L"obj" / rel;
 }
 
@@ -435,7 +606,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
 
     // Object files built with other NASM arguments are stale.
     fs::path stamp = plan.outDir / L"obj" / L".nasm-args";
-    std::string args = Narrow(s.nasmArgs);
+    std::string args = Narrow(NasmArgs(s, plan.config));
     std::string oldArgs;
     {
         std::ifstream in(stamp, std::ios::binary);
@@ -443,6 +614,9 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
     }
     bool force = plan.rebuild || oldArgs != args;
 
+    if (!plan.config.preBuild.empty() && !RunUserCommands(plan.config.preBuild, plan.root, "pre-build", sink)) {
+        return result;
+    }
     size_t n = plan.sources.size();
     sink(n == 1 ? "Сборка " + Narrow(plan.sources[0].wstring()) + "\n"
                 : "Сборка " + std::to_string(n) + " файлов → " + Narrow(plan.exe.filename().wstring()) + "\n",
@@ -474,7 +648,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
                 fs::create_directories(job.obj.parent_path(), e);
                 std::vector<fs::path> includes{job.src.parent_path()};
                 includes.insert(includes.end(), plan.includes.begin(), plan.includes.end());
-                job.code = Exec(NasmCommand(s, job.src, job.obj, includes), job.src.parent_path(), nullptr, &job.log);
+                job.code = Exec(NasmCommand(s, plan.config, job.src, job.obj, includes), job.src.parent_path(), nullptr, &job.log);
             }));
         }
         for (auto& f : running) f.get();
@@ -486,7 +660,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
                 continue;
             }
             if (n > 1) sink(counter + relName(job.src) + "\n", Out::Normal);
-            else sink("> " + Narrow(QuoteCommandLine(NasmCommand(s, job.src, job.obj, {job.src.parent_path()}))) + "\n", Out::Command);
+            else sink("> " + Narrow(QuoteCommandLine(NasmCommand(s, plan.config, job.src, job.obj, {job.src.parent_path()}))) + "\n", Out::Command);
             for (const std::wstring& line : Split(Widen(job.log), L'\n')) {
                 std::string l = Narrow(line);
                 sink(l + "\n", Classify(l));
@@ -505,18 +679,21 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
         out << args;
     }
 
-    if (!LinkerAvailable(s)) {
+    if (!plan.config.Wsl() && !LinkerAvailable(s)) {
         sink("Линкер не найден — укажите его в настройках.\n", Out::Error);
         return result;
     }
     std::vector<fs::path> objs;
     for (const Job& j : jobs) objs.push_back(j.obj);
-    auto linkCmd = LinkCommand(s, objs, plan.exe);
+    auto linkCmd = plan.config.Wsl() ? WslLinkCommand(plan, objs) : LinkCommand(s, plan.config, objs, plan.exe);
     sink("> " + Narrow(QuoteCommandLine(linkCmd)) + "\n", Out::Command);
     auto echo = [&](const std::string& line) { sink(line + "\n", Classify(line)); };
     int code = Exec(linkCmd, plan.outDir, echo, nullptr);
     if (code != 0) {
         sink("Линковка завершилась с ошибкой (код " + std::to_string(code) + ")\n", Out::Error);
+        return result;
+    }
+    if (!plan.config.postBuild.empty() && !RunUserCommands(plan.config.postBuild, plan.root, "post-build", sink)) {
         return result;
     }
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
@@ -526,7 +703,8 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
     return result;
 }
 
-std::vector<Diagnostic> Check(const Settings& s, const std::string& text, int id, const std::vector<fs::path>& includes) {
+std::vector<Diagnostic> Check(const Settings& s, const RunConfig& config, const std::string& text, int id,
+                              const std::vector<fs::path>& includes) {
     wchar_t tmp[MAX_PATH + 1];
     GetTempPathW(MAX_PATH + 1, tmp);
     fs::path dir = fs::path(tmp) / L"asmeditor-live";
@@ -539,7 +717,9 @@ std::vector<Diagnostic> Check(const Settings& s, const std::string& text, int id
         out.write(text.data(), (std::streamsize)text.size());
     }
     std::string log;
-    Exec(NasmCommand(s, src, obj, includes), dir, nullptr, &log);
+    RunConfig checkConfig = config;
+    checkConfig.profile = L"Debug";
+    Exec(NasmCommand(s, checkConfig, src, obj, includes), dir, nullptr, &log);
     fs::remove(obj, ec);
     std::vector<Diagnostic> result;
     for (Diagnostic& d : ParseNasm(log)) {
@@ -547,6 +727,9 @@ std::vector<Diagnostic> Check(const Settings& s, const std::string& text, int id
             d.file.clear();
             result.push_back(std::move(d));
         }
+    }
+    if (s.stackCheck && !config.Wsl()) {  // the Win64 calling convention: stack alignment and shadow space
+        for (Diagnostic& d : StackCheck::Analyze(text)) result.push_back(std::move(d));
     }
     return result;
 }

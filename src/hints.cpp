@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -12,8 +13,11 @@ namespace {
 struct Entry {
     std::string syntax;
     std::string text;
-    std::string flags;  // empty: no "Флаги" line (directives, registers)
+    std::string flags;    // empty: no "Флаги" line (directives, registers)
+    std::string example;  // optional code example
 };
+
+void AddExtended(std::unordered_map<std::string, Entry>& m);
 
 constexpr const char* kNoFlags = "не меняет";
 constexpr const char* kArith = "OF SF ZF AF PF CF";
@@ -353,6 +357,12 @@ std::unordered_map<std::string, Entry> Build() {
                               : "Сохраняемый в Win64: функция обязана восстановить его.",
                 ""};
     }
+    for (int i = 0; i < 16; i++) {
+        std::string y = "ymm" + std::to_string(i);
+        m[y] = {y + " — регистр AVX, 256 бит", "Младшие 128 бит — это xmm" + std::to_string(i) +
+                                                  ". Запись в xmm инструкцией с префиксом v обнуляет старшую половину ymm.", ""};
+    }
+    AddExtended(m);
     return m;
 }
 
@@ -400,21 +410,143 @@ std::string Wrap(const std::string& text, size_t width) {
 }
 }
 
+namespace {
+// The entry for a mnemonic. AVX forms (v + SSE mnemonic) are described through their SSE original.
+std::optional<Entry> Lookup(const std::string& word) {
+    std::string w = LowerAscii(word);
+    auto it = Table().find(w);
+    if (it != Table().end()) return it->second;
+    if (w.size() > 1 && w[0] == 'v') {
+        auto sse = Table().find(w.substr(1));
+        if (sse != Table().end() && !sse->second.flags.empty()) {
+            Entry e = sse->second;
+            std::string syntax = e.syntax;
+            size_t space = syntax.find(' ');
+            std::string operands = space == std::string::npos ? std::string() : syntax.substr(space + 1);
+            e.syntax = w + (operands.empty() ? "" : " xmm/ymm, xmm/ymm, xmm/ymm/m (AVX)");
+            e.text = "AVX-форма " + w.substr(1) + ": три операнда (приёмник отдельно от источников, источники не "
+                     "портятся), работает с xmm (128 бит) или ymm (256 бит — вдвое больше элементов); запись в xmm "
+                     "обнуляет старшую половину ymm. " + e.text;
+            if (!e.example.empty()) e.example.clear();
+            return e;
+        }
+    }
+    return std::nullopt;
+}
+}
+
 std::string For(const std::string& word) {
-    auto it = Table().find(LowerAscii(word));
-    if (it == Table().end()) return {};
-    const Entry& e = it->second;
-    std::string card = e.syntax + "\n" + Wrap(e.text, 64);
-    if (!e.flags.empty()) card += "\nФлаги: " + e.flags;
+    auto e = Lookup(word);
+    if (!e) return {};
+    std::string card = e->syntax + "\n" + Wrap(e->text, 64);
+    if (!e->flags.empty()) card += "\nФлаги: " + e->flags;
+    if (!e->example.empty()) card += "\nПример: " + e->example;
     return card;
 }
 
 std::string Signature(const std::string& mnemonic) {
-    auto it = Table().find(LowerAscii(mnemonic));
-    if (it == Table().end() || it->second.flags.empty()) return {};  // instructions only
-    const std::string& text = it->second.text;
+    auto e = Lookup(mnemonic);
+    if (!e || e->flags.empty()) return {};  // instructions only
+    const std::string& text = e->text;
     size_t dot = text.find(". ");
-    return it->second.syntax + "\n" + Wrap(dot == std::string::npos ? text : text.substr(0, dot + 1), 64);
+    return e->syntax + "\n" + Wrap(dot == std::string::npos ? text : text.substr(0, dot + 1), 64);
+}
+
+std::vector<std::string> KnownInstructions() {
+    std::vector<std::string> out;
+    for (const auto& [name, e] : Table()) {
+        if (!e.flags.empty()) out.push_back(name);
+    }
+    return out;
+}
+
+namespace {
+struct FunctionInfo {
+    const char* names;
+    const char* prototype;
+    const char* args;  // where the arguments go (Win64)
+    const char* note;
+};
+
+const FunctionInfo kFunctions[] = {
+    {"printf", "int printf(const char *format, ...)", "rcx = строка формата, rdx, r8, r9 = 1–3-й аргументы, дальше — "
+     "в стеке над теневым местом ([rsp+32]…)", "Возвращает число выведенных символов (eax). double передаётся и в xmm, и "
+     "в обычном регистре (movq rdx, xmm1). Нужно extern printf и шаблон линковки с C runtime."},
+    {"scanf", "int scanf(const char *format, ...)", "rcx = формат (\"%lld\"), rdx, r8, r9 = адреса переменных",
+     "Возвращает число прочитанных значений (eax); для %lld переменная — dq, для %d — dd."},
+    {"puts", "int puts(const char *s)", "rcx = адрес строки (с нулём в конце)", "Выводит строку и перевод строки."},
+    {"putchar", "int putchar(int c)", "ecx = символ", "Выводит один символ."},
+    {"getchar", "int getchar(void)", "без аргументов", "Возвращает код символа в eax или -1 (EOF)."},
+    {"fgets", "char *fgets(char *buf, int n, FILE *f)", "rcx = буфер, edx = размер, r8 = FILE*",
+     "Читает строку вместе с \\n; rax = buf или 0 при конце файла."},
+    {"sprintf", "int sprintf(char *buf, const char *format, ...)", "rcx = буфер, rdx = формат, r8, r9 = аргументы",
+     "Как printf, но пишет в буфер."},
+    {"sscanf", "int sscanf(const char *s, const char *format, ...)", "rcx = строка, rdx = формат, r8, r9 = адреса",
+     "Как scanf, но читает из строки."},
+    {"fprintf", "int fprintf(FILE *f, const char *format, ...)", "rcx = FILE*, rdx = формат, r8, r9 = аргументы", ""},
+    {"fscanf", "int fscanf(FILE *f, const char *format, ...)", "rcx = FILE*, rdx = формат, r8, r9 = адреса", ""},
+    {"fopen", "FILE *fopen(const char *name, const char *mode)", "rcx = имя файла, rdx = режим (\"r\", \"w\", \"a\", \"rb\"…)",
+     "rax = FILE* или 0 при ошибке."},
+    {"fclose", "int fclose(FILE *f)", "rcx = FILE*", ""},
+    {"malloc", "void *malloc(size_t size)", "rcx = размер в байтах", "rax = адрес блока или 0. Освобождать — free."},
+    {"calloc", "void *calloc(size_t count, size_t size)", "rcx = количество, rdx = размер элемента", "Память обнулена."},
+    {"realloc", "void *realloc(void *p, size_t size)", "rcx = старый блок, rdx = новый размер", ""},
+    {"free", "void free(void *p)", "rcx = адрес блока", ""},
+    {"strlen", "size_t strlen(const char *s)", "rcx = строка", "rax = длина без нуля."},
+    {"strcpy", "char *strcpy(char *dst, const char *src)", "rcx = куда, rdx = откуда", ""},
+    {"strcat", "char *strcat(char *dst, const char *src)", "rcx = к чему, rdx = что дописать", ""},
+    {"strcmp", "int strcmp(const char *a, const char *b)", "rcx = a, rdx = b", "eax < 0, 0 или > 0."},
+    {"memcpy", "void *memcpy(void *dst, const void *src, size_t n)", "rcx = куда, rdx = откуда, r8 = байт", ""},
+    {"memset", "void *memset(void *p, int value, size_t n)", "rcx = адрес, edx = байт-значение, r8 = сколько", ""},
+    {"rand", "int rand(void)", "без аргументов", "eax = 0…32767. Начальное значение — srand."},
+    {"srand", "void srand(unsigned seed)", "ecx = начальное значение (например, time(0))", ""},
+    {"time", "time_t time(time_t *t)", "rcx = 0 или адрес qword", "rax = секунды с 1970 года."},
+    {"exit", "void exit(int code)", "ecx = код возврата", "Завершает программу (сбрасывает буферы вывода)."},
+    {"ExitProcess", "void ExitProcess(UINT code)", "ecx = код возврата",
+     "Завершает процесс сразу (kernel32). Буферы printf не сбрасываются — после printf лучше ret из main."},
+    {"GetStdHandle", "HANDLE GetStdHandle(DWORD id)", "ecx = -10 (ввод), -11 (вывод), -12 (ошибки)",
+     "rax = дескриптор консоли для ReadFile / WriteFile."},
+    {"WriteFile", "BOOL WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, OVERLAPPED *ov)",
+     "rcx = дескриптор, rdx = буфер, r8d = байт, r9 = адрес DWORD, 5-й аргумент (0) — qword [rsp+32]",
+     "Перед call нужно sub rsp, 40 (или больше): теневое место + место под 5-й аргумент."},
+    {"ReadFile", "BOOL ReadFile(HANDLE h, void *buf, DWORD n, DWORD *read, OVERLAPPED *ov)",
+     "rcx = дескриптор, rdx = буфер, r8d = размер, r9 = адрес DWORD, qword [rsp+32] = 0", ""},
+    {"WriteConsoleA WriteConsoleW", "BOOL WriteConsole(HANDLE h, const void *buf, DWORD chars, DWORD *written, void *reserved)",
+     "rcx = дескриптор, rdx = текст, r8d = символов, r9 = адрес DWORD, qword [rsp+32] = 0", ""},
+    {"ReadConsoleA", "BOOL ReadConsoleA(HANDLE h, void *buf, DWORD chars, DWORD *read, void *control)",
+     "rcx = дескриптор ввода, rdx = буфер, r8d = размер, r9 = адрес DWORD, qword [rsp+32] = 0", ""},
+    {"MessageBoxA", "int MessageBoxA(HWND owner, const char *text, const char *caption, UINT type)",
+     "rcx = 0, rdx = текст, r8 = заголовок, r9d = кнопки (0 — OK)", "Нужна user32.lib."},
+    {"Sleep", "void Sleep(DWORD ms)", "ecx = миллисекунды", ""},
+    {"GetTickCount", "DWORD GetTickCount(void)", "без аргументов", "eax = миллисекунды с запуска Windows."},
+    {"GetLastError", "DWORD GetLastError(void)", "без аргументов", "eax = код последней ошибки WinAPI."},
+    {"CreateFileA", "HANDLE CreateFileA(name, access, share, security, creation, flags, template)",
+     "rcx = имя, edx = доступ (0x80000000 чтение, 0x40000000 запись), r8d = share, r9 = 0; в стеке: [rsp+32] = "
+     "creation (2 — создать, 3 — открыть), [rsp+40] = флаги (0x80), [rsp+48] = 0",
+     "rax = дескриптор или -1 (INVALID_HANDLE_VALUE). Нужно sub rsp, 56 и больше."},
+    {"CloseHandle", "BOOL CloseHandle(HANDLE h)", "rcx = дескриптор", ""},
+    {"VirtualAlloc", "void *VirtualAlloc(void *addr, SIZE_T size, DWORD type, DWORD protect)",
+     "rcx = 0, rdx = размер, r8d = 0x3000 (MEM_COMMIT|MEM_RESERVE), r9d = 4 (PAGE_READWRITE)", ""},
+    {"VirtualFree", "BOOL VirtualFree(void *addr, SIZE_T size, DWORD type)", "rcx = адрес, rdx = 0, r8d = 0x8000", ""},
+    {"GetProcessHeap", "HANDLE GetProcessHeap(void)", "без аргументов", "rax = куча процесса для HeapAlloc."},
+    {"HeapAlloc", "void *HeapAlloc(HANDLE heap, DWORD flags, SIZE_T size)", "rcx = куча, edx = 8 (обнулить), r8 = размер", ""},
+    {"HeapFree", "BOOL HeapFree(HANDLE heap, DWORD flags, void *p)", "rcx = куча, edx = 0, r8 = блок", ""},
+    {"SetConsoleOutputCP", "BOOL SetConsoleOutputCP(UINT cp)", "ecx = кодовая страница (65001 — UTF-8)", ""},
+};
+}
+
+std::string Function(const std::string& name) {
+    for (const FunctionInfo& f : kFunctions) {
+        std::istringstream in(f.names);
+        std::string n;
+        while (in >> n) {
+            if (n != name) continue;
+            std::string card = std::string(f.prototype) + "\n" + Wrap(std::string("Аргументы (Win64): ") + f.args, 64);
+            if (*f.note) card += "\n" + Wrap(f.note, 64);
+            return card;
+        }
+    }
+    return {};
 }
 
 size_t HeaderLength(const std::string& card) {
@@ -423,3 +555,5 @@ size_t HeaderLength(const std::string& card) {
 }
 
 }
+
+#include "hints_ext.inc"

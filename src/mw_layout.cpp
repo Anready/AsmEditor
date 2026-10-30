@@ -1,5 +1,13 @@
 #include "mw_internal.h"
 
+namespace {
+
+std::wstring ToolText(const MainWindow* self, int id, const wchar_t* text);
+
+// Width of the mark bar beside each editor's scrollbar.
+constexpr int kMarkBarWidth = 10;
+}
+
 // ---- layout & painting ------------------------------------------------------------------------------------------
 
 void MainWindow::Layout() {
@@ -7,7 +15,7 @@ void MainWindow::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     int W = rc.right, H = rc.bottom;
-    int tb = S(38), sb = S(24), header = S(28), split = S(4), tabsH = S(32), inputH = S(32);
+    int tb = S(38), sb = S(24), header = S(28), split = S(4), tabsH = S(32), inputH = S(32), mark = S(kMarkBarWidth);
     int treeW = std::clamp(S(settings_->treeWidth), S(120), std::max(S(120), W - S(300)));
     int bodyTop = tb, bodyBottom = H - sb;
     int consoleH = std::clamp(S(settings_->consoleHeight), S(90), std::max(S(90), bodyBottom - bodyTop - S(140)));
@@ -15,11 +23,11 @@ void MainWindow::Layout() {
     rcToolbar_ = {0, 0, W, tb};
     rcStatus_ = {0, bodyBottom, W, H};
     rcTreeHeader_ = {0, bodyTop, treeW, bodyTop + header};
-    rcRefresh_ = {treeW - S(30), bodyTop + S(2), treeW - S(6), bodyTop + header - S(2)};
+    rcRefresh_ = leftTab_ == LeftTab::Project ? RECT{treeW - S(30), bodyTop + S(2), treeW - S(6), bodyTop + header - S(2)} : RECT{};
     rcSplitV_ = {treeW, bodyTop, treeW + split, bodyBottom};
     int x0 = treeW + split;
 
-    // Debug panel on the right.
+    // Debug panel on the right: tabs (registers, call stack, watches, disassembly) above the memory view.
     bool panel = DebugPanelVisible();
     int debugW = panel ? std::clamp(S(settings_->debugWidth), S(220), std::max(S(220), W - x0 - S(300))) : 0;
     int x1 = panel ? W - debugW - split : W;  // right edge of the editor column
@@ -27,37 +35,74 @@ void MainWindow::Layout() {
     rcDebug_ = panel ? RECT{x1 + split, bodyTop, W, bodyBottom} : RECT{};
     int regsBottom = rcDebug_.top + header + (bodyBottom - bodyTop - header) * 58 / 100;
     rcDebugHeader_ = {rcDebug_.left, bodyTop, W, bodyTop + header};
+    rcWatchRow_ = {rcDebug_.left, rcDebugHeader_.bottom, W, rcDebugHeader_.bottom + inputH};
     rcMemHeader_ = {rcDebug_.left, regsBottom, W, regsBottom + header};
+    rcMemFormat_ = {W - S(110), rcMemHeader_.top + S(3), W - S(8), rcMemHeader_.bottom - S(3)};
     rcMemRow_ = {rcDebug_.left, rcMemHeader_.bottom, W, rcMemHeader_.bottom + inputH};
 
     rcSplitH_ = {x0, bodyBottom - consoleH - split, x1, bodyBottom - consoleH};
     rcTabs_ = {x0, bodyTop, x1, bodyTop + tabsH};
     rcEditor_ = {x0, bodyTop + tabsH, x1, rcSplitH_.top};
+    Editor* right = SplitEditor();
+    if (right) {  // two editors side by side
+        int mid = (x0 + x1) / 2;
+        rcEditor2_ = {mid + split / 2, rcEditor_.top, x1, rcEditor_.bottom};
+        rcSplitE_ = {mid - split / 2, rcEditor_.top, mid + split / 2, rcEditor_.bottom};
+        rcEditor_.right = rcSplitE_.left;
+    } else {
+        rcEditor2_ = rcSplitE_ = {};
+    }
     rcConsoleHeader_ = {x0, rcSplitH_.bottom, x1, rcSplitH_.bottom + header};
     rcClear_ = {x1 - S(90), rcConsoleHeader_.top, x1 - S(8), rcConsoleHeader_.bottom};
-    W = x1;  // the console ends where the debug panel starts
 
-    for (HWND h : {regsView_->hwnd(), memView_->hwnd(), memExpr_}) ShowWindow(h, panel ? SW_SHOW : SW_HIDE);
+    bool watchTab = panel && debugTab_ == DebugTab::Watch;
+    for (HWND h : {memView_->hwnd(), memExpr_}) ShowWindow(h, panel ? SW_SHOW : SW_HIDE);
+    ShowWindow(watchExpr_, watchTab ? SW_SHOW : SW_HIDE);
+    Editor* tabViews[] = {regsView_.get(), stackView_.get(), watchView_.get(), disasmView_.get()};
+    for (int i = 0; i < static_cast<int>(DebugTab::Count); i++) {
+        ShowWindow(tabViews[i]->hwnd(), panel && i == static_cast<int>(debugTab_) ? SW_SHOW : SW_HIDE);
+    }
     if (panel) {
-        SetWindowPos(regsView_->hwnd(), nullptr, rcDebug_.left, rcDebugHeader_.bottom, debugW,
-                     rcMemHeader_.top - rcDebugHeader_.bottom, SWP_NOZORDER);
+        int top = watchTab ? rcWatchRow_.bottom : rcDebugHeader_.bottom;
+        SetWindowPos(tabViews[static_cast<int>(debugTab_)]->hwnd(), nullptr, rcDebug_.left, top, debugW,
+                     rcMemHeader_.top - top, SWP_NOZORDER);
+        if (watchTab) {
+            SetWindowPos(watchExpr_, nullptr, rcDebug_.left + S(8), rcWatchRow_.top + S(5), debugW - S(16),
+                         inputH - S(10), SWP_NOZORDER);
+        }
         SetWindowPos(memExpr_, nullptr, rcDebug_.left + S(8), rcMemRow_.top + S(5), debugW - S(16), inputH - S(10),
                      SWP_NOZORDER);
         SetWindowPos(memView_->hwnd(), nullptr, rcDebug_.left, rcMemRow_.bottom, debugW, bodyBottom - rcMemRow_.bottom,
                      SWP_NOZORDER);
     }
 
-    HDWP dwp = BeginDeferWindowPos(4 + (int)editors_.size());
-    dwp = DeferWindowPos(dwp, tree_, nullptr, 0, rcTreeHeader_.bottom, treeW, bodyBottom - rcTreeHeader_.bottom, SWP_NOZORDER);
-    dwp = DeferWindowPos(dwp, console_->hwnd(), nullptr, x0, rcConsoleHeader_.bottom, W - x0,
-                         bodyBottom - rcConsoleHeader_.bottom, SWP_NOZORDER);
-    for (auto& ed : editors_) {
-        dwp = DeferWindowPos(dwp, ed->hwnd(), nullptr, rcEditor_.left, rcEditor_.top, rcEditor_.right - rcEditor_.left,
-                             rcEditor_.bottom - rcEditor_.top, SWP_NOZORDER);
+    // Left panel: project tree or file outline.
+    ShowWindow(tree_, leftTab_ == LeftTab::Project ? SW_SHOW : SW_HIDE);
+    ShowWindow(outline_, leftTab_ == LeftTab::Outline ? SW_SHOW : SW_HIDE);
+    HDWP dwp = BeginDeferWindowPos(8 + (int)editors_.size());
+    dwp = DeferWindowPos(dwp, leftTab_ == LeftTab::Project ? tree_ : outline_, nullptr, 0, rcTreeHeader_.bottom, treeW,
+                         bodyBottom - rcTreeHeader_.bottom, SWP_NOZORDER);
+    for (auto& view : views_) {
+        dwp = DeferWindowPos(dwp, view->hwnd(), nullptr, x0, rcConsoleHeader_.bottom, x1 - x0,
+                             bodyBottom - rcConsoleHeader_.bottom, SWP_NOZORDER);
     }
+    Editor* left = Active();
+    for (auto& ed : editors_) {
+        const RECT& r = ed.get() == right ? rcEditor2_ : rcEditor_;
+        dwp = DeferWindowPos(dwp, ed->hwnd(), nullptr, r.left, r.top, r.right - r.left - mark, r.bottom - r.top,
+                             SWP_NOZORDER);
+    }
+    dwp = DeferWindowPos(dwp, markBar_, nullptr, rcEditor_.right - mark, rcEditor_.top, mark,
+                         rcEditor_.bottom - rcEditor_.top, SWP_NOZORDER | (left ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    dwp = DeferWindowPos(dwp, markBar2_, nullptr, rcEditor2_.right - mark, rcEditor2_.top, mark,
+                         rcEditor2_.bottom - rcEditor2_.top, SWP_NOZORDER | (right ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     EndDeferWindowPos(dwp);
+    for (size_t i = 0; i < editors_.size(); i++) {
+        Editor* e = editors_[i].get();
+        ShowWindow(e->hwnd(), e == left || e == right ? SW_SHOW : SW_HIDE);
+    }
 
-    if (termActive_ && pty_) {  // keep the pseudoconsole the size of the console view
+    if (termActive_ && pty_) {  // keep the pseudoconsole the size of the terminal view
         auto [cols, rows] = ConsoleGridSize();
         if (cols != term_.cols() || rows != term_.rows()) {
             ResizePseudoConsole(pty_, COORD{static_cast<SHORT>(cols), static_cast<SHORT>(rows)});
@@ -69,19 +114,20 @@ void MainWindow::Layout() {
     // toolbar item rectangles
     HDC dc = GetDC(hwnd_);
     HGDIOBJ old = SelectObject(dc, uiFont_);
-    int x = S(6), right = rc.right - S(6);
+    int x = S(6), rightEdge = rc.right - S(6);
     for (size_t i = 0; i < tools_.size(); i++) {
         ToolItem& t = tools_[i];
         if ((t.show == 1 && !debugging_) || (t.show == 2 && debugging_)) {
             t.rc = {};
             continue;
         }
-        int w = TextWidth(dc, t.text) + S(t.icon ? 36 : 20);
+        int w = TextWidth(dc, ToolText(this, t.id, t.text)) + S(t.icon ? 36 : 20);
         if (t.right) {
-            t.rc = {right - w, S(5), right, tb - S(5)};
-            right -= w + S(4);
+            t.rc = {rightEdge - w, S(5), rightEdge, tb - S(5)};
+            rightEdge -= w + S(4);
         } else {
             if (i > 0 && tools_[i - 1].menu && !t.menu) x += S(14);  // gap after the menus
+            if (t.id == ID_TARGET) x += S(14);                        // and before the run target
             t.rc = {x, S(5), x + w, tb - S(5)};
             x += w + S(2);
         }
@@ -89,6 +135,8 @@ void MainWindow::Layout() {
     SelectObject(dc, old);
     ReleaseDC(hwnd_, dc);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    InvalidateRect(markBar_, nullptr, FALSE);
+    InvalidateRect(markBar2_, nullptr, FALSE);
 }
 
 void MainWindow::InvalidateChrome() {
@@ -102,6 +150,33 @@ void MainWindow::InvalidateChrome() {
     if (editors_.empty()) InvalidateRect(hwnd_, &rcEditor_, FALSE);
 }
 
+namespace {
+std::wstring ToolText(const MainWindow*, int id, const wchar_t* text) {
+    return Tr(text);
+}
+}
+
+// Tabs drawn in a panel header ("ПРОЕКТ | СТРУКТУРА" and so on): the active one is bright and underlined.
+void MainWindow::PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
+                                 std::vector<RECT>& rects, int hover) {
+    rects.assign(titles.size(), RECT{});
+    int x = area.left + S(12);
+    for (size_t i = 0; i < titles.size(); i++) {
+        bool on = static_cast<int>(i) == active;
+        SelectObject(dc, on ? uiBold_ : uiFont_);
+        int w = TextWidth(dc, titles[i]);
+        RECT r{x - S(4), area.top, x + w + S(4), area.bottom};
+        if (r.right > area.right) break;
+        rects[i] = r;
+        DrawTextColor(dc, titles[i], {x, area.top, x + w + S(2), area.bottom},
+                      on ? Theme::Bright : (static_cast<int>(i) == hover ? Theme::Text : Theme::Muted),
+                      DT_SINGLELINE | DT_VCENTER);
+        if (on) FillRectColor(dc, {x, area.bottom - S(2), x + w, area.bottom}, Theme::Accent);
+        x += w + S(16);
+    }
+    SelectObject(dc, uiFont_);
+}
+
 void MainWindow::Paint(HDC dc) {
     RECT rc;
     GetClientRect(hwnd_, &rc);
@@ -112,18 +187,17 @@ void MainWindow::Paint(HDC dc) {
     PaintToolbar(dc);
     FillRectColor(dc, {0, rcToolbar_.bottom - 1, rc.right, rcToolbar_.bottom}, Theme::Border);
 
-    // project header
-    SelectObject(dc, uiBold_);
-    RECT th = rcTreeHeader_;
-    th.left += S(12);
-    DrawTextColor(dc, L"ПРОЕКТ", th, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
-    if (!projectRoot_.empty()) {
-        if (hoverRefresh_) FillRectColor(dc, rcRefresh_, Theme::Hover);
-        DrawIcon(dc, 5, rcRefresh_, true);
-    } else {
-        SelectObject(dc, uiFont_);
-        RECT hint{S(12), rcTreeHeader_.bottom + S(10), rcTreeHeader_.right - S(8), rcTreeHeader_.bottom + S(90)};
-        DrawTextColor(dc, L"Проект не открыт.\nCtrl+Shift+O — открыть папку.", hint, Theme::Dim, DT_WORDBREAK);
+    // left panel header
+    PaintHeaderTabs(dc, rcTreeHeader_, {Tr(L"ПРОЕКТ"), Tr(L"СТРУКТУРА")}, static_cast<int>(leftTab_), leftTabRects_,
+                    hoverLeftTab_);
+    if (leftTab_ == LeftTab::Project) {
+        if (!projectRoot_.empty()) {
+            if (hoverRefresh_) FillRectColor(dc, rcRefresh_, Theme::Hover);
+            DrawIcon(dc, 5, rcRefresh_, true);
+        } else {
+            RECT hint{S(12), rcTreeHeader_.bottom + S(10), rcTreeHeader_.right - S(8), rcTreeHeader_.bottom + S(90)};
+            DrawTextColor(dc, Tr(L"Проект не открыт.\nCtrl+Shift+O — открыть папку."), hint, Theme::Dim, DT_WORDBREAK);
+        }
     }
 
     // splitters
@@ -132,6 +206,11 @@ void MainWindow::Paint(HDC dc) {
                        rcSplitV_.left + (rcSplitV_.right - rcSplitV_.left) / 2 + 1, rcSplitV_.bottom}, Theme::Border);
     FillRectColor(dc, rcSplitH_, Theme::EditorBg);
     FillRectColor(dc, {rcSplitH_.left, rcSplitH_.top + 1, rcSplitH_.right, rcSplitH_.top + 2}, Theme::Border);
+    if (SplitEditor()) {
+        FillRectColor(dc, rcSplitE_, Theme::EditorBg);
+        int mid = (rcSplitE_.left + rcSplitE_.right) / 2;
+        FillRectColor(dc, {mid, rcSplitE_.top, mid + 1, rcSplitE_.bottom}, Theme::Border);
+    }
 
     PaintTabs(dc);
     if (editors_.empty()) PaintWelcome(dc);
@@ -140,49 +219,59 @@ void MainWindow::Paint(HDC dc) {
         FillRectColor(dc, rcSplitD_, Theme::EditorBg);
         int mid = (rcSplitD_.left + rcSplitD_.right) / 2;
         FillRectColor(dc, {mid, rcSplitD_.top, mid + 1, rcSplitD_.bottom}, Theme::Border);
+        RECT tabs = rcDebugHeader_;
+        tabs.right -= S(4);
+        PaintHeaderTabs(dc, tabs, {Tr(L"Регистры"), Tr(L"Стек вызовов"), Tr(L"Наблюдение"), Tr(L"Код")},
+                        static_cast<int>(debugTab_), debugTabRects_, hoverDebugTab_);
         SelectObject(dc, uiBold_);
-        RECT h = rcDebugHeader_;
-        h.left += S(12);
-        DrawTextColor(dc, L"ОТЛАДКА", h, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
         RECT m = rcMemHeader_;
         m.left += S(12);
-        DrawTextColor(dc, L"ПАМЯТЬ", m, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
+        DrawTextColor(dc, Tr(L"ПАМЯТЬ"), m, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
         SelectObject(dc, uiFont_);
-        RECT st = rcDebugHeader_;
-        st.left += S(84);
-        st.right -= S(10);
-        DrawTextColor(dc, debugStatus_, st, debugStatusColor_, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS);
-        RECT frame;
-        GetWindowRect(memExpr_, &frame);
-        MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&frame), 2);
-        InflateRect(&frame, 1, 1);
-        SetDCBrushColor(dc, GetFocus() == memExpr_ ? Theme::Accent : Theme::Border);
-        FrameRect(dc, &frame, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        static const wchar_t* formats[] = {L"байты", L"word", L"dword", L"qword", L"float", L"double", L"текст"};
+        std::wstring format = std::wstring(Tr(formats[static_cast<int>(memFormat_)])) + L"  ▾";
+        if (hoverMemFormat_) FillRectColor(dc, rcMemFormat_, Theme::Hover);
+        DrawTextColor(dc, format, rcMemFormat_, hoverMemFormat_ ? Theme::Bright : Theme::Text,
+                      DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+        if (!debugStatus_.empty()) {  // stop reason under the tabs, right-aligned in the memory header
+            RECT st = rcMemHeader_;
+            st.left += S(80);
+            st.right = rcMemFormat_.left - S(8);
+            DrawTextColor(dc, debugStatus_, st, debugStatusColor_, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS);
+        }
+        for (HWND input : {memExpr_, debugTab_ == DebugTab::Watch ? watchExpr_ : nullptr}) {
+            if (!input) continue;
+            RECT frame;
+            GetWindowRect(input, &frame);
+            MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&frame), 2);
+            InflateRect(&frame, 1, 1);
+            SetDCBrushColor(dc, GetFocus() == input ? Theme::Accent : Theme::Border);
+            FrameRect(dc, &frame, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        }
     }
 
-    // console header and input row
-    SelectObject(dc, uiBold_);
-    RECT ch = rcConsoleHeader_;
-    ch.left += S(12);
-    DrawTextColor(dc, L"КОНСОЛЬ", ch, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
-    SelectObject(dc, uiFont_);
+    // bottom panel: tabs and the state of the program
+    int problems = static_cast<int>(buildDiagnostics_.size());
+    for (auto& e : editors_) problems += e->Count(Severity::Error) + e->Count(Severity::Warning);
+    std::wstring problemsTitle = Tr(L"Проблемы");
+    if (problems) problemsTitle += L" (" + std::to_wstring(problems) + L")";
+    RECT tabsArea = rcConsoleHeader_;
+    tabsArea.right = rcClear_.left;
+    PaintHeaderTabs(dc, tabsArea, {Tr(L"Вывод"), Tr(L"Терминал"), problemsTitle, Tr(L"Поиск"), Tr(L"Отладочный вывод")},
+                    static_cast<int>(pane_), paneRects_, hoverPane_);
+    RECT state = tabsArea;
+    state.left = paneRects_.empty() || paneRects_.back().right == 0 ? tabsArea.left : paneRects_.back().right + S(16);
     if (debugging_) {
-        RECT run = ch;
-        run.left += S(80);
         bool stopped = DebugStopped();
-        DrawTextColor(dc, stopped ? L"● отладка: остановлено" : L"● отладка: выполняется", run,
-                      stopped ? Theme::Warning : Theme::Success, DT_SINGLELINE | DT_VCENTER);
+        DrawTextColor(dc, stopped ? Tr(L"● отладка: остановлено") : Tr(L"● отладка: выполняется"), state,
+                      stopped ? Theme::Warning : Theme::Success, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     } else if (process_) {
-        RECT run = ch;
-        run.left += S(80);
-        DrawTextColor(dc, L"● программа выполняется — ввод прямо в консоли, Ctrl+Z и Enter — конец ввода", run,
-                      Theme::Success, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        DrawTextColor(dc, Tr(L"● программа выполняется — ввод во вкладке «Терминал»"), state, Theme::Success,
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     } else if (building_) {
-        RECT run = ch;
-        run.left += S(80);
-        DrawTextColor(dc, L"● сборка…", run, Theme::Warning, DT_SINGLELINE | DT_VCENTER);
+        DrawTextColor(dc, Tr(L"● сборка…"), state, Theme::Warning, DT_SINGLELINE | DT_VCENTER);
     }
-    DrawTextColor(dc, L"Очистить", rcClear_, hoverClear_ ? Theme::Bright : Theme::Muted,
+    DrawTextColor(dc, Tr(L"Очистить"), rcClear_, hoverClear_ ? Theme::Bright : Theme::Muted,
                   DT_SINGLELINE | DT_VCENTER | DT_RIGHT);
 
     PaintStatus(dc);
@@ -313,6 +402,8 @@ void MainWindow::PaintToolbar(HDC dc) {
         case ID_STEP_OUT: enabled = stopped; break;
         case ID_PAUSE: enabled = debugging_ && !stopped; break;
         case ID_STOP: enabled = process_ != nullptr || debugging_; break;
+        case ID_TARGET:
+        case ID_PROFILE: enabled = !debugging_ && !building_; break;
         }
         if ((int)i == hoverTool_ && enabled) {
             SetDCBrushColor(dc, Theme::Hover);
@@ -321,13 +412,36 @@ void MainWindow::PaintToolbar(HDC dc) {
             RoundRect(dc, t.rc.left, t.rc.top, t.rc.right, t.rc.bottom, S(6), S(6));
         }
         RECT tr = t.rc;
+        std::wstring text = ToolText(this, t.id, t.text);
+        if (t.id == ID_TARGET || t.id == ID_PROFILE) {  // drop-downs: what runs and the build profile
+            SetDCBrushColor(dc, Theme::Border);
+            FrameRect(dc, &tr, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            if (t.id == ID_TARGET) {
+                fs::path target = !mainFile_.empty() ? mainFile_ : (Active() ? Active()->file() : fs::path());
+                text = target.empty() ? Tr(L"активный файл") : target.filename().wstring();
+                if (runConfig_.Wsl()) text += L" · Linux";
+                if (runConfig_.output != L"exe") text += L" · " + runConfig_.output;
+            } else {
+                text = runConfig_.profile;
+            }
+            text += L"  ▾";
+            if (t.id == ID_TARGET) {
+                RECT ir{tr.left + S(6), tr.top, tr.left + S(26), tr.bottom};
+                DrawIcon(dc, 2, ir, enabled);
+                tr.left += S(28);
+                DrawTextColor(dc, text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            } else {
+                DrawTextColor(dc, text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            }
+            continue;
+        }
         if (t.icon) {
             RECT ir{tr.left + S(6), tr.top, tr.left + S(26), tr.bottom};
             DrawIcon(dc, t.icon, ir, enabled);
             tr.left += S(28);
-            DrawTextColor(dc, t.text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER);
+            DrawTextColor(dc, text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER);
         } else {
-            DrawTextColor(dc, t.text, tr, Theme::Text, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            DrawTextColor(dc, text, tr, Theme::Text, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
         if (i + 1 < tools_.size() && t.menu && !tools_[i + 1].menu) {
             int sx = t.rc.right + S(8);
@@ -348,7 +462,7 @@ void MainWindow::PaintTabs(HDC dc) {
     SelectObject(dc, uiFont_);
     for (auto& ed : editors_) {
         std::wstring title = (ed->Modified() ? L"● " : L"") + ed->Title();
-        int w = TextWidth(dc, title) + S(48);
+        int w = TextWidth(dc, title) + S(ed->pinned ? 58 : 48);
         widths.push_back(w);
         total += w;
     }
@@ -370,24 +484,38 @@ void MainWindow::PaintTabs(HDC dc) {
         RECT r{x, rcTabs_.top, x + widths[i], rcTabs_.bottom};
         tabRects_[i] = r;
         bool active = (int)i == active_;
+        bool inRight = (int)i == splitIndex_;
+        bool focused = active ? !(focusRight_ && SplitEditor()) : inRight && focusRight_;
         RECT body = r;
-        if (active) body.bottom += 0;
-        else body.bottom -= 1;
-        FillRectColor(dc, body, active ? Theme::EditorBg : ((int)i == hoverTab_ ? Theme::Hover : Theme::PanelBg));
-        if (active) FillRectColor(dc, {r.left, r.top, r.right, r.top + S(2)}, Theme::Accent);
+        if (!active && !inRight) body.bottom -= 1;
+        FillRectColor(dc, body, active || inRight ? Theme::EditorBg : ((int)i == hoverTab_ ? Theme::Hover : Theme::PanelBg));
+        if (active || inRight) FillRectColor(dc, {r.left, r.top, r.right, r.top + S(2)}, focused ? Theme::Accent : Theme::Muted);
+        if ((int)i == dragTab_ && drag_ == Drag::Tab && dragMoved_) {
+            SetDCBrushColor(dc, Theme::Accent);
+            FrameRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        }
         FillRectColor(dc, {r.right - 1, r.top + S(6), r.right, r.bottom - S(6)}, Theme::Border);
 
         bool errors = ed.Count(Severity::Error) > 0;
         bool isMain = !mainFile_.empty() && SamePath(ed.file(), mainFile_);
         std::wstring title = (ed.Modified() ? L"● " : L"") + ed.Title();
-        RECT tr{r.left + S(12), r.top, r.right - S(28), r.bottom};
+        int textLeft = r.left + S(12);
+        if (ed.pinned) {  // pinned: a small accent mark before the title
+            SetDCBrushColor(dc, Theme::Accent);
+            SelectObject(dc, GetStockObject(DC_BRUSH));
+            SelectObject(dc, GetStockObject(NULL_PEN));
+            int cy = (r.top + r.bottom) / 2;
+            Ellipse(dc, textLeft, cy - S(3), textLeft + S(7), cy + S(4));
+            textLeft += S(12);
+        }
+        RECT tr{textLeft, r.top, r.right - S(28), r.bottom};
         SelectObject(dc, isMain ? uiBold_ : uiFont_);
-        DrawTextColor(dc, title, tr, errors ? Theme::Error : (active ? Theme::Bright : Theme::Muted),
+        DrawTextColor(dc, title, tr, errors ? Theme::Error : (active || inRight ? Theme::Bright : Theme::Muted),
                       DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         RECT cr{r.right - S(26), r.top + S(8), r.right - S(8), r.bottom - S(6)};
         closeRects_[i] = cr;
         if ((int)i == hoverClose_) FillRectColor(dc, cr, Theme::Pressed);
-        if (active || (int)i == hoverTab_) {
+        if (active || inRight || (int)i == hoverTab_) {
             SelectObject(dc, uiFont_);
             DrawTextColor(dc, L"✕", cr, (int)i == hoverClose_ ? Theme::Bright : Theme::Muted,
                           DT_SINGLELINE | DT_VCENTER | DT_CENTER);
@@ -408,27 +536,31 @@ void MainWindow::PaintWelcome(HDC dc) {
     DrawTextColor(dc, L"AsmEditor", {x, y, rcEditor_.right, y + S(44)}, Theme::Bright, DT_SINGLELINE);
     y += S(48);
     SelectObject(dc, uiFont_);
-    DrawTextColor(dc, L"Редактор NASM: подсветка, проверка ошибок, сборка и запуск", {x, y, rcEditor_.right, y + S(20)},
-                  Theme::Muted, DT_SINGLELINE);
+    DrawTextColor(dc, Tr(L"Редактор NASM: подсветка, проверка ошибок, сборка, запуск и отладка"),
+                  {x, y, rcEditor_.right, y + S(20)}, Theme::Muted, DT_SINGLELINE);
     y += S(40);
-    const wchar_t* hints[][2] = {
-        {L"Ctrl+N", L"новый файл"},
-        {L"Ctrl+O", L"открыть файл"},
-        {L"Ctrl+Shift+O", L"открыть папку проекта"},
-        {L"Ctrl+F5", L"собрать и запустить"},
-        {L"F5", L"отладка (F9 — точка останова, F10/F11 — шаги)"},
-        {L"Ctrl+F9", L"только собрать"},
-        {L"Ctrl+Alt+S", L"настройки NASM и линкера"},
+    const std::pair<int, const wchar_t*> hints[] = {
+        {ID_NEW, L"новый файл"},
+        {ID_OPEN_FILE, L"открыть файл"},
+        {ID_OPEN_FOLDER, L"открыть папку проекта"},
+        {ID_QUICK_OPEN, L"перейти к файлу проекта"},
+        {ID_COMMAND_PALETTE, L"все команды"},
+        {ID_RUN, L"собрать и запустить"},
+        {ID_DEBUG, L"отладка (F9 — точка останова, F10/F11 — шаги)"},
+        {ID_SETTINGS, L"настройки NASM и линкера"},
     };
-    for (auto& h : hints) {
-        DrawTextColor(dc, h[0], {x, y, x + S(110), y + S(20)}, Theme::Link, DT_SINGLELINE);
-        DrawTextColor(dc, h[1], {x + S(120), y, rcEditor_.right, y + S(20)}, Theme::Text, DT_SINGLELINE);
+    for (auto [id, text] : hints) {
+        std::wstring keys = KeysFor(id);
+        size_t slash = keys.find(L" / ");
+        if (slash != std::wstring::npos) keys.erase(slash);
+        DrawTextColor(dc, keys, {x, y, x + S(130), y + S(20)}, Theme::Link, DT_SINGLELINE);
+        DrawTextColor(dc, Tr(text), {x + S(140), y, rcEditor_.right, y + S(20)}, Theme::Text, DT_SINGLELINE);
         y += S(24);
     }
     if (!settings_->recent.empty()) {
         y += S(20);
         SelectObject(dc, uiBold_);
-        DrawTextColor(dc, L"Недавние проекты", {x, y, rcEditor_.right, y + S(20)}, Theme::Muted, DT_SINGLELINE);
+        DrawTextColor(dc, Tr(L"Недавние проекты"), {x, y, rcEditor_.right, y + S(20)}, Theme::Muted, DT_SINGLELINE);
         y += S(28);
         SelectObject(dc, uiFont_);
         for (size_t i = 0; i < settings_->recent.size() && y < rcEditor_.bottom - S(24); i++) {
@@ -450,17 +582,17 @@ void MainWindow::PaintStatus(HDC dc) {
     DrawTextColor(dc, toolStatus_, left, toolStatusWarn_ ? Theme::Warning : Theme::Muted, DT_SINGLELINE | DT_VCENTER);
 
     std::vector<std::pair<std::wstring, COLORREF>> parts;
-    if (Editor* ed = Active()) {
+    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    if (ed) {
         int errors = ed->Count(Severity::Error), warnings = ed->Count(Severity::Warning);
-        if (errors) parts.push_back({L"Ошибок: " + std::to_wstring(errors), Theme::Error});
-        if (warnings) parts.push_back({L"Предупреждений: " + std::to_wstring(warnings), Theme::Warning});
-        if (!mainFile_.empty()) parts.push_back({L"main: " + mainFile_.filename().wstring(), Theme::Muted});
-        parts.push_back({L"Стр " + std::to_wstring(ed->CaretLine()) + L", Кол " + std::to_wstring(ed->CaretColumn()),
-                         Theme::Muted});
+        if (errors) parts.push_back({std::wstring(Tr(L"Ошибок: ")) + std::to_wstring(errors), Theme::Error});
+        if (warnings) parts.push_back({std::wstring(Tr(L"Предупреждений: ")) + std::to_wstring(warnings), Theme::Warning});
+        int carets = static_cast<int>(ed->Call(SCI_GETSELECTIONS));
+        if (carets > 1) parts.push_back({std::wstring(Tr(L"Курсоров: ")) + std::to_wstring(carets), Theme::Link});
+        parts.push_back({std::wstring(Tr(L"Стр ")) + std::to_wstring(ed->CaretLine()) + Tr(L", Кол ") +
+                             std::to_wstring(ed->CaretColumn()), Theme::Muted});
         parts.push_back({ed->EncodingName(), Theme::Muted});
         parts.push_back({ed->EolName(), Theme::Muted});
-    } else if (!mainFile_.empty()) {
-        parts.push_back({L"main: " + mainFile_.filename().wstring(), Theme::Muted});
     }
     int x = rcStatus_.right - S(12);
     for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
@@ -486,7 +618,20 @@ void MainWindow::OnMouseMove(int x, int y) {
         Layout();
         return;
     }
-    int tool = -1, tab = -1, close = -1, link = -1;
+    if (drag_ == Drag::Tab) {  // reorder: the dragged tab takes the place of the tab under the mouse
+        if (!dragMoved_ && std::abs(x - dragStartX_) < S(8)) return;
+        dragMoved_ = true;
+        for (size_t i = 0; i < tabRects_.size(); i++) {
+            if (static_cast<int>(i) == dragTab_ || x < tabRects_[i].left || x >= tabRects_[i].right) continue;
+            if (editors_[i]->pinned != editors_[dragTab_]->pinned) break;  // pinned tabs stay in front
+            MoveTab(dragTab_, static_cast<int>(i));
+            dragTab_ = static_cast<int>(i);
+            break;
+        }
+        InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        return;
+    }
+    int tool = -1, tab = -1, close = -1, link = -1, pane = -1, leftTab = -1, debugTab = -1;
     for (size_t i = 0; i < tools_.size(); i++) if (Contains(tools_[i].rc, x, y)) tool = (int)i;
     for (size_t i = 0; i < tabRects_.size(); i++) {
         if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y)) tab = (int)i;
@@ -495,16 +640,27 @@ void MainWindow::OnMouseMove(int x, int y) {
     if (editors_.empty()) {
         for (size_t i = 0; i < welcomeLinks_.size(); i++) if (Contains(welcomeLinks_[i].first, x, y)) link = (int)i;
     }
+    for (size_t i = 0; i < paneRects_.size(); i++) if (Contains(paneRects_[i], x, y)) pane = (int)i;
+    for (size_t i = 0; i < leftTabRects_.size(); i++) if (Contains(leftTabRects_[i], x, y)) leftTab = (int)i;
+    if (DebugPanelVisible()) {
+        for (size_t i = 0; i < debugTabRects_.size(); i++) if (Contains(debugTabRects_[i], x, y)) debugTab = (int)i;
+    }
     bool clear = Contains(rcClear_, x, y);
     bool refresh = !projectRoot_.empty() && Contains(rcRefresh_, x, y);
+    bool memFormat = DebugPanelVisible() && Contains(rcMemFormat_, x, y);
     if (tool != hoverTool_ || tab != hoverTab_ || close != hoverClose_ || link != hoverLink_ || clear != hoverClear_ ||
-        refresh != hoverRefresh_) {
+        refresh != hoverRefresh_ || pane != hoverPane_ || leftTab != hoverLeftTab_ || debugTab != hoverDebugTab_ ||
+        memFormat != hoverMemFormat_) {
         hoverTool_ = tool;
         hoverTab_ = tab;
         hoverClose_ = close;
         hoverLink_ = link;
         hoverClear_ = clear;
         hoverRefresh_ = refresh;
+        hoverPane_ = pane;
+        hoverLeftTab_ = leftTab;
+        hoverDebugTab_ = debugTab;
+        hoverMemFormat_ = memFormat;
         InvalidateChrome();
     }
     TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd_, 0};
@@ -514,8 +670,8 @@ void MainWindow::OnMouseMove(int x, int y) {
 void MainWindow::OnClick(int x, int y, bool middle) {
     for (size_t i = 0; i < tabRects_.size(); i++) {
         if (!Contains(tabRects_[i], x, y) || !Contains(rcTabs_, x, y)) continue;
-        if (middle || Contains(closeRects_[i], x, y)) CloseEditor((int)i);
-        else Activate((int)i);
+        if ((middle && !editors_[i]->pinned) || Contains(closeRects_[i], x, y)) CloseEditor((int)i);
+        else if (!middle) Activate((int)i);
         return;
     }
     if (middle) return;
@@ -523,15 +679,20 @@ void MainWindow::OnClick(int x, int y, bool middle) {
         if (!Contains(t.rc, x, y)) continue;
         if (t.menu) {
             HMENU menu = t.id == ID_MENU_FILE ? fileMenu_ : t.id == ID_MENU_EDIT ? editMenu_
-                       : t.id == ID_MENU_VIEW ? viewMenu_ : runMenu_;
+                       : t.id == ID_MENU_VIEW ? viewMenu_ : t.id == ID_MENU_HELP ? helpMenu_ : runMenu_;
             if (menu == fileMenu_) {
                 while (GetMenuItemCount(recentMenu_) > 0) DeleteMenu(recentMenu_, 0, MF_BYPOSITION);
                 for (size_t i = 0; i < settings_->recent.size(); i++) {
                     AppendMenuW(recentMenu_, MF_STRING, ID_RECENT + i, settings_->recent[i].c_str());
                 }
-                if (settings_->recent.empty()) AppendMenuW(recentMenu_, MF_STRING | MF_GRAYED, 0, L"(пусто)");
+                if (settings_->recent.empty()) AppendMenuW(recentMenu_, MF_STRING | MF_GRAYED, 0, Tr(L"(пусто)"));
             }
-            EnableMenuItem(runMenu_, ID_STOP, process_ ? MF_ENABLED : MF_GRAYED);
+            EnableMenuItem(runMenu_, ID_STOP, process_ || debugging_ ? MF_ENABLED : MF_GRAYED);
+            CheckMenuItem(runMenu_, ID_PROFILE_DEBUG, !runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
+            CheckMenuItem(runMenu_, ID_PROFILE_RELEASE, runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
+            for (int id : {ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT, ID_SET_NEXT}) {
+                EnableMenuItem(runMenu_, id, !debugging_ || DebugStopped() ? MF_ENABLED : MF_GRAYED);
+            }
             POINT p{t.rc.left, t.rc.bottom};
             ClientToScreen(hwnd_, &p);
             TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
@@ -539,6 +700,47 @@ void MainWindow::OnClick(int x, int y, bool middle) {
             OnCommand(t.id);
         }
         return;
+    }
+    for (size_t i = 0; i < paneRects_.size(); i++) {
+        if (!Contains(paneRects_[i], x, y)) continue;
+        Pane p = static_cast<Pane>(i);
+        if (p == Pane::Problems) RefreshProblems();
+        ShowPane(p);
+        if (p == Pane::Terminal) SetFocus(View(p).hwnd());
+        return;
+    }
+    for (size_t i = 0; i < leftTabRects_.size(); i++) {
+        if (Contains(leftTabRects_[i], x, y)) {
+            ShowLeftTab(static_cast<LeftTab>(i));
+            return;
+        }
+    }
+    if (DebugPanelVisible()) {
+        for (size_t i = 0; i < debugTabRects_.size(); i++) {
+            if (Contains(debugTabRects_[i], x, y)) {
+                ShowDebugTab(static_cast<DebugTab>(i));
+                return;
+            }
+        }
+        if (Contains(rcMemFormat_, x, y)) {
+            HMENU menu = CreatePopupMenu();
+            static const wchar_t* formats[] = {L"байты", L"word (2 байта)", L"dword (4 байта)", L"qword (8 байт)",
+                                               L"float", L"double", L"текст"};
+            for (int i = 0; i < static_cast<int>(MemFormat::Count); i++) {
+                AppendMenuW(menu, MF_STRING | (i == static_cast<int>(memFormat_) ? MF_CHECKED : 0), i + 1, Tr(formats[i]));
+            }
+            POINT p{rcMemFormat_.left, rcMemFormat_.bottom};
+            ClientToScreen(hwnd_, &p);
+            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
+            DestroyMenu(menu);
+            if (cmd > 0) {
+                memFormat_ = static_cast<MemFormat>(cmd - 1);
+                prevMem_.clear();
+                RenderMemory();
+                InvalidateRect(hwnd_, &rcMemHeader_, FALSE);
+            }
+            return;
+        }
     }
     if (Contains(rcClear_, x, y)) OnCommand(ID_CLEAR_CONSOLE);
     else if (!projectRoot_.empty() && Contains(rcRefresh_, x, y)) RefreshTree();
@@ -552,10 +754,107 @@ void MainWindow::OnClick(int x, int y, bool middle) {
     }
 }
 
+void MainWindow::OnRightClick(int x, int y) {
+    for (size_t i = 0; i < tabRects_.size(); i++) {
+        if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y)) {
+            TabMenu(static_cast<int>(i));
+            return;
+        }
+    }
+}
+
 void MainWindow::UpdateTitle() {
     std::wstring title;
     if (!projectRoot_.empty()) title += projectRoot_.filename().wstring() + L" – ";
     if (Editor* ed = Active()) title += ed->Title() + L" – ";
     title += L"AsmEditor";
     SetWindowTextW(hwnd_, title.c_str());
+}
+
+// ---- mark bar ---------------------------------------------------------------------------------------------------
+
+LRESULT CALLBACK MainWindow::MarkBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* self = reinterpret_cast<MainWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    switch (msg) {
+    case WM_NCCREATE:
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA,
+                          reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams));
+        break;
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        if (self) self->PaintMarkBar(hwnd, dc);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case WM_LBUTTONDOWN:
+        if (self) self->MarkBarClick(hwnd, GET_Y_LPARAM(lp));
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+// Marks along the editor, at the height of their line in the whole file: errors, warnings, breakpoints, the
+// execution line and highlighted search hits; a light band shows the visible part.
+void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
+    RECT rc;
+    GetClientRect(bar, &rc);
+    HDC mem = CreateCompatibleDC(dc);
+    HBITMAP bmp = CreateCompatibleBitmap(dc, std::max(1L, rc.right), std::max(1L, rc.bottom));
+    HGDIOBJ old = SelectObject(mem, bmp);
+    FillRectColor(mem, rc, Theme::EditorBg);
+    Editor* ed = bar == markBar2_ ? SplitEditor() : Active();
+    if (ed) {
+        int lines = std::max<int>(1, static_cast<int>(ed->Call(SCI_GETLINECOUNT)));
+        int h = rc.bottom, w = rc.right;
+        auto yOf = [&](int line) { return static_cast<int>(static_cast<int64_t>(line) * h / lines); };
+        int first = static_cast<int>(ed->Call(SCI_DOCLINEFROMVISIBLE, ed->Call(SCI_GETFIRSTVISIBLELINE)));
+        int shown = static_cast<int>(ed->Call(SCI_LINESONSCREEN));
+        if (shown < lines) FillRectColor(mem, {0, yOf(first), w, std::max(yOf(first + shown), yOf(first) + 2)}, Theme::Hover);
+        int markH = std::max(2, S(3));
+        auto mark = [&](int line, COLORREF c, int left, int right) {
+            int y = yOf(line);
+            FillRectColor(mem, {left, y, right, std::min(h, y + markH)}, c);
+        };
+        for (int ind : {Editor::kIndicatorFind, Editor::kIndicatorOccurrence, Editor::kIndicatorSearch}) {
+            Sci_Position len = ed->Call(SCI_GETLENGTH);
+            Sci_Position pos = 0;
+            for (int count = 0; pos < len && count < 2000; count++) {
+                // INDICATOREND of a position outside the indicator is where the next run starts.
+                Sci_Position start = ed->Call(SCI_INDICATORVALUEAT, ind, pos) ? pos : ed->Call(SCI_INDICATOREND, ind, pos);
+                if (start <= pos && !ed->Call(SCI_INDICATORVALUEAT, ind, pos)) break;
+                if (start >= len || !ed->Call(SCI_INDICATORVALUEAT, ind, start)) break;
+                mark(static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, start)), Theme::Accent, w / 2, w);
+                Sci_Position end = ed->Call(SCI_INDICATOREND, ind, start);
+                if (end <= start) break;
+                pos = end;
+            }
+        }
+        for (const auto& [line, diags] : ed->Diagnostics()) {
+            bool error = std::any_of(diags.begin(), diags.end(), [](const Diagnostic& d) { return d.severity == Severity::Error; });
+            mark(line - 1, error ? Theme::Error : Theme::Warning, 0, w);
+        }
+        for (const auto& [line, condition] : ed->Breakpoints()) {
+            mark(line - 1, condition.empty() ? Theme::Breakpoint : Theme::ConditionalBreakpoint, 0, w / 2);
+        }
+        Sci_Position exec = ed->Call(SCI_MARKERNEXT, 0, 1 << Editor::kMarkerExecArrow);
+        if (exec >= 0) mark(static_cast<int>(exec), Theme::ExecArrow, 0, w);
+    }
+    FillRectColor(mem, {0, 0, 1, rc.bottom}, Theme::Border);
+    BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+}
+
+void MainWindow::MarkBarClick(HWND bar, int y) {
+    Editor* ed = bar == markBar2_ ? SplitEditor() : Active();
+    if (!ed) return;
+    RECT rc;
+    GetClientRect(bar, &rc);
+    int lines = static_cast<int>(ed->Call(SCI_GETLINECOUNT));
+    int line = static_cast<int>(static_cast<int64_t>(std::clamp<int>(y, 0, rc.bottom)) * lines / std::max(1L, rc.bottom));
+    ed->GotoLine(line + 1);
 }

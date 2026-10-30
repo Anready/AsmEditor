@@ -7,3 +7,4 @@ build/
 third_party/scintilla/bin/
 third_party/scintilla/win32/obj/
 .asmeditor/
+AsmEditor-portable.zip

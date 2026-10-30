@@ -96,17 +96,17 @@ void InitDarkMode() {
     using FlushMenuThemesFn = void(WINAPI*)();
     auto setMode = reinterpret_cast<SetPreferredAppModeFn>(GetProcAddress(ux, MAKEINTRESOURCEA(135)));
     auto flush = reinterpret_cast<FlushMenuThemesFn>(GetProcAddress(ux, MAKEINTRESOURCEA(136)));
-    if (setMode) setMode(2 /* ForceDark */);
+    if (setMode) setMode(Theme::Dark ? 2 /* ForceDark */ : 3 /* ForceLight */);
     if (flush) flush();
 }
 
 void ApplyDarkWindow(HWND hwnd) {
-    BOOL dark = TRUE;
+    BOOL dark = Theme::Dark;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
 }
 
 void ApplyDarkControl(HWND hwnd) {
-    SetWindowTheme(hwnd, L"DarkMode_Explorer", nullptr);
+    SetWindowTheme(hwnd, Theme::Dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
 }
 
 int Scale(int value, int dpi) {
@@ -273,9 +273,9 @@ LRESULT CALLBACK FlatButtonProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             SetTextColor(dc, enabled ? Theme::Text : Theme::Dim);
             DrawTextW(dc, text, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_LEFT);
         } else {
-            COLORREF face = (st->flags & FB_PRIMARY) ? Theme::Accent : Hex(0x393B40);
-            if (enabled && st->pressed) face = (st->flags & FB_PRIMARY) ? Hex(0x2E5FC4) : Theme::Pressed;
-            else if (enabled && st->hover) face = (st->flags & FB_PRIMARY) ? Hex(0x4682F5) : Theme::Hover;
+            COLORREF face = (st->flags & FB_PRIMARY) ? Theme::Accent : Theme::Border;
+            if (enabled && st->pressed) face = (st->flags & FB_PRIMARY) ? Theme::Blend(Theme::Accent, 0, 15) : Theme::Pressed;
+            else if (enabled && st->hover) face = (st->flags & FB_PRIMARY) ? Theme::Blend(Theme::Accent, 0xFFFFFF, 12) : Theme::Hover;
             HBRUSH fill = CreateSolidBrush(face);
             HPEN pen = CreatePen(PS_SOLID, 1, GetFocus() == hwnd ? Theme::Accent : face);
             SelectObject(dc, fill);
@@ -359,6 +359,20 @@ void Settings::Load() {
     linkerPath = get(L"linker.path");
     linkerArgs = get(L"linker.args");
     libPaths = Split(get(L"linker.libPaths"), L'|');
+    releaseNasmArgs = get(L"release.nasmArgs");
+    releaseLinkerArgs = get(L"release.linkerArgs");
+    stackCheck = get(L"editor.stackCheck", L"1") == L"1";
+    autosave = get(L"editor.autosave") == L"1";
+    log = get(L"log") == L"1";
+    theme = get(L"ui.theme", L"dark");
+    language = get(L"ui.language", L"ru");
+    formatIndent = getInt(L"format.indent", 4);
+    formatOperands = getInt(L"format.operands", 12);
+    formatComments = getInt(L"format.comments", 40);
+    keys.clear();
+    for (const auto& [k, v] : kv) {
+        if (k.rfind(L"key.", 0) == 0) keys[k.substr(4)] = v;
+    }
     programEncoding = get(L"run.encoding", L"UTF-8");
     externalConsole = get(L"run.externalConsole") == L"1";
     liveCheck = get(L"editor.liveCheck", L"1") == L"1";
@@ -375,7 +389,7 @@ void Settings::Load() {
 }
 
 void Settings::Save() const {
-    WriteIni(Dir() / L"settings.ini", {
+    std::vector<std::pair<std::wstring, std::wstring>> kv = {
         {L"nasm.path", nasmPath},
         {L"nasm.args", nasmArgs},
         {L"linker.preset", linkerPreset},
@@ -397,5 +411,17 @@ void Settings::Save() const {
         {L"layout.treeWidth", std::to_wstring(treeWidth)},
         {L"layout.consoleHeight", std::to_wstring(consoleHeight)},
         {L"layout.debugWidth", std::to_wstring(debugWidth)},
-    });
+        {L"release.nasmArgs", releaseNasmArgs},
+        {L"release.linkerArgs", releaseLinkerArgs},
+        {L"editor.stackCheck", stackCheck ? L"1" : L"0"},
+        {L"editor.autosave", autosave ? L"1" : L"0"},
+        {L"log", log ? L"1" : L"0"},
+        {L"ui.theme", theme},
+        {L"ui.language", language},
+        {L"format.indent", std::to_wstring(formatIndent)},
+        {L"format.operands", std::to_wstring(formatOperands)},
+        {L"format.comments", std::to_wstring(formatComments)},
+    };
+    for (const auto& [name, value] : keys) kv.push_back({L"key." + name, value});
+    WriteIni(Dir() / L"settings.ini", kv);
 }

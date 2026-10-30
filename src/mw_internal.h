@@ -3,6 +3,7 @@
 // Shared by the mainwindow*.cpp / mw_*.cpp files that implement MainWindow.
 
 #include "mainwindow.h"
+#include "asmtools.h"
 
 #include <cmath>
 #include <fstream>
@@ -19,15 +20,27 @@ enum : int {
     ID_RESET_MAIN, ID_SETTINGS, ID_NEXT_TAB, ID_PREV_TAB, ID_REFRESH_TREE,
     ID_DEBUG, ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT, ID_PAUSE, ID_TOGGLE_BP, ID_CLEAR_BPS, ID_DEBUG_PANEL,
     ID_COMPLETE, ID_REBUILD, ID_GOTO_DEF, ID_NAV_BACK, ID_NAV_FORWARD, ID_FIND_USAGES, ID_RENAME, ID_SHOW_HINT,
-    ID_MENU_FILE = 300, ID_MENU_EDIT, ID_MENU_VIEW, ID_MENU_RUN,
+    // editor
+    ID_FIND_IN_FILES, ID_COMMAND_PALETTE, ID_QUICK_OPEN, ID_FORMAT, ID_SNIPPET, ID_ADD_CARET_UP, ID_ADD_CARET_DOWN,
+    ID_SELECT_NEXT, ID_SELECT_ALL_OCCURRENCES, ID_FOLD_ALL, ID_UNFOLD_ALL, ID_TOGGLE_FOLD, ID_OUTLINE,
+    ID_SPLIT, ID_UNSPLIT, ID_CLOSE_OTHERS, ID_CLOSE_ALL, ID_PIN_TAB,
+    // run & debug
+    ID_RUN_TO_CURSOR, ID_SET_NEXT, ID_ADD_WATCH, ID_DATA_BP, ID_BP_CONDITION, ID_RUN_CONFIG, ID_CHOOSE_TARGET,
+    ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_SHOW_PROBLEMS, ID_SHOW_TERMINAL, ID_SHOW_OUTPUT,
+    // learning & help
+    ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_KEYS, ID_CHECK_UPDATES, ID_OPEN_LOG, ID_ABOUT, ID_LANGUAGE,
+    ID_MENU_FILE = 300, ID_MENU_EDIT, ID_MENU_VIEW, ID_MENU_RUN, ID_MENU_HELP, ID_TARGET, ID_PROFILE,
     ID_RECENT = 400,
     ID_TREE_NEW_FILE = 500, ID_TREE_NEW_FOLDER, ID_TREE_OPEN, ID_TREE_MAIN, ID_TREE_RENAME, ID_TREE_DELETE,
     ID_TREE_REVEAL, ID_TREE_EXCLUDE,
-    ID_TREE_CTRL = 601, ID_MEM_EXPR = 603,
+    ID_TREE_CTRL = 601, ID_MEM_EXPR = 603, ID_WATCH_EXPR = 604, ID_OUTLINE_CTRL = 605,
+    ID_THEME = 700,  // + index of Theme::All()
 };
 
 // Styles of the debug panel views.
-enum PanelStyle : int { P_TEXT = 0, P_LABEL, P_CHANGED, P_HEADER, P_SYMBOL, P_FLAG_ON, P_DIM, P_ERROR, P_ADDR };
+enum PanelStyle : int {
+    P_TEXT = 0, P_LABEL, P_CHANGED, P_HEADER, P_SYMBOL, P_FLAG_ON, P_DIM, P_ERROR, P_ADDR, P_CURRENT, P_CODE
+};
 
 enum : UINT {
     WM_APP_OUTPUT = WM_APP + 1,   // wp = Out, lp = std::string*
@@ -38,10 +51,16 @@ enum : UINT {
     WM_APP_PTY_OUTPUT,            // wp = console session, lp = std::string* (raw VT output)
     WM_APP_PTY_RENDER,            // repaint the terminal after a batch of output
     WM_APP_PTY_DONE,              // wp = exit code, lp = console session
+    WM_APP_INFO,                  // wp = Out, lp = std::string* (background result for the Output tab)
+    WM_APP_SOLUTION_DONE,         // lp = std::string* (report of an exercise check), wp = 1 if all tests passed
 };
 
 constexpr UINT_PTR kCheckTimerBase = 1000;
 constexpr UINT_PTR kConsoleFocusTimer = 2;
+constexpr UINT_PTR kOccurrenceTimer = 3;  // highlight uses of the word under the caret after a pause
+constexpr UINT_PTR kOutlineTimer = 4;     // rebuild the outline after edits
+constexpr UINT_PTR kBackupTimer = 5;      // write unsaved texts for crash recovery
+constexpr UINT_PTR kRepaintTimer = 6;
 
 struct BuildDone {
     BuildResult result;
@@ -67,26 +86,6 @@ struct CheckDone {
     std::vector<Diagnostic> diagnostics;
 };
 
-const char* kTemplate =
-    "; Hello, world для Windows x64 (NASM + MSVC link + C runtime)\r\n"
-    "default rel\r\n"
-    "\r\n"
-    "extern printf\r\n"
-    "\r\n"
-    "global main\r\n"
-    "\r\n"
-    "section .data\r\n"
-    "    msg     db \"Hello, world!\", 10, 0\r\n"
-    "\r\n"
-    "section .text\r\n"
-    "main:\r\n"
-    "    sub     rsp, 40             ; shadow space (32 байта) + выравнивание стека на 16\r\n"
-    "    lea     rcx, [msg]          ; 1-й аргумент — в rcx\r\n"
-    "    call    printf\r\n"
-    "    add     rsp, 40\r\n"
-    "    xor     eax, eax            ; return 0\r\n"
-    "    ret\r\n";
-
 const std::set<std::wstring> kHiddenDirs = {L".asmeditor", L".git", L".idea", L".vs", L".vscode"};
 
 inline void FillRectColor(HDC dc, const RECT& r, COLORREF c) {
@@ -108,6 +107,30 @@ inline void DrawTextColor(HDC dc, const std::wstring& s, RECT r, COLORREF c, UIN
 inline bool Contains(const RECT& r, int x, int y) {
     POINT p{x, y};
     return PtInRect(&r, p) != 0;
+}
+
+// Escapes a value for one line of project.ini (backslash and line breaks).
+inline std::wstring EscapeValue(const std::wstring& v) {
+    std::wstring out;
+    for (wchar_t c : v) {
+        if (c == L'\\') out += L"\\\\";
+        else if (c == L'\n') out += L"\\n";
+        else if (c != L'\r') out += c;
+    }
+    return out;
+}
+
+inline std::wstring UnescapeValue(const std::wstring& v) {
+    std::wstring out;
+    for (size_t i = 0; i < v.size(); i++) {
+        if (v[i] == L'\\' && i + 1 < v.size()) {
+            out += v[i + 1] == L'n' ? L'\n' : v[i + 1];
+            i++;
+        } else {
+            out += v[i];
+        }
+    }
+    return out;
 }
 
 inline std::map<std::wstring, std::wstring> ReadKeyValues(const fs::path& file) {

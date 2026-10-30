@@ -83,6 +83,10 @@ std::wstring Key(const fs::path& p) {
     return Lower(NormalizePath(p).wstring());
 }
 
+bool DefinesMain(const fs::path& file) {
+    return DefinesMain(ReadText(file));
+}
+
 bool IsSourceFile(const fs::path& p) {
     std::wstring ext = Lower(p.extension().wstring());
     return ext == L".asm" || ext == L".s" || ext == L".nasm";

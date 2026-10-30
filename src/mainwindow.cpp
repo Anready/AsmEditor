@@ -2,20 +2,50 @@
 #include "hints.h"
 #include "project.h"
 
+namespace {
+
+// Scintilla creates the completion list (ListBoxX and its list box) on first use; give the new windows the theme
+// before they are shown, so the first popup does not flash a light scrollbar.
+HHOOK g_cbtHook = nullptr;
+
+LRESULT CALLBACK CbtProc(int code, WPARAM wp, LPARAM lp) {
+    if (code == HCBT_CREATEWND) {
+        auto* create = reinterpret_cast<CBT_CREATEWNDW*>(lp);
+        HWND hwnd = reinterpret_cast<HWND>(wp);
+        wchar_t cls[32] = L"", parentCls[32] = L"";
+        GetClassNameW(hwnd, cls, 32);
+        if (create->lpcs->hwndParent) GetClassNameW(create->lpcs->hwndParent, parentCls, 32);
+        if (wcscmp(cls, L"ListBoxX") == 0 || wcscmp(parentCls, L"ListBoxX") == 0) ApplyDarkControl(hwnd);
+    }
+    return CallNextHookEx(g_cbtHook, code, wp, lp);
+}
+}
+
 // ---- creation ---------------------------------------------------------------------------------------------------
 
 bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
     inst_ = inst;
     settings_ = settings;
     findMsg_ = RegisterWindowMessageW(FINDMSGSTRINGW);
+    debugStatusColor_ = Theme::Muted;
 
     WNDCLASSEXW wc{sizeof(wc)};
     wc.lpfnWndProc = Proc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    if (!wc.hIcon) wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
     wc.lpszClassName = L"AsmEditorMain";
     RegisterClassExW(&wc);
+
+    WNDCLASSW bar{};
+    bar.lpfnWndProc = MarkBarProc;
+    bar.hInstance = inst;
+    bar.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    bar.lpszClassName = L"AsmMarkBar";
+    RegisterClassW(&bar);
+
+    g_cbtHook = SetWindowsHookExW(WH_CBT, CbtProc, nullptr, GetCurrentThreadId());
 
     const RECT& w = settings->window;
     bool hasPos = w.right > 200 && w.bottom > 200;
@@ -25,57 +55,15 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
     if (!hwnd_) return false;
     if (!hasPos) {
         // Default size was given in 96-dpi pixels; scale it to the monitor.
-        RECT r;
-        GetWindowRect(hwnd_, &r);
         SetWindowPos(hwnd_, nullptr, 0, 0, S(1280), S(820), SWP_NOMOVE | SWP_NOZORDER);
     }
     ApplyDarkWindow(hwnd_);
-
-    ACCEL accels[] = {
-        {FCONTROL | FVIRTKEY, 'N', ID_NEW},
-        {FCONTROL | FVIRTKEY, 'O', ID_OPEN_FILE},
-        {FCONTROL | FSHIFT | FVIRTKEY, 'O', ID_OPEN_FOLDER},
-        {FCONTROL | FVIRTKEY, 'S', ID_SAVE},
-        {FCONTROL | FSHIFT | FVIRTKEY, 'S', ID_SAVE_AS},
-        {FCONTROL | FVIRTKEY, 'W', ID_CLOSE_TAB},
-        {FCONTROL | FVIRTKEY, 'F', ID_FIND},
-        {FCONTROL | FVIRTKEY, 'H', ID_REPLACE},
-        {FVIRTKEY, VK_F3, ID_FIND_NEXT},
-        {FSHIFT | FVIRTKEY, VK_F3, ID_FIND_PREV},
-        {FCONTROL | FVIRTKEY, 'G', ID_GOTO},
-        {FCONTROL | FVIRTKEY, VK_SPACE, ID_COMPLETE},
-        {FCONTROL | FSHIFT | FVIRTKEY, VK_SPACE, ID_SHOW_HINT},
-        {FVIRTKEY, VK_F12, ID_GOTO_DEF},
-        {FSHIFT | FVIRTKEY, VK_F12, ID_FIND_USAGES},
-        {FVIRTKEY, VK_F2, ID_RENAME},
-        {FALT | FVIRTKEY, VK_LEFT, ID_NAV_BACK},
-        {FALT | FVIRTKEY, VK_RIGHT, ID_NAV_FORWARD},
-        {FCONTROL | FVIRTKEY, VK_OEM_2, ID_COMMENT},
-        {FCONTROL | FVIRTKEY, VK_DIVIDE, ID_COMMENT},
-        {FCONTROL | FVIRTKEY, VK_OEM_PLUS, ID_ZOOM_IN},
-        {FCONTROL | FVIRTKEY, VK_ADD, ID_ZOOM_IN},
-        {FCONTROL | FVIRTKEY, VK_OEM_MINUS, ID_ZOOM_OUT},
-        {FCONTROL | FVIRTKEY, VK_SUBTRACT, ID_ZOOM_OUT},
-        {FCONTROL | FVIRTKEY, '0', ID_ZOOM_RESET},
-        {FCONTROL | FVIRTKEY, VK_F9, ID_BUILD},
-        {FCONTROL | FSHIFT | FVIRTKEY, VK_F9, ID_REBUILD},
-        {FSHIFT | FVIRTKEY, VK_F10, ID_RUN},
-        {FCONTROL | FVIRTKEY, VK_F5, ID_RUN},
-        {FVIRTKEY, VK_F5, ID_DEBUG},
-        {FSHIFT | FVIRTKEY, VK_F5, ID_STOP},
-        {FVIRTKEY, VK_F9, ID_TOGGLE_BP},
-        {FVIRTKEY, VK_F10, ID_STEP_OVER},
-        {FVIRTKEY, VK_F11, ID_STEP_INTO},
-        {FSHIFT | FVIRTKEY, VK_F11, ID_STEP_OUT},
-        {FCONTROL | FVIRTKEY, VK_F2, ID_STOP},
-        {FCONTROL | FALT | FVIRTKEY, 'S', ID_SETTINGS},
-        {FCONTROL | FVIRTKEY, VK_TAB, ID_NEXT_TAB},
-        {FCONTROL | FSHIFT | FVIRTKEY, VK_TAB, ID_PREV_TAB},
-    };
-    accel_ = CreateAcceleratorTableW(accels, static_cast<int>(std::size(accels)));
+    BuildAccelerators();
 
     checkThread_ = std::thread([this] { CheckWorker(); });
     RefreshToolStatus();
+    SetTimer(hwnd_, kBackupTimer, 30'000, nullptr);
+    Log::Write("AsmEditor started");
 
     ShowWindow(hwnd_, settings->maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(hwnd_);
@@ -89,31 +77,89 @@ void MainWindow::CreateFonts() {
     uiFont_ = CreateUiFont(dpi_, 9);
     uiBold_ = CreateUiFont(dpi_, 9, true);
     titleFont_ = CreateUiFont(dpi_, 22, true);
-    if (tree_) SendMessageW(tree_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
+    for (HWND h : {tree_, outline_, memExpr_, watchExpr_}) {
+        if (h) SendMessageW(h, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
+    }
 }
 
 void MainWindow::CreateChildren() {
     dpi_ = GetDpiForWindow(hwnd_);
     inputBrush_ = CreateSolidBrush(Theme::InputBg);
 
-    tree_ = CreateWindowExW(0, WC_TREEVIEWW, L"",
-                            WS_CHILD | WS_VISIBLE | TVS_HASBUTTONS | TVS_SHOWSELALWAYS | TVS_FULLROWSELECT |
-                                TVS_TRACKSELECT | TVS_NOHSCROLL | TVS_INFOTIP,
-                            0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(ID_TREE_CTRL), inst_, nullptr);
-    ApplyDarkControl(tree_);
-    TreeView_SetExtendedStyle(tree_, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
-    TreeView_SetBkColor(tree_, Theme::PanelBg);
-    TreeView_SetTextColor(tree_, Theme::Text);
+    auto makeTree = [&](int id, DWORD extra) {
+        HWND t = CreateWindowExW(0, WC_TREEVIEWW, L"",
+                                 WS_CHILD | TVS_SHOWSELALWAYS | TVS_FULLROWSELECT | TVS_TRACKSELECT | TVS_NOHSCROLL |
+                                     TVS_INFOTIP | extra,
+                                 0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        ApplyDarkControl(t);
+        TreeView_SetExtendedStyle(t, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
+        TreeView_SetBkColor(t, Theme::PanelBg);
+        TreeView_SetTextColor(t, Theme::Text);
+        return t;
+    };
+    tree_ = makeTree(ID_TREE_CTRL, TVS_HASBUTTONS);
+    ShowWindow(tree_, SW_SHOW);
     SHFILEINFOW sfi{};
     auto images = reinterpret_cast<HIMAGELIST>(
         SHGetFileInfoW(L"C:\\", 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON));
     TreeView_SetImageList(tree_, images, TVSIL_NORMAL);
+    outline_ = makeTree(ID_OUTLINE_CTRL, TVS_HASBUTTONS | TVS_LINESATROOT);
 
-    console_ = std::make_unique<Editor>(hwnd_, settings_->fontSize);
-    Editor& c = *console_;
+    for (auto& view : views_) {
+        view = std::make_unique<Editor>(hwnd_, settings_->fontSize);
+        SetupOutputView(*view);
+    }
+    SetWindowSubclass(View(Pane::Terminal).hwnd(), ConsoleProc, 3, reinterpret_cast<DWORD_PTR>(this));
+    ShowPane(Pane::Output);
+
+    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_}) {
+        *v = std::make_unique<Editor>(hwnd_, settings_->fontSize);
+        SetupPanelView(**v);
+    }
+    auto makeInput = [&](int id, const wchar_t* cue) {
+        HWND e = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd_,
+                                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
+        SendMessageW(e, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(cue));
+        SetWindowSubclass(e, InputProc, id, reinterpret_cast<DWORD_PTR>(this));
+        return e;
+    };
+    memExpr_ = makeInput(ID_MEM_EXPR, Tr(L"адрес: rsp, msg, rbx+8, [rsp]… Enter"));
+    SetWindowTextW(memExpr_, L"rsp");
+    watchExpr_ = makeInput(ID_WATCH_EXPR, Tr(L"добавить: rax, [rsp+8], dword [counter], rcx*2… Enter"));
+    markBar_ = CreateWindowExW(0, L"AsmMarkBar", L"", WS_CHILD, 0, 0, 10, 10, hwnd_, nullptr, inst_, this);
+    markBar2_ = CreateWindowExW(0, L"AsmMarkBar", L"", WS_CHILD, 0, 0, 10, 10, hwnd_, nullptr, inst_, this);
+
+    CreateFonts();
+    for (HWND e : {memExpr_, watchExpr_}) SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(6), S(6)));
+    BuildMenus();
+
+    tools_ = {
+        {ID_MENU_FILE, L"Файл", 0, true, false},
+        {ID_MENU_EDIT, L"Правка", 0, true, false},
+        {ID_MENU_VIEW, L"Вид", 0, true, false},
+        {ID_MENU_RUN, L"Запуск", 0, true, false},
+        {ID_MENU_HELP, L"Справка", 0, true, false},
+        {ID_BUILD, L"Собрать", 1, false, false},
+        {ID_RUN, L"Запустить", 2, false, false, 2},
+        {ID_DEBUG, L"Отладка", 6, false, false, 2},
+        {ID_DEBUG, L"Продолжить", 2, false, false, 1},
+        {ID_PAUSE, L"Пауза", 7, false, false, 1},
+        {ID_STEP_OVER, L"Шаг", 8, false, false, 1},
+        {ID_STEP_INTO, L"Войти", 9, false, false, 1},
+        {ID_STEP_OUT, L"Выйти", 10, false, false, 1},
+        {ID_STOP, L"Стоп", 3, false, false},
+        {ID_TARGET, L"", 11, false, false},
+        {ID_PROFILE, L"", 0, false, false},
+        {ID_SETTINGS, L"Настройки", 4, false, true},
+    };
+}
+
+// A read-only view of the bottom panel: message styles (Out) and the ANSI colors of the terminal.
+void MainWindow::SetupOutputView(Editor& c) {
     c.Call(SCI_SETMARGINWIDTHN, 0, 0);
     c.Call(SCI_SETMARGINWIDTHN, 1, 0);
-    c.Call(SCI_SETMARGINWIDTHN, 2, 6);
+    c.Call(SCI_SETMARGINWIDTHN, Editor::kFoldMargin, 0);
+    c.Call(SCI_SETMARGINWIDTHN, Editor::kGapMargin, 6);
     c.Call(SCI_SETCARETLINEVISIBLEALWAYS, 0);
     c.Call(SCI_SETCARETLINEVISIBLE, 0);
     c.Call(SCI_SETCARETSTYLE, CARETSTYLE_INVISIBLE);
@@ -130,54 +176,18 @@ void MainWindow::CreateChildren() {
         c.Call(SCI_STYLESETITALIC, static_cast<int>(style), 0);
         c.Call(SCI_STYLESETBOLD, static_cast<int>(style), style == Out::Success);
     }
-    static const uint32_t ansi[16] = {0x7A7E85, 0xF75464, 0x5FB865, 0xE0B44A, 0x56A8F5, 0xC77DBB, 0x2AACB8, 0xBCBEC4,
-                                      0x9DA0A8, 0xFF8A95, 0x8BD48F, 0xF2D27A, 0x8CC4FA, 0xE0A6D8, 0x6FD3DE, 0xFFFFFF};
     for (int i = 0; i < 16; i++) {
-        c.Call(SCI_STYLESETFORE, Terminal::kStyleBase + i, Hex(ansi[i]));
+        c.Call(SCI_STYLESETFORE, Terminal::kStyleBase + i, Theme::Ansi[i]);
         c.Call(SCI_STYLESETITALIC, Terminal::kStyleBase + i, 0);
     }
     c.Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET, static_cast<sptr_t>(Theme::Bright) | (0xFFll << 24));
-    SetWindowSubclass(c.hwnd(), ConsoleProc, 3, reinterpret_cast<DWORD_PTR>(this));
-    ShowWindow(c.hwnd(), SW_SHOW);
-
-    regsView_ = std::make_unique<Editor>(hwnd_, settings_->fontSize);
-    memView_ = std::make_unique<Editor>(hwnd_, settings_->fontSize);
-    SetupPanelView(*regsView_);
-    SetupPanelView(*memView_);
-    memExpr_ = CreateWindowExW(0, L"EDIT", L"rsp", WS_CHILD | WS_TABSTOP | ES_AUTOHSCROLL, 0, 0, 10, 10, hwnd_,
-                               reinterpret_cast<HMENU>(ID_MEM_EXPR), inst_, nullptr);
-    SendMessageW(memExpr_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"адрес: rsp, msg, rbx+8, [rsp]… Enter"));
-    SetWindowSubclass(memExpr_, InputProc, 2, reinterpret_cast<DWORD_PTR>(this));
-
-    CreateFonts();
-    if (memExpr_) {
-        SendMessageW(memExpr_, WM_SETFONT, reinterpret_cast<WPARAM>(uiFont_), TRUE);
-        SendMessageW(memExpr_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(6), S(6)));
-    }
-    BuildMenus();
-
-    tools_ = {
-        {ID_MENU_FILE, L"Файл", 0, true, false},
-        {ID_MENU_EDIT, L"Правка", 0, true, false},
-        {ID_MENU_VIEW, L"Вид", 0, true, false},
-        {ID_MENU_RUN, L"Запуск", 0, true, false},
-        {ID_BUILD, L"Собрать", 1, false, false},
-        {ID_RUN, L"Запустить", 2, false, false, 2},
-        {ID_DEBUG, L"Отладка", 6, false, false, 2},
-        {ID_DEBUG, L"Продолжить", 2, false, false, 1},
-        {ID_PAUSE, L"Пауза", 7, false, false, 1},
-        {ID_STEP_OVER, L"Шаг", 8, false, false, 1},
-        {ID_STEP_INTO, L"Войти", 9, false, false, 1},
-        {ID_STEP_OUT, L"Выйти", 10, false, false, 1},
-        {ID_STOP, L"Стоп", 3, false, false},
-        {ID_SETTINGS, L"Настройки", 4, false, true},
-    };
 }
 
 void MainWindow::SetupPanelView(Editor& v) {
     v.Call(SCI_SETMARGINWIDTHN, 0, 0);
     v.Call(SCI_SETMARGINWIDTHN, 1, 0);
-    v.Call(SCI_SETMARGINWIDTHN, 2, 4);
+    v.Call(SCI_SETMARGINWIDTHN, Editor::kFoldMargin, 0);
+    v.Call(SCI_SETMARGINWIDTHN, Editor::kGapMargin, 4);
     v.Call(SCI_SETCARETLINEVISIBLEALWAYS, 0);
     v.Call(SCI_SETCARETLINEVISIBLE, 0);
     v.Call(SCI_SETCARETSTYLE, CARETSTYLE_INVISIBLE);
@@ -186,87 +196,86 @@ void MainWindow::SetupPanelView(Editor& v) {
     v.Call(SCI_SETMOUSEDWELLTIME, SC_TIME_FOREVER);
     v.Call(SCI_SETHSCROLLBAR, 0);
     const std::pair<int, COLORREF> colors[] = {
-        {P_TEXT, Theme::Text}, {P_LABEL, Hex(0xC77DBB)}, {P_CHANGED, Hex(0xFF8F6B)}, {P_HEADER, Theme::Muted},
-        {P_SYMBOL, Theme::Link}, {P_FLAG_ON, Theme::Success}, {P_DIM, Hex(0x5F6369)}, {P_ERROR, Theme::Error},
-        {P_ADDR, Theme::Muted}};
+        {P_TEXT, Theme::Text}, {P_LABEL, Theme::Register}, {P_CHANGED, Theme::Changed}, {P_HEADER, Theme::Muted},
+        {P_SYMBOL, Theme::Link}, {P_FLAG_ON, Theme::Success}, {P_DIM, Theme::Dim}, {P_ERROR, Theme::Error},
+        {P_ADDR, Theme::Muted}, {P_CURRENT, Theme::ExecArrow}, {P_CODE, Theme::Instruction}};
     for (auto [style, color] : colors) {
         v.Call(SCI_STYLESETFORE, style, color);
         v.Call(SCI_STYLESETITALIC, style, 0);
-        v.Call(SCI_STYLESETBOLD, style, style == P_HEADER || style == P_CHANGED);
+        v.Call(SCI_STYLESETBOLD, style, style == P_HEADER || style == P_CHANGED || style == P_CURRENT);
         v.Call(SCI_STYLESETSIZE, style, std::max(6, settings_->fontSize - 1));
     }
+}
+
+std::vector<Editor*> MainWindow::PanelViews() const {
+    std::vector<Editor*> out;
+    for (auto* v : {&regsView_, &memView_, &stackView_, &watchView_, &disasmView_}) {
+        if (*v) out.push_back(v->get());
+    }
+    return out;
 }
 
 void MainWindow::BuildMenus() {
     fileMenu_ = CreatePopupMenu();
     recentMenu_ = CreatePopupMenu();
-    AppendMenuW(fileMenu_, MF_STRING, ID_NEW, L"Новый файл\tCtrl+N");
-    AppendMenuW(fileMenu_, MF_STRING, ID_NEW_PROJECT, L"Новый проект…");
+    AppendCommand(fileMenu_, ID_NEW);
+    AppendCommand(fileMenu_, ID_NEW_PROJECT);
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu_, MF_STRING, ID_OPEN_FILE, L"Открыть файл…\tCtrl+O");
-    AppendMenuW(fileMenu_, MF_STRING, ID_OPEN_FOLDER, L"Открыть папку…\tCtrl+Shift+O");
-    AppendMenuW(fileMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(recentMenu_), L"Недавние проекты");
+    AppendCommand(fileMenu_, ID_OPEN_FILE);
+    AppendCommand(fileMenu_, ID_OPEN_FOLDER);
+    AppendCommand(fileMenu_, ID_QUICK_OPEN);
+    AppendMenuW(fileMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(recentMenu_), Tr(L"Недавние проекты"));
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu_, MF_STRING, ID_SAVE, L"Сохранить\tCtrl+S");
-    AppendMenuW(fileMenu_, MF_STRING, ID_SAVE_AS, L"Сохранить как…\tCtrl+Shift+S");
-    AppendMenuW(fileMenu_, MF_STRING, ID_SAVE_ALL, L"Сохранить всё");
+    AppendCommand(fileMenu_, ID_SAVE);
+    AppendCommand(fileMenu_, ID_SAVE_AS);
+    AppendCommand(fileMenu_, ID_SAVE_ALL);
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu_, MF_STRING, ID_CLOSE_TAB, L"Закрыть вкладку\tCtrl+W");
-    AppendMenuW(fileMenu_, MF_STRING, ID_CLOSE_PROJECT, L"Закрыть проект");
+    AppendCommand(fileMenu_, ID_CLOSE_TAB);
+    AppendCommand(fileMenu_, ID_CLOSE_OTHERS);
+    AppendCommand(fileMenu_, ID_CLOSE_ALL);
+    AppendCommand(fileMenu_, ID_CLOSE_PROJECT);
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(fileMenu_, MF_STRING, ID_EXIT, L"Выход");
+    AppendCommand(fileMenu_, ID_EXIT);
 
     editMenu_ = CreatePopupMenu();
-    AppendMenuW(editMenu_, MF_STRING, ID_UNDO, L"Отменить\tCtrl+Z");
-    AppendMenuW(editMenu_, MF_STRING, ID_REDO, L"Повторить\tCtrl+Y");
-    AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(editMenu_, MF_STRING, ID_FIND, L"Найти…\tCtrl+F");
-    AppendMenuW(editMenu_, MF_STRING, ID_REPLACE, L"Заменить…\tCtrl+H");
-    AppendMenuW(editMenu_, MF_STRING, ID_FIND_NEXT, L"Найти далее\tF3");
-    AppendMenuW(editMenu_, MF_STRING, ID_FIND_PREV, L"Найти назад\tShift+F3");
-    AppendMenuW(editMenu_, MF_STRING, ID_GOTO, L"Перейти к строке…\tCtrl+G");
-    AppendMenuW(editMenu_, MF_STRING, ID_COMPLETE, L"Автодополнение\tCtrl+Space");
-    AppendMenuW(editMenu_, MF_STRING, ID_SHOW_HINT, L"Подсказка по инструкции\tCtrl+Shift+Space");
-    AppendMenuW(editMenu_, MF_STRING, ID_GOTO_DEF, L"Перейти к определению\tF12 / Ctrl+клик");
-    AppendMenuW(editMenu_, MF_STRING, ID_FIND_USAGES, L"Найти использования\tShift+F12");
-    AppendMenuW(editMenu_, MF_STRING, ID_RENAME, L"Переименовать…\tF2");
-    AppendMenuW(editMenu_, MF_STRING, ID_NAV_BACK, L"Назад\tAlt+←");
-    AppendMenuW(editMenu_, MF_STRING, ID_NAV_FORWARD, L"Вперёд\tAlt+→");
-    AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(editMenu_, MF_STRING, ID_COMMENT, L"Закомментировать / раскомментировать\tCtrl+/");
-    AppendMenuW(editMenu_, MF_STRING, ID_DUPLICATE, L"Дублировать строку\tCtrl+D");
+    for (int id : std::initializer_list<int>{ID_UNDO, ID_REDO, 0, ID_FIND, ID_REPLACE, ID_FIND_NEXT, ID_FIND_PREV, ID_FIND_IN_FILES, ID_GOTO, 0,
+                   ID_COMPLETE, ID_SNIPPET, ID_SHOW_HINT, ID_GOTO_DEF, ID_FIND_USAGES, ID_RENAME, ID_NAV_BACK,
+                   ID_NAV_FORWARD, 0, ID_COMMENT, ID_DUPLICATE, ID_FORMAT, 0, ID_ADD_CARET_UP, ID_ADD_CARET_DOWN,
+                   ID_SELECT_NEXT, ID_SELECT_ALL_OCCURRENCES, 0, ID_TOGGLE_FOLD, ID_FOLD_ALL, ID_UNFOLD_ALL}) {
+        if (id) AppendCommand(editMenu_, id);
+        else AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
+    }
 
     viewMenu_ = CreatePopupMenu();
-    AppendMenuW(viewMenu_, MF_STRING, ID_ZOOM_IN, L"Увеличить шрифт\tCtrl+=");
-    AppendMenuW(viewMenu_, MF_STRING, ID_ZOOM_OUT, L"Уменьшить шрифт\tCtrl+-");
-    AppendMenuW(viewMenu_, MF_STRING, ID_ZOOM_RESET, L"Сбросить размер шрифта\tCtrl+0");
-    AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(viewMenu_, MF_STRING, ID_NEXT_TAB, L"Следующая вкладка\tCtrl+Tab");
-    AppendMenuW(viewMenu_, MF_STRING, ID_PREV_TAB, L"Предыдущая вкладка\tCtrl+Shift+Tab");
-
-    AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(viewMenu_, MF_STRING, ID_DEBUG_PANEL, L"Панель отладки");
+    themeMenu_ = CreatePopupMenu();
+    for (size_t i = 0; i < Theme::All().size(); i++) {
+        const Theme::Info& t = Theme::All()[i];
+        AppendMenuW(themeMenu_, MF_STRING | (settings_->theme == t.id ? MF_CHECKED : 0), ID_THEME + i, Tr(t.title));
+    }
+    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, 0, ID_ZOOM_IN, ID_ZOOM_OUT, ID_ZOOM_RESET, 0, ID_NEXT_TAB, ID_PREV_TAB, ID_SPLIT,
+                   ID_UNSPLIT, ID_PIN_TAB, 0, ID_OUTLINE, ID_DEBUG_PANEL, ID_SHOW_OUTPUT, ID_SHOW_TERMINAL,
+                   ID_SHOW_PROBLEMS, 0}) {
+        if (id) AppendCommand(viewMenu_, id);
+        else AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(viewMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu_), Tr(L"Тема"));
+    AppendCommand(viewMenu_, ID_LANGUAGE);
+    CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
 
     runMenu_ = CreatePopupMenu();
-    AppendMenuW(runMenu_, MF_STRING, ID_BUILD, L"Собрать\tCtrl+F9");
-    AppendMenuW(runMenu_, MF_STRING, ID_REBUILD, L"Пересобрать всё\tCtrl+Shift+F9");
-    AppendMenuW(runMenu_, MF_STRING, ID_RUN, L"Запустить без отладки\tCtrl+F5 / Shift+F10");
-    AppendMenuW(runMenu_, MF_STRING, ID_DEBUG, L"Отладка / продолжить\tF5");
-    AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(runMenu_, MF_STRING, ID_STEP_OVER, L"Шаг с обходом\tF10");
-    AppendMenuW(runMenu_, MF_STRING, ID_STEP_INTO, L"Шаг с заходом\tF11");
-    AppendMenuW(runMenu_, MF_STRING, ID_STEP_OUT, L"Шаг с выходом\tShift+F11");
-    AppendMenuW(runMenu_, MF_STRING, ID_PAUSE, L"Пауза");
-    AppendMenuW(runMenu_, MF_STRING, ID_STOP, L"Остановить\tShift+F5");
-    AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(runMenu_, MF_STRING, ID_TOGGLE_BP, L"Точка останова\tF9");
-    AppendMenuW(runMenu_, MF_STRING, ID_CLEAR_BPS, L"Удалить все точки останова");
-    AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(runMenu_, MF_STRING, ID_CLEAR_CONSOLE, L"Очистить консоль");
-    AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(runMenu_, MF_STRING, ID_RESET_MAIN, L"Сбросить главный файл проекта");
-    AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    AppendMenuW(runMenu_, MF_STRING, ID_SETTINGS, L"Настройки…\tCtrl+Alt+S");
+    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, 0, ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT,
+                   ID_SET_NEXT, ID_PAUSE, ID_STOP, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
+                   0, ID_CHOOSE_TARGET, ID_RUN_CONFIG, ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_RESET_MAIN, 0,
+                   ID_CHECK_SOLUTION, ID_NEW_EXERCISE, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
+        if (id) AppendCommand(runMenu_, id);
+        else AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
+    }
+
+    helpMenu_ = CreatePopupMenu();
+    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, ID_KEYS, 0, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
+        if (id) AppendCommand(helpMenu_, id);
+        else AppendMenuW(helpMenu_, MF_SEPARATOR, 0, nullptr);
+    }
 }
 
 bool MainWindow::PreTranslate(MSG& msg) {
@@ -289,10 +298,19 @@ LRESULT CALLBACK MainWindow::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     return self ? self->Handle(msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+// Enter in the memory address / watch input rows.
 LRESULT CALLBACK MainWindow::InputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR data) {
     auto* self = reinterpret_cast<MainWindow*>(data);
     if (msg == WM_KEYDOWN && wp == VK_RETURN) {
-        if (id == 2) self->RenderMemory();
+        if (id == ID_MEM_EXPR) {
+            self->RenderMemory();
+        } else if (id == ID_WATCH_EXPR) {
+            int n = GetWindowTextLengthW(hwnd);
+            std::wstring text(n, L'\0');
+            GetWindowTextW(hwnd, text.data(), n + 1);
+            if (!Trim(text).empty()) self->AddWatch(Narrow(Trim(text)));
+            SetWindowTextW(hwnd, L"");
+        }
         return 0;
     }
     if (msg == WM_CHAR && (wp == '\r' || wp == '\n')) return 0;
@@ -355,7 +373,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
-            if (hoverLink_ >= 0 || hoverClear_ || hoverRefresh_) {
+            if (hoverLink_ >= 0 || hoverClear_ || hoverRefresh_ || hoverPane_ >= 0 || hoverLeftTab_ >= 0 ||
+                hoverDebugTab_ >= 0 || hoverMemFormat_) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -365,8 +384,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
     case WM_MOUSELEAVE:
-        hoverTool_ = hoverTab_ = hoverClose_ = hoverLink_ = -1;
-        hoverClear_ = hoverRefresh_ = false;
+        hoverTool_ = hoverTab_ = hoverClose_ = hoverLink_ = hoverPane_ = hoverLeftTab_ = hoverDebugTab_ = -1;
+        hoverClear_ = hoverRefresh_ = hoverMemFormat_ = false;
         InvalidateChrome();
         return 0;
     case WM_LBUTTONDOWN: {
@@ -374,18 +393,37 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (Contains(rcSplitV_, x, y)) drag_ = Drag::Tree;
         else if (Contains(rcSplitH_, x, y)) drag_ = Drag::Console;
         else if (DebugPanelVisible() && Contains(rcSplitD_, x, y)) drag_ = Drag::Debug;
-        if (drag_ != Drag::None) SetCapture(hwnd_);
-        else OnClick(x, y, false);
+        if (drag_ != Drag::None) {
+            SetCapture(hwnd_);
+            return 0;
+        }
+        for (size_t i = 0; i < tabRects_.size(); i++) {  // a tab: activate now, drag to reorder
+            if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y) && !Contains(closeRects_[i], x, y)) {
+                Activate(static_cast<int>(i));
+                drag_ = Drag::Tab;
+                dragTab_ = static_cast<int>(i);
+                dragStartX_ = x;
+                dragMoved_ = false;
+                SetCapture(hwnd_);
+                return 0;
+            }
+        }
+        OnClick(x, y, false);
         return 0;
     }
     case WM_LBUTTONUP:
         if (drag_ != Drag::None) {
             drag_ = Drag::None;
+            dragTab_ = -1;
             ReleaseCapture();
+            InvalidateRect(hwnd_, &rcTabs_, FALSE);
         }
         return 0;
     case WM_MBUTTONUP:
         OnClick(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), true);
+        return 0;
+    case WM_RBUTTONUP:
+        OnRightClick(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
     case WM_MOUSEWHEEL: {
         POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -398,8 +436,8 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_COMMAND:
-        if (LOWORD(wp) == ID_MEM_EXPR) {
-            if (HIWORD(wp) == EN_SETFOCUS || HIWORD(wp) == EN_KILLFOCUS) InvalidateRect(hwnd_, &rcMemRow_, FALSE);
+        if (LOWORD(wp) == ID_MEM_EXPR || LOWORD(wp) == ID_WATCH_EXPR) {
+            if (HIWORD(wp) == EN_SETFOCUS || HIWORD(wp) == EN_KILLFOCUS) InvalidateRect(hwnd_, &rcDebug_, FALSE);
             return 0;
         }
         if (HIWORD(wp) == 0 || HIWORD(wp) == 1) OnCommand(LOWORD(wp));
@@ -422,7 +460,24 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_TIMER:
         if (wp == kConsoleFocusTimer) {
             KillTimer(hwnd_, wp);
-            if (debugging_ && !DebugStopped() && termActive_) SetFocus(console_->hwnd());
+            if (debugging_ && !DebugStopped() && termActive_) {
+                ShowPane(Pane::Terminal);
+                SetFocus(View(Pane::Terminal).hwnd());
+            }
+            return 0;
+        }
+        if (wp == kOccurrenceTimer) {
+            KillTimer(hwnd_, wp);
+            if (Editor* ed = Active()) HighlightOccurrences(ed);
+            return 0;
+        }
+        if (wp == kOutlineTimer) {
+            KillTimer(hwnd_, wp);
+            RefreshOutline();
+            return 0;
+        }
+        if (wp == kBackupTimer) {
+            WriteBackups();
             return 0;
         }
         if (wp >= kCheckTimerBase) {
@@ -431,7 +486,14 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_ACTIVATEAPP:
-        if (wp) RefreshTree();
+        if (wp) {
+            RefreshTree();
+            CheckExternalChanges();
+        } else if (settings_->autosave) {
+            for (auto& e : editors_) {
+                if (e->Modified() && !e->file().empty()) Save(e.get());
+            }
+        }
         return 0;
     case WM_DROPFILES: {
         HDROP drop = reinterpret_cast<HDROP>(wp);
@@ -443,9 +505,18 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         DragFinish(drop);
         return 0;
     }
-    case WM_APP_OUTPUT: {
+    case WM_APP_OUTPUT:
+    case WM_APP_INFO: {
         std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
         Print(*text, static_cast<Out>(wp));
+        return 0;
+    }
+    case WM_APP_SOLUTION_DONE: {
+        std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
+        Print(*text, wp ? Out::Success : Out::Error);
+        ShowPane(Pane::Output);
+        building_ = false;
+        InvalidateChrome();
         return 0;
     }
     case WM_APP_BUILD_DONE: {
@@ -477,12 +548,23 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DEBUG_STOPPED:
         OnDebugStopped(std::unique_ptr<DebugStop>(reinterpret_cast<DebugStop*>(lp)));
         return 0;
-    case WM_DEBUG_EXITED:
-        OnDebugExited(static_cast<DWORD>(wp));
+    case WM_DEBUG_EXITED: {
+        std::unique_ptr<std::string> stats(reinterpret_cast<std::string*>(lp));
+        OnDebugExited(static_cast<DWORD>(wp), stats ? *stats : std::string());
         return 0;
+    }
     case WM_DEBUG_LOG: {
         std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
-        Print(*text, static_cast<Out>(wp));
+        PrintTo(Pane::DebugOutput, *text, static_cast<Out>(wp));
+        if (static_cast<Out>(wp) == Out::Warning || static_cast<Out>(wp) == Out::Error) Print(*text, static_cast<Out>(wp));
+        return 0;
+    }
+    case WM_DEBUG_ODS: {
+        std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
+        std::string t = *text;
+        if (t.empty() || t.back() != '\n') t += "\n";
+        PrintTo(Pane::DebugOutput, t, Out::Normal);
+        InvalidateRect(hwnd_, &rcConsoleHeader_, FALSE);  // the tab shows that there is new text
         return 0;
     }
     case WM_APP_CHECK_DONE: {
@@ -490,7 +572,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         Editor* ed = FindById(done->editorId);
         if (ed && ed->version() == done->version) {
             ed->SetDiagnostics(done->diagnostics);
+            RefreshProblems();
             InvalidateChrome();
+            InvalidateRect(markBar_, nullptr, FALSE);
+            InvalidateRect(markBar2_, nullptr, FALSE);
         }
         return 0;
     }
@@ -506,6 +591,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         for (int i = 0; i < (int)editors_.size(); i++) {
             if (!ConfirmClose(i)) return 0;
         }
+        for (auto& e : editors_) RemoveBackup(e.get());
         StopProgram();
         debugger_.reset();  // terminates the debuggee and joins the debugger thread
         if (pty_) ClosePseudoConsole(pty_);
@@ -524,6 +610,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         checkCv_.notify_all();
         if (checkThread_.joinable()) checkThread_.join();
         editors_.clear();
+        if (g_cbtHook) UnhookWindowsHookEx(g_cbtHook);
+        g_cbtHook = nullptr;
+        Log::Write("AsmEditor closed");
         DestroyWindow(hwnd_);
         return 0;
     }
@@ -541,6 +630,10 @@ void MainWindow::OnCommand(int id) {
     if (id >= ID_RECENT && id < ID_RECENT + 100) {
         size_t i = id - ID_RECENT;
         if (i < settings_->recent.size()) OpenPath(settings_->recent[i]);
+        return;
+    }
+    if (id >= ID_THEME && id < ID_THEME + static_cast<int>(Theme::All().size())) {
+        ApplyTheme(Theme::All()[id - ID_THEME].id);
         return;
     }
     switch (id) {
@@ -569,12 +662,15 @@ void MainWindow::OnCommand(int id) {
         break;
     }
     case ID_OPEN_FOLDER:
-        if (auto dir = PickFolder(L"Открыть папку проекта")) OpenProject(*dir);
+        if (auto dir = PickFolder(Tr(L"Открыть папку проекта"))) OpenProject(*dir);
         break;
+    case ID_QUICK_OPEN: QuickOpen(); break;
     case ID_SAVE: Save(ed); break;
     case ID_SAVE_AS: SaveAs(ed); break;
     case ID_SAVE_ALL: SaveAll(); break;
     case ID_CLOSE_TAB: if (ed) CloseEditor(active_); break;
+    case ID_CLOSE_OTHERS: if (ed) CloseOthers(active_); break;
+    case ID_CLOSE_ALL: CloseOthers(-1); break;
     case ID_CLOSE_PROJECT: CloseProject(); break;
     case ID_EXIT: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
     case ID_UNDO: if (ed) ed->Call(SCI_UNDO); break;
@@ -586,9 +682,10 @@ void MainWindow::OnCommand(int id) {
         if (lastFind_.empty()) ShowFind(false);
         else FindNext(id == ID_FIND_NEXT);
         break;
+    case ID_FIND_IN_FILES: FindInFiles(); break;
     case ID_GOTO:
         if (ed) {
-            if (auto s = InputBox(hwnd_, L"Перейти к строке", L"Номер строки:", std::to_wstring(ed->CaretLine()))) {
+            if (auto s = InputBox(hwnd_, Tr(L"Перейти к строке"), Tr(L"Номер строки:"), std::to_wstring(ed->CaretLine()))) {
                 int line = _wtoi(s->c_str());
                 if (line > 0) ed->GotoLine(line);
             }
@@ -596,6 +693,7 @@ void MainWindow::OnCommand(int id) {
         break;
     case ID_COMMENT: if (ed) ed->ToggleComment(); break;
     case ID_COMPLETE: if (ed) Complete(ed, true); break;
+    case ID_SNIPPET: if (ed) ShowSnippets(ed); break;
     case ID_SHOW_HINT: if (ed) ShowHint(ed, ed->Call(SCI_GETCURRENTPOS)); break;
     case ID_GOTO_DEF: if (ed) GoToDefinition(ed, ed->Call(SCI_GETCURRENTPOS)); break;
     case ID_FIND_USAGES: if (ed) FindUsages(ed, ed->Call(SCI_GETCURRENTPOS)); break;
@@ -603,11 +701,58 @@ void MainWindow::OnCommand(int id) {
     case ID_NAV_BACK: Navigate(true); break;
     case ID_NAV_FORWARD: Navigate(false); break;
     case ID_DUPLICATE: if (ed) ed->Call(SCI_SELECTIONDUPLICATE); break;
+    case ID_FORMAT: if (ed) FormatCode(ed); break;
+    case ID_ADD_CARET_UP: if (ed) AddCaret(ed, false); break;
+    case ID_ADD_CARET_DOWN: if (ed) AddCaret(ed, true); break;
+    case ID_SELECT_NEXT:
+        if (ed) {
+            ed->Call(SCI_TARGETWHOLEDOCUMENT);
+            ed->Call(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE);
+            ed->Call(SCI_MULTIPLESELECTADDNEXT);
+            ed->Call(SCI_SCROLLCARET);
+        }
+        break;
+    case ID_SELECT_ALL_OCCURRENCES:
+        if (ed) {
+            ed->Call(SCI_TARGETWHOLEDOCUMENT);
+            ed->Call(SCI_SETSEARCHFLAGS, SCFIND_MATCHCASE | SCFIND_WHOLEWORD);
+            ed->Call(SCI_MULTIPLESELECTADDEACH);
+        }
+        break;
+    case ID_TOGGLE_FOLD:
+        if (ed) {
+            Sci_Position line = ed->Call(SCI_LINEFROMPOSITION, ed->Call(SCI_GETCURRENTPOS));
+            if (!(ed->Call(SCI_GETFOLDLEVEL, line) & SC_FOLDLEVELHEADERFLAG)) line = ed->Call(SCI_GETFOLDPARENT, line);
+            if (line >= 0) ed->Call(SCI_TOGGLEFOLD, line);
+        }
+        break;
+    case ID_FOLD_ALL: if (ed) FoldAll(ed, true); break;
+    case ID_UNFOLD_ALL: if (ed) FoldAll(ed, false); break;
+    case ID_COMMAND_PALETTE: CommandPalette(); break;
     case ID_ZOOM_IN: ApplyFontSize(settings_->fontSize + 1); break;
     case ID_ZOOM_OUT: ApplyFontSize(settings_->fontSize - 1); break;
     case ID_ZOOM_RESET: ApplyFontSize(11); break;
     case ID_NEXT_TAB: if (!editors_.empty()) Activate((active_ + 1) % (int)editors_.size()); break;
     case ID_PREV_TAB: if (!editors_.empty()) Activate((active_ + (int)editors_.size() - 1) % (int)editors_.size()); break;
+    case ID_SPLIT: if (ed) SplitWith(active_); break;
+    case ID_UNSPLIT: Unsplit(); break;
+    case ID_PIN_TAB: if (ed) TogglePin(active_); break;
+    case ID_OUTLINE: ShowLeftTab(leftTab_ == LeftTab::Outline ? LeftTab::Project : LeftTab::Outline); break;
+    case ID_SHOW_OUTPUT: ShowPane(Pane::Output); break;
+    case ID_SHOW_TERMINAL:
+        ShowPane(Pane::Terminal);
+        SetFocus(View(Pane::Terminal).hwnd());
+        break;
+    case ID_SHOW_PROBLEMS:
+        RefreshProblems();
+        ShowPane(Pane::Problems);
+        break;
+    case ID_LANGUAGE:
+        settings_->language = English() ? L"ru" : L"en";
+        SetLanguage(settings_->language);
+        settings_->Save();
+        Relocalize();
+        break;
     case ID_BUILD: StartBuild(After::Nothing); break;
     case ID_REBUILD: StartBuild(After::Nothing, true); break;
     case ID_RUN: if (!debugging_) StartBuild(After::Run); break;
@@ -618,8 +763,13 @@ void MainWindow::OnCommand(int id) {
     case ID_PAUSE:
         DebugCommand(id);
         break;
+    case ID_RUN_TO_CURSOR: RunToCursor(); break;
+    case ID_SET_NEXT: SetNextStatement(); break;
     case ID_TOGGLE_BP:
         if (ed) ToggleBreakpoint(ed, ed->CaretLine());
+        break;
+    case ID_BP_CONDITION:
+        if (ed) EditBreakpointCondition(ed, ed->CaretLine());
         break;
     case ID_CLEAR_BPS:
         breakpoints_.clear();
@@ -628,6 +778,22 @@ void MainWindow::OnCommand(int id) {
             if (debugger_ && !e->file().empty()) debugger_->SetBreakpoints(e->file(), {});
         }
         break;
+    case ID_ADD_WATCH:
+        if (ed) {
+            Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
+            std::string what = e > s ? std::string(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, s, e - s)), e - s)
+                                     : ed->WordAt(ed->Call(SCI_GETCURRENTPOS));
+            if (!what.empty() && what.find('\n') == std::string::npos) AddWatch(what);
+        }
+        break;
+    case ID_DATA_BP: {
+        std::string word = ed ? ed->WordAt(ed->Call(SCI_GETCURRENTPOS)) : std::string();
+        auto text = InputBox(hwnd_, Tr(L"Точка останова на данные"),
+                             Tr(L"Остановиться, когда изменится (адрес или имя, размер через запятую: counter, 4):"),
+                             Widen(word));
+        if (text && !Trim(*text).empty()) AddDataBreakpoint(Narrow(Trim(*text)));
+        break;
+    }
     case ID_DEBUG_PANEL:
         showDebugPanel_ = !showDebugPanel_;
         CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
@@ -635,19 +801,34 @@ void MainWindow::OnCommand(int id) {
         break;
     case ID_STOP: StopProgram(); break;
     case ID_CLEAR_CONSOLE:
-        console_->Call(SCI_SETREADONLY, 0);
-        console_->Call(SCI_CLEARALL);
-        console_->Call(SCI_SETREADONLY, 1);
-        termStart_ = 0;
-        if (termActive_) {
-            term_.Commit();
-            term_.TakeHistory();
-            RenderTerminal();
+        ClearPane(pane_);
+        if (pane_ == Pane::Problems) {
+            buildDiagnostics_.clear();
+            RefreshProblems();
         }
         break;
     case ID_RESET_MAIN: SetMainFile({}); break;
-    case ID_SETTINGS:
+    case ID_RUN_CONFIG: EditRunConfig(); break;
+    case ID_CHOOSE_TARGET:
+    case ID_TARGET: ChooseTarget(); break;
+    case ID_PROFILE: ChooseProfile(); break;
+    case ID_PROFILE_DEBUG:
+    case ID_PROFILE_RELEASE:
+        runConfig_.profile = id == ID_PROFILE_DEBUG ? L"Debug" : L"Release";
+        SaveProjectSession();
+        Layout();
+        break;
+    case ID_CHECK_SOLUTION: CheckSolution(); break;
+    case ID_NEW_EXERCISE: NewExercise(); break;
+    case ID_SETTINGS: {
+        std::wstring theme = settings_->theme, language = settings_->language;
         if (ShowSettingsDialog(hwnd_, *settings_)) {
+            Log::Enable(settings_->log);
+            if (settings_->theme != theme) ApplyTheme(settings_->theme);
+            if (settings_->language != language) {
+                SetLanguage(settings_->language);
+                Relocalize();
+            }
             ApplyFontSize(settings_->fontSize);
             RefreshToolStatus();
             for (auto& e : editors_) {
@@ -657,13 +838,33 @@ void MainWindow::OnCommand(int id) {
             InvalidateChrome();
         }
         break;
+    }
+    case ID_KEYS: EditKeys(); break;
+    case ID_CHECK_UPDATES: CheckUpdates(); break;
+    case ID_OPEN_LOG: {
+        if (!Log::Enabled()) {
+            settings_->log = true;
+            Log::Enable(true);
+            settings_->Save();
+            Log::Write("log enabled from the Help menu");
+        }
+        std::wstring file = Log::File().wstring();
+        ShellExecuteW(hwnd_, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        break;
+    }
+    case ID_ABOUT:
+        ShowMessage(hwnd_,
+                    std::wstring(L"AsmEditor\n\n") + Tr(L"Редактор и отладчик NASM для Windows.") + L"\nScintilla 5.6.5 · NASM " +
+                        Toolchain::NasmVersion(*settings_) + L"\n\n" + Tr(L"Настройки: ") + Settings::Dir().wstring(),
+                    false);
+        break;
     case ID_TREE_NEW_FILE:
     case ID_TREE_NEW_FOLDER: {
         fs::path target = contextItem_ ? TreePath(contextItem_) : projectRoot_;
         fs::path dir = DirExists(target) ? target : target.parent_path();
         bool folder = id == ID_TREE_NEW_FOLDER;
-        auto name = InputBox(hwnd_, folder ? L"Новая папка" : L"Новый файл", folder ? L"Имя папки:" : L"Имя файла:",
-                             folder ? L"" : L"main.asm");
+        auto name = InputBox(hwnd_, folder ? Tr(L"Новая папка") : Tr(L"Новый файл"),
+                             folder ? Tr(L"Имя папки:") : Tr(L"Имя файла:"), folder ? L"" : L"main.asm");
         if (!name || Trim(*name).empty()) break;
         std::wstring n = Trim(*name);
         std::error_code ec;
@@ -677,7 +878,7 @@ void MainWindow::OnCommand(int id) {
             RefreshTree();
             OpenFile(p);
         }
-        if (ec) ShowMessage(hwnd_, L"Не удалось создать: " + Widen(ec.message(), CP_ACP));
+        if (ec) ShowMessage(hwnd_, std::wstring(Tr(L"Не удалось создать: ")) + Widen(ec.message(), CP_ACP));
         RefreshTree();
         break;
     }
@@ -701,11 +902,11 @@ void MainWindow::OnCommand(int id) {
     case ID_TREE_RENAME: {
         if (!contextItem_) break;
         fs::path from = TreePath(contextItem_);
-        auto name = InputBox(hwnd_, L"Переименовать", L"Новое имя:", from.filename().wstring());
+        auto name = InputBox(hwnd_, Tr(L"Переименовать"), Tr(L"Новое имя:"), from.filename().wstring());
         if (!name || Trim(*name).empty() || Trim(*name) == from.filename().wstring()) break;
         fs::path to = from.parent_path() / Trim(*name);
         if (!MoveFileW(from.c_str(), to.c_str())) {
-            ShowMessage(hwnd_, L"Не удалось переименовать.");
+            ShowMessage(hwnd_, Tr(L"Не удалось переименовать."));
             break;
         }
         for (auto& e : editors_) {
@@ -722,8 +923,8 @@ void MainWindow::OnCommand(int id) {
     case ID_TREE_DELETE: {
         if (!contextItem_) break;
         fs::path target = TreePath(contextItem_);
-        std::wstring q = L"Переместить «" + target.filename().wstring() + L"» в корзину?";
-        if (MessageBoxW(hwnd_, q.c_str(), L"Удаление", MB_OKCANCEL | MB_ICONQUESTION) != IDOK) break;
+        std::wstring q = std::wstring(Tr(L"Переместить в корзину: ")) + L"«" + target.filename().wstring() + L"»?";
+        if (MessageBoxW(hwnd_, q.c_str(), Tr(L"Удаление"), MB_OKCANCEL | MB_ICONQUESTION) != IDOK) break;
         std::wstring from = target.wstring();
         from.push_back(L'\0');  // double-null terminated list
         SHFILEOPSTRUCTW op{};
@@ -732,17 +933,20 @@ void MainWindow::OnCommand(int id) {
         op.pFrom = from.c_str();
         op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT;
         if (SHFileOperationW(&op) != 0 || op.fAnyOperationsAborted) {
-            ShowMessage(hwnd_, L"Не удалось удалить.");
+            ShowMessage(hwnd_, Tr(L"Не удалось удалить."));
             break;
         }
         for (int i = (int)editors_.size() - 1; i >= 0; i--) {
             const fs::path& f = editors_[i]->file();
             if (SamePath(f, target) || IsUnder(f, target)) {
+                if (i == splitIndex_) splitIndex_ = -1;
+                else if (i < splitIndex_) splitIndex_--;
                 editors_.erase(editors_.begin() + i);
                 if (active_ >= (int)editors_.size()) active_ = (int)editors_.size() - 1;
             }
         }
         if (SamePath(mainFile_, target) || IsUnder(mainFile_, target)) SetMainFile({});
+        Layout();
         Activate(active_);
         RefreshTree();
         break;
@@ -787,10 +991,33 @@ void MainWindow::OnNotify(NMHDR* nm) {
         }
         return;
     }
+    if (nm->hwndFrom == outline_) {
+        // Clicking an item (or moving to it with the keyboard) shows its line.
+        if (nm->code == TVN_SELCHANGEDW || nm->code == NM_DBLCLK) {
+            HTREEITEM item = TreeView_GetSelection(outline_);
+            TVITEMW tvi{};
+            tvi.mask = TVIF_PARAM;
+            tvi.hItem = item;
+            if (!item || !TreeView_GetItem(outline_, &tvi)) return;
+            size_t index = static_cast<size_t>(tvi.lParam);
+            Editor* ed = FindById(outlineEditor_);
+            if (!ed || index >= outlineLines_.size()) return;
+            ed->GotoLine(outlineLines_[index]);
+            bool keyboard = nm->code == TVN_SELCHANGEDW && reinterpret_cast<NMTREEVIEWW*>(nm)->action == TVC_BYKEYBOARD;
+            if (keyboard) SetFocus(outline_);
+        }
+        return;
+    }
 
     auto* scn = reinterpret_cast<SCNotification*>(nm);
-    if (console_ && nm->hwndFrom == console_->hwnd()) {
-        if (nm->code == SCN_DOUBLECLICK) ConsoleDoubleClick(scn->position);
+    for (auto& view : views_) {
+        if (!view || nm->hwndFrom != view->hwnd()) continue;
+        if (nm->code == SCN_DOUBLECLICK && view.get() != &View(Pane::Terminal)) ConsoleDoubleClick(*view, scn->position);
+        return;
+    }
+    for (Editor* v : PanelViews()) {
+        if (nm->hwndFrom != v->hwnd()) continue;
+        if (nm->code == SCN_DOUBLECLICK) PanelDoubleClick(*v, scn->position);
         return;
     }
     Editor* ed = FindByHwnd(nm->hwndFrom);
@@ -804,6 +1031,11 @@ void MainWindow::OnNotify(NMHDR* nm) {
             ed->bumpVersion();
             if (ed == usageEditor_) ClearUsageHighlight();
             if (settings_->liveCheck) SetTimer(hwnd_, kCheckTimerBase + ed->id(), 700, nullptr);
+            if (ed->id() == outlineEditor_ || leftTab_ == LeftTab::Outline) SetTimer(hwnd_, kOutlineTimer, 800, nullptr);
+            if (scn->linesAdded) {
+                InvalidateRect(markBar_, nullptr, FALSE);
+                InvalidateRect(markBar2_, nullptr, FALSE);
+            }
         }
         break;
     case SCN_SAVEPOINTREACHED:
@@ -812,6 +1044,16 @@ void MainWindow::OnNotify(NMHDR* nm) {
         break;
     case SCN_UPDATEUI:
         InvalidateRect(hwnd_, &rcStatus_, FALSE);
+        if (scn->updated & (SC_UPDATE_SELECTION | SC_UPDATE_CONTENT)) {
+            UpdateBracePairs(ed);
+            SetTimer(hwnd_, kOccurrenceTimer, 300, nullptr);
+        }
+        if (scn->updated & SC_UPDATE_V_SCROLL) InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
+        break;
+    case SCN_FOCUSIN:
+        focusRight_ = ed == SplitEditor();
+        if (focusRight_ || ed == Active()) InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        if (leftTab_ == LeftTab::Outline && ed->id() != outlineEditor_) RefreshOutline();
         break;
     case SCN_CHARADDED: {
         ed->OnCharAdded(scn->ch);
@@ -825,6 +1067,29 @@ void MainWindow::OnNotify(NMHDR* nm) {
     case SCN_AUTOCCHARDELETED:  // Backspace while the list is open: filter again
         Complete(ed, false);
         break;
+    case SCN_AUTOCSELECTION:
+        if (scn->listCompletionMethod != SC_AC_COMMAND && scn->text) {
+            // A snippet chosen from the completion list ("loop?10"): insert its body instead of the word.
+            std::string text = scn->text;
+            for (const Snippets::Snippet& s : Snippets::All()) {
+                if (text == std::string(s.name) + "…") {
+                    ed->Call(SCI_AUTOCCANCEL);
+                    Sci_Position caret = ed->Call(SCI_GETCURRENTPOS);
+                    ed->Call(SCI_DELETERANGE, scn->position, caret - scn->position);
+                    InsertSnippet(ed, s.name);
+                    break;
+                }
+            }
+        }
+        break;
+    case SCN_USERLISTSELECTION:
+        if (scn->listType == 1 && scn->text) {
+            std::string name = scn->text;
+            size_t q = name.find('?');
+            if (q != std::string::npos) name.erase(q);
+            InsertSnippet(ed, name);
+        }
+        break;
     case SCN_DWELLSTART:
         if (scn->position >= 0 && ed->DiagnosticsAt(static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, scn->position)) + 1)) {
             ed->ShowDiagnosticTip(scn->position);
@@ -834,6 +1099,11 @@ void MainWindow::OnNotify(NMHDR* nm) {
         break;
     case SCN_MARGINCLICK:
         if (scn->margin == 0) ToggleBreakpoint(ed, static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, scn->position)) + 1);
+        break;
+    case SCN_MARGINRIGHTCLICK:
+        if (scn->margin == 0 || scn->margin == 1) {
+            BreakpointMenu(ed, static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, scn->position)) + 1);
+        }
         break;
     case SCN_DWELLEND:
         ed->Call(SCI_CALLTIPCANCEL);

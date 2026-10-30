@@ -9,12 +9,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     INITCOMMONCONTROLSEX icc{sizeof(icc), ICC_TREEVIEW_CLASSES | ICC_STANDARD_CLASSES};
     InitCommonControlsEx(&icc);
     Scintilla_RegisterClasses(inst);
-    InitDarkMode();
-    RegisterFlatButton(inst);
     SetEnvironmentVariableW(L"VSLANG", L"1033");  // English messages from MSVC tools
 
     Settings settings;
     settings.Load();
+    Theme::Apply(settings.theme);
+    SetLanguage(settings.language);
+    Log::Enable(settings.log);
+    InitDarkMode();
+    RegisterFlatButton(inst);
     Toolchain::ApplyDefaults(settings);
 
     MainWindow window;

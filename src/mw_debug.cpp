@@ -1,6 +1,30 @@
 #include "mw_internal.h"
 #include "hints.h"
 
+namespace {
+
+// Collects styled text for a panel view and remembers which line each piece starts on.
+struct PanelText {
+    std::vector<std::pair<std::string, int>> runs;
+    int line = 0;
+    void Add(const std::string& text, int style) {
+        runs.push_back({text, style});
+        line += static_cast<int>(std::count(text.begin(), text.end(), '\n'));
+    }
+};
+
+std::string HexN(uint64_t v, int digits) {
+    char buf[24];
+    sprintf_s(buf, "%0*llX", digits, static_cast<unsigned long long>(v));
+    return buf;
+}
+
+std::string LowerAscii(std::string s) {
+    for (char& c : s) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+}
+
 // ---- debugging --------------------------------------------------------------------------------------------------
 
 void MainWindow::DebugCommand(int id) {
@@ -15,7 +39,7 @@ void MainWindow::DebugCommand(int id) {
     }
     if (!debugger_->Stopped()) return;
     ClearExecutionLine();
-    debugStatus_ = L"выполняется…";
+    debugStatus_ = Tr(L"выполняется…");
     debugStatusColor_ = Theme::Success;
     switch (id) {
     case ID_DEBUG: debugger_->Continue(); break;
@@ -25,7 +49,7 @@ void MainWindow::DebugCommand(int id) {
     }
     // Stopped() turns false on the debugger thread; repaint once it has picked up the command.
     InvalidateChrome();
-    SetTimer(hwnd_, 1, 50, [](HWND h, UINT, UINT_PTR id, DWORD) {
+    SetTimer(hwnd_, kRepaintTimer, 50, [](HWND h, UINT, UINT_PTR id, DWORD) {
         KillTimer(h, id);
         InvalidateRect(h, nullptr, FALSE);
     });
@@ -36,12 +60,20 @@ void MainWindow::DebugCommand(int id) {
 void MainWindow::SetDebugging(bool on) {
     debugging_ = on;
     haveLastContext_ = false;
+    prevMem_.clear();
+    frames_.clear();
     if (on) {
-        debugStatus_ = L"выполняется…";
+        debugStatus_ = Tr(L"выполняется…");
         debugStatusColor_ = Theme::Success;
-        RenderPanel(*regsView_, {{"Программа выполняется.\nПоставьте точку останова (F9 или клик слева от номера "
-                                  "строки) или нажмите «Пауза».\n", P_DIM}});
+        RenderPanel(*regsView_, {{Tr(std::string("Программа выполняется.\nПоставьте точку останова (F9 или клик слева от "
+                                                 "номера строки) или нажмите «Пауза».\n")), P_DIM}});
         RenderPanel(*memView_, {});
+        RenderPanel(*stackView_, {});
+        RenderPanel(*disasmView_, {});
+        RenderWatches();
+    } else {
+        debugStatus_.clear();
+        RenderWatches();
     }
     Layout();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -50,12 +82,14 @@ void MainWindow::SetDebugging(bool on) {
 void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
     if (!debugging_) return;
     switch (stop->reason) {
-    case DebugStop::Reason::Breakpoint: debugStatus_ = L"точка останова"; break;
-    case DebugStop::Reason::Step: debugStatus_ = L"шаг"; break;
-    case DebugStop::Reason::Entry: debugStatus_ = L"начало main"; break;
-    case DebugStop::Reason::Pause: debugStatus_ = L"пауза"; break;
-    case DebugStop::Reason::Int3: debugStatus_ = L"int3 в программе"; break;
-    case DebugStop::Reason::Exception: debugStatus_ = L"исключение"; break;
+    case DebugStop::Reason::Breakpoint: debugStatus_ = Tr(L"точка останова"); break;
+    case DebugStop::Reason::Step: debugStatus_ = Tr(L"шаг"); break;
+    case DebugStop::Reason::Entry: debugStatus_ = Tr(L"начало main"); break;
+    case DebugStop::Reason::Pause: debugStatus_ = Tr(L"пауза"); break;
+    case DebugStop::Reason::Int3: debugStatus_ = Tr(L"int3 в программе"); break;
+    case DebugStop::Reason::Exception: debugStatus_ = Tr(L"исключение"); break;
+    case DebugStop::Reason::Watchpoint: debugStatus_ = Tr(L"изменились данные"); break;
+    case DebugStop::Reason::RunTo: debugStatus_ = Tr(L"до курсора"); break;
     }
     debugStatusColor_ = stop->reason == DebugStop::Reason::Exception ? Theme::Error : Theme::Warning;
 
@@ -68,9 +102,14 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
         where = buf;
     }
     if (stop->reason == DebugStop::Reason::Exception) {
-        Print(Narrow(stop->message + L"\n    в " + where) + "\n", Out::Error);
+        Print(Narrow(stop->message + L"\n    " + Tr(L"в ") + where) + "\n", Out::Error);
+    } else if (stop->reason == DebugStop::Reason::Watchpoint) {
+        Print(Narrow(stop->message + L"  (" + where + L")") + "\n", Out::Warning);
     } else if (!stop->location.valid()) {
-        Print("Остановлено вне исходного кода: " + Narrow(where) + "\n", Out::Info);
+        Print(Tr(std::string("Остановлено вне исходного кода: ")) + Narrow(where) + "\n", Out::Info);
+    }
+    if (!stop->message.empty() && stop->reason == DebugStop::Reason::Breakpoint) {
+        PrintTo(Pane::DebugOutput, Narrow(where + L": " + stop->message) + "\n", Out::Info);
     }
 
     ClearExecutionLine();
@@ -80,19 +119,22 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
             execFile_ = stop->location.file;
         }
     }
-    RenderRegisters();
-    RenderMemory();
+    frames_ = debugger_->CallStack();
+    RenderDebugPanel();
     lastContext_ = stop->context;
     haveLastContext_ = true;
     if (GetForegroundWindow() != hwnd_) SetForegroundWindow(hwnd_);
     InvalidateRect(hwnd_, nullptr, FALSE);
+    InvalidateRect(markBar_, nullptr, FALSE);
+    InvalidateRect(markBar2_, nullptr, FALSE);
 }
 
-void MainWindow::OnDebugExited(DWORD code) {
+void MainWindow::OnDebugExited(DWORD code, const std::string& stats) {
     if (!debugging_) return;
     debugger_.reset();
     ClearExecutionLine();
     SetDebugging(false);
+    exitStats_ = stats;
     FinishConsole(code);
 }
 
@@ -105,11 +147,63 @@ void MainWindow::ToggleBreakpoint(Editor* ed, int line) {
     if (!ed || line <= 0) return;
     ed->ToggleBreakpoint(line);
     if (debugger_ && !ed->file().empty()) debugger_->SetBreakpoints(ed->file(), ed->Breakpoints());
+    InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
+}
+
+// Condition of the breakpoint on a line: an expression ("rcx == 5"), a hit number ("#10") or both.
+void MainWindow::EditBreakpointCondition(Editor* ed, int line) {
+    if (!ed || line <= 0) return;
+    std::string current;
+    auto bps = ed->Breakpoints();
+    if (bps.count(line)) current = bps[line];
+    auto text = InputBox(hwnd_, Tr(L"Условие точки останова"),
+                         Tr(L"Останавливаться, когда (rcx == 5, [counter] > 3, #10 — на 10-й раз; пусто — всегда):"),
+                         Widen(current));
+    if (!text) return;
+    ed->SetBreakpointCondition(line, Narrow(Trim(*text)));
+    if (debugger_ && !ed->file().empty()) debugger_->SetBreakpoints(ed->file(), ed->Breakpoints());
+    SaveProjectSession();
+    InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
+}
+
+// Right click on the breakpoint margin.
+void MainWindow::BreakpointMenu(Editor* ed, int line) {
+    bool has = ed->HasBreakpoint(line);
+    HMENU menu = CreatePopupMenu();
+    enum { kToggle = 1, kCondition, kRunTo, kSetNext, kClearAll };
+    AppendMenuW(menu, MF_STRING, kToggle, has ? Tr(L"Убрать точку останова") : Tr(L"Поставить точку останова"));
+    AppendMenuW(menu, MF_STRING, kCondition, has ? Tr(L"Изменить условие…") : Tr(L"Точка останова с условием…"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kRunTo, MenuText(ID_RUN_TO_CURSOR).c_str());
+    AppendMenuW(menu, MF_STRING | (DebugStopped() ? 0 : MF_GRAYED), kSetNext, MenuText(ID_SET_NEXT).c_str());
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(menu, MF_STRING, kClearAll, Tr(L"Удалить все точки останова"));
+    POINT pt;
+    GetCursorPos(&pt);
+    int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd_, nullptr);
+    DestroyMenu(menu);
+    auto caretToLine = [&] { ed->Call(SCI_GOTOLINE, line - 1); };
+    switch (cmd) {
+    case kToggle: ToggleBreakpoint(ed, line); break;
+    case kCondition:
+        if (!has) ed->ToggleBreakpoint(line);
+        EditBreakpointCondition(ed, line);
+        break;
+    case kRunTo:
+        caretToLine();
+        RunToCursor();
+        break;
+    case kSetNext:
+        caretToLine();
+        SetNextStatement();
+        break;
+    case kClearAll: OnCommand(ID_CLEAR_BPS); break;
+    }
 }
 
 void MainWindow::StashBreakpoints(Editor* ed) {
     if (!ed || ed->file().empty()) return;
-    std::set<int> lines = ed->Breakpoints();
+    auto lines = ed->Breakpoints();
     if (lines.empty()) breakpoints_.erase(Debugger::Key(ed->file()));
     else breakpoints_[Debugger::Key(ed->file())] = lines;
 }
@@ -118,11 +212,52 @@ Debugger::Breakpoints MainWindow::CollectBreakpoints() const {
     Debugger::Breakpoints all = breakpoints_;
     for (const auto& e : editors_) {
         if (e->file().empty()) continue;
-        std::set<int> lines = e->Breakpoints();
+        auto lines = e->Breakpoints();
         if (lines.empty()) all.erase(Debugger::Key(e->file()));
         else all[Debugger::Key(e->file())] = lines;
     }
     return all;
+}
+
+// Ctrl+F10: continue to the caret line (or start debugging and stop there).
+void MainWindow::RunToCursor() {
+    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    if (!ed) return;
+    if (ed->file().empty() && !SaveAs(ed)) return;
+    SourceLocation where{ed->file(), ed->CaretLine()};
+    if (!debugging_) {
+        runTo_ = where;
+        StartBuild(After::RunToCursor);
+        return;
+    }
+    if (!DebugStopped()) return;
+    if (!debugger_->RunTo(where)) {
+        ShowMessage(hwnd_, Tr(L"На этой строке (и в нескольких следующих) нет кода."), false);
+        return;
+    }
+    ClearExecutionLine();
+    debugStatus_ = Tr(L"выполняется…");
+    debugStatusColor_ = Theme::Success;
+    InvalidateChrome();
+    SetTimer(hwnd_, kConsoleFocusTimer, 400, nullptr);
+}
+
+// Ctrl+Shift+F10: the next instruction to run is the first one of the caret line (rip changes).
+void MainWindow::SetNextStatement() {
+    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    if (!ed || !DebugStopped()) return;
+    std::wstring error;
+    SourceLocation where{ed->file(), ed->CaretLine()};
+    if (!debugger_->SetNextStatement(where, error)) {
+        ShowMessage(hwnd_, std::wstring(Tr(L"Нельзя перенести выполнение: ")) + error, false);
+        return;
+    }
+    SourceLocation actual = debugger_->LocationOf(debugger_->Context().Rip);
+    ClearExecutionLine();
+    if (actual.valid()) ed->SetExecutionLine(actual.line);
+    debugStatus_ = Tr(L"выполнение перенесено");
+    PrintTo(Pane::DebugOutput, Tr(std::string("rip перенесён на строку ")) + std::to_string(actual.line) + "\n", Out::Info);
+    RenderDebugPanel();
 }
 
 void MainWindow::RenderPanel(Editor& v, const Runs& runs) {
@@ -139,63 +274,253 @@ void MainWindow::RenderPanel(Editor& v, const Runs& runs) {
     v.Call(SCI_SETFIRSTVISIBLELINE, first);
 }
 
+void MainWindow::RenderDebugPanel() {
+    RenderRegisters();
+    RenderCallStack();
+    RenderWatches();
+    if (debugTab_ == DebugTab::Disasm) RenderDisassembly();
+    RenderMemory();
+}
+
+void MainWindow::ShowDebugTab(DebugTab tab) {
+    debugTab_ = tab;
+    Layout();
+    if (tab == DebugTab::Disasm) RenderDisassembly();
+    if (tab == DebugTab::Watch) {
+        RenderWatches();
+        SetFocus(watchExpr_);
+    }
+}
+
 void MainWindow::RenderRegisters() {
     if (!DebugStopped()) return;
     const CONTEXT& c = debugger_->Context();
     const CONTEXT* prev = haveLastContext_ ? &lastContext_ : nullptr;
-    Runs r;
+    bool is32 = debugger_->Is32();
+    int digits = is32 ? 8 : 16;
+    PanelText r;
+    regLines_.clear();
+    auto lineFor = [&](const std::string& name) {
+        if (static_cast<int>(regLines_.size()) <= r.line) regLines_.resize(r.line + 1);
+        regLines_[r.line] = name;
+    };
     auto annotate = [&](uint64_t v) {
         std::wstring sym = debugger_->SymbolAt(v);
-        if (!sym.empty()) r.push_back({"  " + Narrow(sym), P_SYMBOL});
-        else if (v <= 0xFFFFF) r.push_back({"  " + std::to_string(v), P_DIM});
+        if (!sym.empty()) r.Add("  " + Narrow(sym), P_SYMBOL);
+        else if (v <= 0xFFFFF) r.Add("  " + std::to_string(v), P_DIM);
         else if (static_cast<int64_t>(v) < 0 && static_cast<int64_t>(v) > -0x100000)
-            r.push_back({"  " + std::to_string(static_cast<int64_t>(v)), P_DIM});
+            r.Add("  " + std::to_string(static_cast<int64_t>(v)), P_DIM);
     };
 
-    r.push_back({"РЕГИСТРЫ\n", P_HEADER});
-    static const char* names[] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
-                                  "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15", "rip"};
+    r.Add(Tr(std::string("РЕГИСТРЫ")) + "  " + Tr(std::string("(двойной клик — изменить)")) + "\n", P_HEADER);
+    static const char* names64[] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp",
+                                    "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15", "rip"};
+    static const char* names32[] = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "eip"};
+    std::vector<const char*> names = is32 ? std::vector<const char*>(std::begin(names32), std::end(names32))
+                                          : std::vector<const char*>(std::begin(names64), std::end(names64));
     for (const char* n : names) {
         uint64_t v = *Debugger::Register(c, n);
         bool changed = prev && *Debugger::Register(*prev, n) != v;
-        r.push_back({PadRight(n, 4), P_LABEL});
-        r.push_back({Hex16(v), changed ? P_CHANGED : P_TEXT});
+        lineFor(n);
+        r.Add(PadRight(n, 4), P_LABEL);
+        r.Add(HexN(v, digits), changed ? P_CHANGED : P_TEXT);
         annotate(v);
-        r.push_back({"\n", P_TEXT});
+        r.Add("\n", P_TEXT);
     }
-    r.push_back({"flg ", P_LABEL});
+    lineFor("flags");
+    r.Add("flg ", P_LABEL);
     static const std::pair<const char*, int> flags[] = {{"CF", 0}, {"PF", 2}, {"AF", 4}, {"ZF", 6}, {"SF", 7},
                                                         {"TF", 8}, {"IF", 9}, {"DF", 10}, {"OF", 11}};
     for (auto [name, bit] : flags) {
         bool on = (c.EFlags >> bit) & 1;
         bool changed = prev && (((prev->EFlags >> bit) & 1) != on);
-        r.push_back({std::string(name) + (on ? "=1 " : "=0 "), changed ? P_CHANGED : on ? P_FLAG_ON : P_DIM});
+        r.Add(std::string(name) + (on ? "=1 " : "=0 "), changed ? P_CHANGED : on ? P_FLAG_ON : P_DIM);
     }
-    r.push_back({"\n\nСТЕК\n", P_HEADER});
-    uint64_t stack[16]{};
-    size_t got = debugger_->ReadMemory(c.Rsp, stack, sizeof(stack)) / 8;
+
+    // The stack with what is known about it: return addresses of the call stack (frame boundaries) and rbp.
+    r.Add("\n\n" + Tr(std::string("СТЕК")) + "\n", P_HEADER);
+    int ptr = debugger_->PointerSize();
+    uint64_t stack[24]{};
+    std::vector<uint8_t> raw(24 * ptr);
+    size_t got = debugger_->ReadMemory(c.Rsp, raw.data(), raw.size()) / ptr;
     for (size_t i = 0; i < got; i++) {
-        char label[16];
-        sprintf_s(label, "rsp+%02zX ", i * 8);
-        r.push_back({label, P_ADDR});
-        r.push_back({Hex16(stack[i]), P_TEXT});
-        annotate(stack[i]);
-        if (c.Rsp + i * 8 == c.Rbp) r.push_back({"  ← rbp", P_DIM});
-        r.push_back({"\n", P_TEXT});
+        memcpy(&stack[i], raw.data() + i * ptr, ptr);
+        uint64_t address = c.Rsp + i * ptr;
+        const Debugger::Frame* returnOf = nullptr;
+        for (size_t k = 1; k < frames_.size(); k++) {
+            if (frames_[k].returnSlot == address) returnOf = &frames_[k];
+        }
+        char label[24];
+        sprintf_s(label, "%s+%02zX ", is32 ? "esp" : "rsp", i * ptr);
+        r.Add(label, P_ADDR);
+        r.Add(HexN(stack[i], digits), returnOf ? P_SYMBOL : P_TEXT);
+        if (returnOf) {
+            r.Add("  ← " + Tr(std::string("адрес возврата в ")) + Narrow(returnOf->function), P_SYMBOL);
+        } else {
+            annotate(stack[i]);
+        }
+        if (address == c.Rbp) r.Add(std::string("  ← ") + (is32 ? "ebp" : "rbp"), P_DIM);
+        r.Add("\n", P_TEXT);
+        if (returnOf) r.Add("  ── " + Tr(std::string("выше — кадр функции ")) + Narrow(returnOf->function) + " ──\n", P_DIM);
     }
-    r.push_back({"\nXMM (старшие · младшие 64 бита · младший double)\n", P_HEADER});
-    for (int i = 0; i < 16; i++) {
+    int xmmCount = is32 ? 8 : 16;
+    r.Add("\n" + Tr(std::string("XMM (старшие · младшие 64 бита · младший double)")) + "\n", P_HEADER);
+    for (int i = 0; i < xmmCount; i++) {
         const M128A& x = c.FltSave.XmmRegisters[i];
         bool changed = prev && (prev->FltSave.XmmRegisters[i].Low != x.Low || prev->FltSave.XmmRegisters[i].High != x.High);
-        r.push_back({PadRight("xmm" + std::to_string(i), 6), P_LABEL});
-        r.push_back({Hex16(static_cast<uint64_t>(x.High)) + " " + Hex16(x.Low), changed ? P_CHANGED : P_TEXT});
+        r.Add(PadRight("xmm" + std::to_string(i), 6), P_LABEL);
+        r.Add(Hex16(static_cast<uint64_t>(x.High)) + " " + Hex16(x.Low), changed ? P_CHANGED : P_TEXT);
         double d;
         memcpy(&d, &x.Low, 8);
         char buf[48];
         sprintf_s(buf, "  %g\n", d);
-        r.push_back({buf, P_DIM});
+        r.Add(buf, P_DIM);
     }
-    RenderPanel(*regsView_, r);
+    RenderPanel(*regsView_, r.runs);
+}
+
+void MainWindow::RenderCallStack() {
+    PanelText r;
+    stackLines_.clear();
+    if (!DebugStopped()) {
+        RenderPanel(*stackView_, {{Tr(std::string("Стек вызовов виден, когда программа остановлена.\n")), P_DIM}});
+        return;
+    }
+    r.Add(Tr(std::string("СТЕК ВЫЗОВОВ")) + "  " + Tr(std::string("(двойной клик — перейти к строке)")) + "\n", P_HEADER);
+    stackLines_.push_back(-1);
+    int digits = debugger_->Is32() ? 8 : 16;
+    for (size_t i = 0; i < frames_.size(); i++) {
+        const Debugger::Frame& f = frames_[i];
+        stackLines_.push_back(static_cast<int>(i));
+        r.Add(i == 0 ? "▶ " : "  ", i == 0 ? P_CURRENT : P_TEXT);
+        r.Add("#" + std::to_string(i) + " ", P_ADDR);
+        r.Add(f.function.empty() ? "0x" + HexN(f.pc, digits) : Narrow(f.function), i == 0 ? P_CURRENT : P_SYMBOL);
+        if (f.location.valid()) {
+            r.Add("   " + Narrow(f.location.file.filename().wstring()) + ":" + std::to_string(f.location.line), P_DIM);
+        }
+        r.Add("\n", P_TEXT);
+    }
+    r.Add("\n" + Tr(std::string("Кадры найдены по адресам возврата в стеке (у NASM-кода нет таблиц раскрутки).\n")), P_DIM);
+    RenderPanel(*stackView_, r.runs);
+}
+
+void MainWindow::RenderWatches() {
+    PanelText r;
+    watchLines_.clear();
+    auto mark = [&](int value) {
+        if (static_cast<int>(watchLines_.size()) <= r.line) watchLines_.resize(r.line + 1, -1);
+        watchLines_[r.line] = value;
+    };
+    r.Add(Tr(std::string("НАБЛЮДЕНИЕ")) + "  " + Tr(std::string("(двойной клик — изменить или удалить)")) + "\n", P_HEADER);
+    bool stopped = DebugStopped();
+    for (size_t i = 0; i < watches_.size(); i++) {
+        mark(static_cast<int>(i));
+        r.Add(watches_[i] + " = ", P_LABEL);
+        if (!stopped) {
+            r.Add("—\n", P_DIM);
+            continue;
+        }
+        std::wstring error;
+        auto v = debugger_->Evaluate(watches_[i], error);
+        if (!v) {
+            r.Add(Narrow(error) + "\n", P_ERROR);
+            continue;
+        }
+        char buf[64];
+        sprintf_s(buf, "0x%llX  (%lld)", static_cast<unsigned long long>(*v), static_cast<long long>(*v));
+        r.Add(buf, P_TEXT);
+        std::wstring sym = debugger_->SymbolAt(*v);
+        if (!sym.empty()) {  // a label: also show what is stored there
+            uint64_t q = 0;
+            size_t got = debugger_->ReadMemory(*v, &q, 8);
+            r.Add("  " + Narrow(sym), P_SYMBOL);
+            if (got == 8) {
+                sprintf_s(buf, "  [qword] = 0x%llX (%lld)", static_cast<unsigned long long>(q), static_cast<long long>(q));
+                r.Add(buf, P_DIM);
+            }
+        }
+        r.Add("\n", P_TEXT);
+    }
+    if (watches_.empty()) r.Add(Tr(std::string("Введите выражение в поле выше и нажмите Enter.\n")), P_DIM);
+
+    r.Add("\n" + Tr(std::string("ТОЧКИ ОСТАНОВА НА ДАННЫЕ")) + "\n", P_HEADER);
+    std::vector<DataWatch> data = debugger_ ? debugger_->DataWatches() : std::vector<DataWatch>{};
+    for (size_t i = 0; i < data.size(); i++) {
+        mark(-2 - static_cast<int>(i));
+        char buf[96];
+        sprintf_s(buf, " (%d %s) @ 0x%llX = 0x%llX\n", data[i].size, Tr(std::string("байт")).c_str(),
+                  static_cast<unsigned long long>(data[i].address), static_cast<unsigned long long>(data[i].value));
+        r.Add(data[i].expression, P_LABEL);
+        r.Add(buf, P_TEXT);
+    }
+    if (data.empty()) {
+        r.Add(Tr(std::string("Нет. Запуск → «Остановиться при изменении данных…» — остановка, когда программа\n"
+                             "запишет в переменную (до 4 штук, через отладочные регистры DR0–DR3).\n")), P_DIM);
+    }
+    RenderPanel(*watchView_, r.runs);
+}
+
+// Disassembly of the current function (or from rip), with the source line above each group of instructions:
+// shows what macros and pseudo-instructions became.
+void MainWindow::RenderDisassembly() {
+    disasmLines_.clear();
+    if (!DebugStopped()) {
+        RenderPanel(*disasmView_, {{Tr(std::string("Дизассемблер показывает код, когда программа остановлена.\n")), P_DIM}});
+        return;
+    }
+    auto ndisasm = Toolchain::FindNdisasm(*settings_);
+    if (!ndisasm) {
+        RenderPanel(*disasmView_, {{Tr(std::string("Не найден ndisasm.exe (входит в NASM, ищется рядом с nasm.exe).\n")), P_ERROR}});
+        return;
+    }
+    const CONTEXT& c = debugger_->Context();
+    uint64_t start = c.Rip;
+    std::wstring sym = debugger_->SymbolAt(c.Rip);
+    size_t plus = sym.find(L"+0x");
+    if (plus != std::wstring::npos) {
+        uint64_t displacement = wcstoull(sym.c_str() + plus + 3, nullptr, 16);
+        if (displacement < 0x800) start = c.Rip - displacement;  // from the label the code belongs to
+    }
+    std::vector<uint8_t> code(std::min<uint64_t>(c.Rip - start, 0x800) + 160);
+    size_t got = debugger_->ReadMemory(start, code.data(), code.size());
+    std::vector<Disasm::Line> lines = Disasm::Run(*ndisasm, code.data(), got, start, debugger_->Is32() ? 32 : 64);
+    PanelText r;
+    r.Add(Tr(std::string("КОД")) + "  " + Narrow(sym.empty() ? std::wstring() : sym.substr(0, plus)) + "  " +
+              Tr(std::string("(двойной клик — к строке исходника)")) + "\n", P_HEADER);
+    disasmLines_.push_back(0);
+    int digits = debugger_->Is32() ? 8 : 12;
+    SourceLocation last;
+    int shownAfter = 0;
+    for (const Disasm::Line& l : lines) {
+        if (l.address > c.Rip && ++shownAfter > 24) break;
+        SourceLocation loc = debugger_->LocationOf(l.address);
+        if (loc.valid() && !(loc == last)) {  // the source line these instructions came from
+            std::string source;
+            int index = FindByPath(loc.file);
+            if (index >= 0) source = editors_[index]->LineText(loc.line - 1);
+            size_t first = source.find_first_not_of(" \t");
+            source = first == std::string::npos ? std::string() : source.substr(first);
+            while (!source.empty() && (source.back() == '\r' || source.back() == ' ')) source.pop_back();
+            disasmLines_.push_back(l.address);
+            r.Add(Narrow(loc.file.filename().wstring()) + ":" + std::to_string(loc.line) + "  " + source + "\n", P_DIM);
+            last = loc;
+        }
+        bool current = l.address == c.Rip;
+        disasmLines_.push_back(l.address);
+        r.Add(current ? "▶ " : "  ", P_CURRENT);
+        r.Add(HexN(l.address, digits) + "  ", current ? P_CURRENT : P_ADDR);
+        r.Add(PadRight(l.bytes, 16) + " ", P_DIM);
+        r.Add(l.text + "\n", current ? P_CURRENT : P_CODE);
+    }
+    if (lines.empty()) r.Add(Tr(std::string("Не удалось прочитать код.\n")), P_ERROR);
+    RenderPanel(*disasmView_, r.runs);
+    // Keep the current instruction in view.
+    for (size_t i = 0; i < disasmLines_.size(); i++) {
+        if (disasmLines_[i] == c.Rip) {
+            disasmView_->Call(SCI_SETFIRSTVISIBLELINE, std::max<int>(0, static_cast<int>(i) - 6));
+            break;
+        }
+    }
 }
 
 void MainWindow::RenderMemory() {
@@ -205,46 +530,287 @@ void MainWindow::RenderMemory() {
     GetWindowTextW(memExpr_, w.data(), n + 1);
     std::string expr = Narrow(Trim(w));
     if (expr.empty()) expr = "rsp";
-    Runs r;
+    PanelText r;
+    memLines_.clear();
     std::wstring error;
     auto addr = debugger_->Evaluate(expr, error);
     if (!addr) {
         RenderPanel(*memView_, {{Narrow(error) + "\n", P_ERROR}});
         return;
     }
-    r.push_back({expr + " = 0x" + Hex16(*addr), P_TEXT});
+    r.Add(expr + " = 0x" + Hex16(*addr), P_TEXT);
     std::wstring sym = debugger_->SymbolAt(*addr);
-    if (!sym.empty()) r.push_back({"  " + Narrow(sym), P_SYMBOL});
-    r.push_back({"\n", P_TEXT});
-    uint8_t bytes[256];
-    size_t got = debugger_->ReadMemory(*addr, bytes, sizeof(bytes));
-    if (got == 0) r.push_back({"память недоступна\n", P_ERROR});
-    for (size_t row = 0; row < got; row += 8) {
-        r.push_back({Hex16(*addr + row) + "  ", P_ADDR});
-        std::string hex, ascii;
-        for (size_t i = 0; i < 8; i++) {
-            if (row + i < got) {
-                char b[4];
-                sprintf_s(b, "%02X ", bytes[row + i]);
-                hex += b;
-                unsigned char ch = bytes[row + i];
-                ascii += (ch >= 32 && ch < 127) ? static_cast<char>(ch) : '.';
-            } else {
-                hex += "   ";
-            }
+    if (!sym.empty()) r.Add("  " + Narrow(sym), P_SYMBOL);
+    r.Add("   " + Tr(std::string("(двойной клик — изменить)")) + "\n", P_DIM);
+    memLines_.push_back(0);
+    std::vector<uint8_t> bytes(256);
+    size_t got = debugger_->ReadMemory(*addr, bytes.data(), bytes.size());
+    bytes.resize(got);
+    // Bytes that differ from the previous stop (same address) are highlighted.
+    bool compare = prevMemAddress_ == *addr && !prevMem_.empty();
+    auto changed = [&](size_t from, size_t count) {
+        if (!compare) return false;
+        for (size_t i = from; i < from + count; i++) {
+            if (i < prevMem_.size() && i < bytes.size() && prevMem_[i] != bytes[i]) return true;
         }
-        r.push_back({hex, P_TEXT});
-        r.push_back({" " + ascii + "\n", P_DIM});
+        return false;
+    };
+    if (got == 0) r.Add(Tr(std::string("память недоступна\n")), P_ERROR);
+    if (memFormat_ == MemFormat::Text) {  // characters, a line per 32 bytes
+        for (size_t row = 0; row < got; row += 32) {
+            memLines_.push_back(*addr + row);
+            r.Add(Hex16(*addr + row) + "  ", P_ADDR);
+            std::string text = "\"";
+            for (size_t i = row; i < std::min(got, row + 32); i++) {
+                unsigned char ch = bytes[i];
+                if (ch >= 32 && ch < 127) text += static_cast<char>(ch);
+                else if (ch == 0) text += "\\0";
+                else if (ch == 10) text += "\\n";
+                else if (ch == 13) text += "\\r";
+                else {
+                    char b[8];
+                    sprintf_s(b, "\\x%02X", ch);
+                    text += b;
+                }
+            }
+            r.Add(text + "\"\n", changed(row, 32) ? P_CHANGED : P_TEXT);
+        }
+    } else {
+        int size = memFormat_ == MemFormat::Words ? 2 : memFormat_ == MemFormat::Dwords || memFormat_ == MemFormat::Float ? 4
+                 : memFormat_ == MemFormat::Bytes ? 1 : 8;
+        int perRow = memFormat_ == MemFormat::Bytes ? 8 : memFormat_ == MemFormat::Words ? 4
+                   : memFormat_ == MemFormat::Qwords || memFormat_ == MemFormat::Double ? 1 : 2;
+        int rowBytes = size * perRow;
+        for (size_t row = 0; row + size <= got; row += rowBytes) {
+            memLines_.push_back(*addr + row);
+            r.Add(Hex16(*addr + row) + "  ", P_ADDR);
+            std::string ascii;
+            for (int k = 0; k < perRow && row + (k + 1) * size <= got; k++) {
+                size_t at = row + k * size;
+                uint64_t v = 0;
+                memcpy(&v, bytes.data() + at, size);
+                char b[64];
+                switch (memFormat_) {
+                case MemFormat::Bytes: sprintf_s(b, "%02X ", static_cast<unsigned>(v)); break;
+                case MemFormat::Words: sprintf_s(b, "%04X (%6d)  ", static_cast<unsigned>(v), static_cast<int16_t>(v)); break;
+                case MemFormat::Dwords: sprintf_s(b, "%08X (%11d)  ", static_cast<unsigned>(v), static_cast<int32_t>(v)); break;
+                case MemFormat::Qwords:
+                    sprintf_s(b, "%016llX (%lld)", static_cast<unsigned long long>(v), static_cast<long long>(v));
+                    break;
+                case MemFormat::Float: {
+                    float f;
+                    memcpy(&f, &v, 4);
+                    sprintf_s(b, "%-14g  ", f);
+                    break;
+                }
+                default: {
+                    double d;
+                    memcpy(&d, &v, 8);
+                    sprintf_s(b, "%.17g", d);
+                    break;
+                }
+                }
+                r.Add(b, changed(at, size) ? P_CHANGED : P_TEXT);
+                for (int i = 0; i < size; i++) {
+                    unsigned char ch = bytes[at + i];
+                    ascii += (ch >= 32 && ch < 127) ? static_cast<char>(ch) : '.';
+                }
+            }
+            r.Add(memFormat_ == MemFormat::Bytes ? " " + ascii + "\n" : "\n", P_DIM);
+        }
     }
-    RenderPanel(*memView_, r);
+    prevMem_ = bytes;
+    prevMemAddress_ = *addr;
+    RenderPanel(*memView_, r.runs);
+}
+
+// Double click in a debug panel: edit a register / memory / watch, or go to a frame's source line.
+void MainWindow::PanelDoubleClick(Editor& view, Sci_Position pos) {
+    int line = static_cast<int>(view.Call(SCI_LINEFROMPOSITION, pos));
+    if (&view == regsView_.get()) {
+        if (line >= static_cast<int>(regLines_.size()) || regLines_[line].empty()) return;
+        if (regLines_[line] == "flags") {  // toggle the flag under the mouse
+            std::string word = view.WordAt(pos);
+            static const std::pair<const char*, int> flags[] = {{"CF", 0}, {"PF", 2}, {"AF", 4}, {"ZF", 6}, {"SF", 7},
+                                                                {"DF", 10}, {"OF", 11}};
+            for (auto [name, bit] : flags) {
+                if (word.rfind(name, 0) == 0 && DebugStopped()) {
+                    debugger_->SetRegister("rflags", debugger_->Context().EFlags ^ (1u << bit));
+                    RenderRegisters();
+                }
+            }
+            return;
+        }
+        EditRegister(regLines_[line]);
+    } else if (&view == memView_.get()) {
+        if (line > 0 && line < static_cast<int>(memLines_.size())) {
+            // Which element of the row: count the values before the click.
+            Sci_Position lineStart = view.Call(SCI_POSITIONFROMLINE, line);
+            std::string text = view.LineText(line);
+            int column = static_cast<int>(pos - lineStart);
+            int size = memFormat_ == MemFormat::Words ? 2 : memFormat_ == MemFormat::Dwords || memFormat_ == MemFormat::Float ? 4
+                     : memFormat_ == MemFormat::Bytes || memFormat_ == MemFormat::Text ? 1 : 8;
+            int index = 0;
+            if (memFormat_ == MemFormat::Bytes) index = std::clamp((column - 18) / 3, 0, 7);
+            else if (memFormat_ == MemFormat::Words) index = std::clamp((column - 18) / 16, 0, 3);
+            else if (memFormat_ == MemFormat::Dwords) index = std::clamp((column - 18) / 23, 0, 1);
+            else if (memFormat_ == MemFormat::Float) index = std::clamp((column - 18) / 16, 0, 1);
+            EditMemory(memLines_[line] + static_cast<uint64_t>(index) * size);
+        }
+    } else if (&view == stackView_.get()) {
+        if (line < static_cast<int>(stackLines_.size()) && stackLines_[line] >= 0) {
+            const Debugger::Frame& f = frames_[stackLines_[line]];
+            if (f.location.valid()) OpenFile(f.location.file, f.location.line);
+        }
+    } else if (&view == watchView_.get()) {
+        if (line >= static_cast<int>(watchLines_.size())) return;
+        int w = watchLines_[line];
+        if (w >= 0 && w < static_cast<int>(watches_.size())) {
+            auto text = InputBox(hwnd_, Tr(L"Наблюдение"), Tr(L"Выражение (пусто — удалить):"), Widen(watches_[w]));
+            if (!text) return;
+            if (Trim(*text).empty()) watches_.erase(watches_.begin() + w);
+            else watches_[w] = Narrow(Trim(*text));
+            SaveProjectSession();
+            RenderWatches();
+        } else if (w <= -2 && debugger_) {
+            debugger_->RemoveDataWatch(static_cast<size_t>(-2 - w));
+            RenderWatches();
+        }
+    } else if (&view == disasmView_.get()) {
+        if (line < static_cast<int>(disasmLines_.size()) && disasmLines_[line] && debugger_) {
+            SourceLocation loc = debugger_->LocationOf(disasmLines_[line]);
+            if (loc.valid()) OpenFile(loc.file, loc.line);
+        }
+    }
+}
+
+void MainWindow::EditRegister(const std::string& name) {
+    if (!DebugStopped()) return;
+    auto current = Debugger::Register(debugger_->Context(), name);
+    if (!current) return;
+    char buf[32];
+    sprintf_s(buf, "0x%llX", static_cast<unsigned long long>(*current));
+    auto text = InputBox(hwnd_, Tr(L"Изменить регистр"),
+                         Widen(name) + L" = (" + Tr(L"число, 0x…, или выражение: rax+1, [rsp]") + L")", Widen(buf));
+    if (!text || Trim(*text).empty()) return;
+    std::wstring error;
+    auto v = debugger_->Evaluate(Narrow(Trim(*text)), error);
+    if (!v) {
+        ShowMessage(hwnd_, error);
+        return;
+    }
+    debugger_->SetRegister(name, *v);
+    PrintTo(Pane::DebugOutput, name + " := 0x" + Hex16(*v) + "\n", Out::Info);
+    if (name == "rip" || name == "eip") {
+        SourceLocation loc = debugger_->LocationOf(*v);
+        ClearExecutionLine();
+        if (loc.valid()) {
+            if (Editor* ed = OpenFile(loc.file, loc.line)) ed->SetExecutionLine(loc.line);
+        }
+    }
+    RenderDebugPanel();
+}
+
+// New contents for memory: hex bytes ("48 65 6C"), a string in quotes, or a number of the shown size.
+void MainWindow::EditMemory(uint64_t address) {
+    if (!DebugStopped()) return;
+    int size = memFormat_ == MemFormat::Words ? 2 : memFormat_ == MemFormat::Dwords || memFormat_ == MemFormat::Float ? 4
+             : memFormat_ == MemFormat::Qwords || memFormat_ == MemFormat::Double ? 8 : 1;
+    std::wstring prompt = std::wstring(Tr(L"Записать по адресу ")) + Widen("0x" + Hex16(address)) + L":\n" +
+                          (size == 1 ? Tr(L"байты в hex (48 65 6C) или строку в кавычках (\"текст\")")
+                                     : Tr(L"число (десятичное, 0x… или с точкой для float/double)"));
+    auto text = InputBox(hwnd_, Tr(L"Изменить память"), prompt, L"");
+    if (!text || Trim(*text).empty()) return;
+    std::string input = Narrow(Trim(*text));
+    std::vector<uint8_t> data;
+    if (input.size() >= 2 && (input[0] == '"' || input[0] == '\'') && input.back() == input[0]) {
+        data.assign(input.begin() + 1, input.end() - 1);
+    } else if (size == 1) {
+        std::istringstream in(input);
+        std::string token;
+        while (in >> token) data.push_back(static_cast<uint8_t>(strtoul(token.c_str(), nullptr, 16)));
+    } else if (memFormat_ == MemFormat::Float || memFormat_ == MemFormat::Double) {
+        double d = atof(input.c_str());
+        if (memFormat_ == MemFormat::Float) {
+            float f = static_cast<float>(d);
+            data.resize(4);
+            memcpy(data.data(), &f, 4);
+        } else {
+            data.resize(8);
+            memcpy(data.data(), &d, 8);
+        }
+    } else {
+        std::wstring error;
+        auto v = debugger_->Evaluate(input, error);
+        if (!v) {
+            ShowMessage(hwnd_, error);
+            return;
+        }
+        data.resize(size);
+        memcpy(data.data(), &*v, size);
+    }
+    if (data.empty()) return;
+    if (!debugger_->WriteMemory(address, data.data(), data.size())) {
+        ShowMessage(hwnd_, Tr(L"Не удалось записать в память по этому адресу."));
+        return;
+    }
+    PrintTo(Pane::DebugOutput, Tr(std::string("записано байт: ")) + std::to_string(data.size()) + " @ 0x" + Hex16(address) + "\n",
+            Out::Info);
+    RenderDebugPanel();
+}
+
+void MainWindow::AddWatch(const std::string& expression) {
+    watches_.push_back(expression);
+    SaveProjectSession();
+    if (!DebugPanelVisible()) {
+        showDebugPanel_ = true;
+        CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, MF_CHECKED);
+    }
+    debugTab_ = DebugTab::Watch;
+    Layout();
+    RenderWatches();
+}
+
+// "counter" or "counter, 4": stop when the program writes to those bytes.
+void MainWindow::AddDataBreakpoint(const std::string& text) {
+    if (!DebugStopped()) {
+        ShowMessage(hwnd_, Tr(L"Точку останова на данные можно поставить, когда программа остановлена в отладчике "
+                              L"(адрес переменной известен только у запущенной программы)."), false);
+        return;
+    }
+    std::string expr = text;
+    int size = debugger_->PointerSize();
+    size_t comma = text.rfind(',');
+    if (comma != std::string::npos) {
+        size = atoi(text.c_str() + comma + 1);
+        expr = text.substr(0, comma);
+    }
+    while (!expr.empty() && expr.back() == ' ') expr.pop_back();
+    std::wstring error;
+    auto address = debugger_->Evaluate(expr, error);
+    if (!address) {
+        ShowMessage(hwnd_, error);
+        return;
+    }
+    DataWatch w;
+    w.expression = expr;
+    w.address = *address;
+    w.size = size;
+    if (!debugger_->AddDataWatch(w, error)) {
+        ShowMessage(hwnd_, error);
+        return;
+    }
+    PrintTo(Pane::DebugOutput, Tr(std::string("точка останова на данные: ")) + expr + " @ 0x" + Hex16(*address) + "\n", Out::Info);
+    debugTab_ = DebugTab::Watch;
+    Layout();
+    RenderWatches();
 }
 
 std::string MainWindow::DebugTipText(Editor* ed, Sci_Position pos) {
     if (pos < 0 || !DebugStopped()) return {};
     std::string word = ed->WordAt(pos);
     if (word.empty() || isdigit(static_cast<unsigned char>(word[0]))) return {};
-    std::string lower = word;
-    for (char& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    std::string lower = LowerAscii(word);
     std::string tip;
     if (auto reg = Debugger::Register(debugger_->Context(), lower)) {
         char buf[64];
@@ -267,14 +833,91 @@ std::string MainWindow::DebugTipText(Editor* ed, Sci_Position pos) {
                 hex += b;
                 ascii += (bytes[i] >= 32 && bytes[i] < 127) ? static_cast<char>(bytes[i]) : '.';
             }
-            tip += "\nбайты: " + hex + " " + ascii;
+            tip += "\n" + Tr(std::string("байты: ")) + hex + " " + ascii;
         }
     }
     return tip;
 }
 
-// Reference card for the instruction / register / directive under the mouse or caret (with the register's value
-// while the debugger is stopped).
+// What a user-defined name stands for: the body of a %macro, the value of %define / equ.
+std::string MainWindow::SymbolHint(Editor* ed, const std::string& word) {
+    if (word.empty()) return {};
+    std::string name = word[0] == '%' ? word.substr(1) : word;
+    auto linesOf = [&](Editor* e, const fs::path& file) {
+        std::string text;
+        if (e) {
+            text = e->Text();
+        } else {
+            std::ifstream in(file, std::ios::binary);
+            std::stringstream ss;
+            ss << in.rdbuf();
+            text = ss.str();
+        }
+        std::vector<std::string> lines;
+        std::istringstream in(text);
+        std::string l;
+        while (std::getline(in, l)) {
+            if (!l.empty() && l.back() == '\r') l.pop_back();
+            lines.push_back(l);
+        }
+        return lines;
+    };
+    auto describe = [&](const std::vector<std::string>& lines, int line) -> std::string {
+        if (line < 1 || line > static_cast<int>(lines.size())) return {};
+        std::string def = lines[line - 1];
+        size_t first = def.find_first_not_of(" \t");
+        def = first == std::string::npos ? std::string() : def.substr(first);
+        std::string lower = LowerAscii(def);
+        if (lower.rfind("%macro", 0) == 0 || lower.rfind("%imacro", 0) == 0) {
+            std::string body = def;
+            for (int i = line; i < static_cast<int>(lines.size()) && i < line + 14; i++) {
+                body += "\n" + lines[i];
+                if (LowerAscii(lines[i]).find("%endmacro") != std::string::npos) break;
+            }
+            return Tr(std::string("Макрос")) + " " + name + "\n" + body;
+        }
+        size_t equ = lower.find(" equ ");
+        if (equ == std::string::npos) equ = lower.find("\tequ ");
+        std::string value;
+        if (equ != std::string::npos) {
+            value = def.substr(equ + 5);
+        } else if (lower[0] == '%') {  // %define NAME value
+            size_t at = def.find(name);
+            if (at != std::string::npos) value = def.substr(at + name.size());
+        } else {
+            return {};
+        }
+        size_t comment = value.find(';');
+        if (comment != std::string::npos) value.erase(comment);
+        size_t a = value.find_first_not_of(" \t"), b = value.find_last_not_of(" \t");
+        value = a == std::string::npos ? std::string() : value.substr(a, b - a + 1);
+        std::string tip = name + " = " + value;
+        char* end = nullptr;
+        long long n = strtoll(value.c_str(), &end, 0);
+        if (!value.empty() && end && *end == 0) {
+            char buf[64];
+            sprintf_s(buf, "  (0x%llX)", static_cast<unsigned long long>(n));
+            tip += buf;
+        }
+        return tip + "\n" + def;
+    };
+    for (const auto& s : Completion::ScanSymbols(ed->Text())) {
+        if (s.name == name && !s.declaration) {
+            std::string tip = describe(linesOf(ed, {}), s.line);
+            if (!tip.empty()) return tip;
+        }
+    }
+    for (const auto& hit : ProjectSymbols(ed)) {
+        if (hit.symbol.name == name && !hit.symbol.declaration) {
+            std::string tip = describe(linesOf(hit.editor, hit.file), hit.symbol.line);
+            if (!tip.empty()) return tip + "\n(" + Narrow(hit.file.filename().wstring()) + ")";
+        }
+    }
+    return {};
+}
+
+// Reference card for the word under the mouse or caret: instructions, registers, directives, C / WinAPI functions,
+// user macros and constants (with the register's or variable's value while the debugger is stopped).
 void MainWindow::ShowHint(Editor* ed, Sci_Position pos) {
     if (pos < 0) return;
     Sci_Position start, end;
@@ -286,9 +929,17 @@ void MainWindow::ShowHint(Editor* ed, Sci_Position pos) {
     }
     int style = static_cast<int>(ed->Call(SCI_GETSTYLEAT, start));
     std::string card;
+    size_t header = 0;
     if (style == T_INSTRUCTION || style == T_REGISTER || style == T_DIRECTIVE || style == T_PREPROCESSOR ||
         style == T_KEYWORD) {
         card = Hints::For(word);
+        header = Hints::HeaderLength(card);
+    }
+    if (card.empty() && (style == T_DEFAULT || style == T_LABEL || style == T_PREPROCESSOR)) {
+        card = Hints::Function(word);
+        if (!card.empty()) header = Hints::HeaderLength(card);
+        else card = SymbolHint(ed, word);
+        if (!card.empty() && !header) header = card.find('\n') == std::string::npos ? card.size() : card.find('\n');
     }
     std::string debug = DebugTipText(ed, pos);
     if (card.empty() && debug.empty()) return;
@@ -296,7 +947,7 @@ void MainWindow::ShowHint(Editor* ed, Sci_Position pos) {
     ed->Call(SCI_CALLTIPSHOW, start, reinterpret_cast<sptr_t>(tip.c_str()));
     if (!card.empty()) {
         size_t from = debug.empty() ? 0 : debug.size() + 2;
-        ed->Call(SCI_CALLTIPSETHLT, from, from + Hints::HeaderLength(card));
+        ed->Call(SCI_CALLTIPSETHLT, from, from + header);
     }
 }
 

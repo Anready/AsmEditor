@@ -41,16 +41,16 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_SETSCROLLWIDTHTRACKING, 1);
     Call(SCI_SETSCROLLWIDTH, 1);
     Call(SCI_SETMOUSEDWELLTIME, 450);
-    Call(SCI_SETMARGINS, 3);
+    Call(SCI_SETMARGINS, 4);
     Call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_SYMBOL);  // breakpoints and the execution arrow
-    Call(SCI_SETMARGINMASKN, 0, (1 << kMarkerBreakpoint) | (1 << kMarkerExecArrow));
+    Call(SCI_SETMARGINMASKN, 0, (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerExecArrow));
     Call(SCI_SETMARGINSENSITIVEN, 0, 1);
     Call(SCI_SETMARGINCURSORN, 0, SC_CURSORARROW);
     Call(SCI_SETMARGINTYPEN, 1, SC_MARGIN_NUMBER);
     Call(SCI_SETMARGINMASKN, 1, 0);
-    Call(SCI_SETMARGINTYPEN, 2, SC_MARGIN_COLOUR);
-    Call(SCI_SETMARGINMASKN, 2, 0);
-    Call(SCI_SETMARGINWIDTHN, 2, 8);
+    Call(SCI_SETMARGINTYPEN, kGapMargin, SC_MARGIN_COLOUR);
+    Call(SCI_SETMARGINMASKN, kGapMargin, 0);
+    Call(SCI_SETMARGINWIDTHN, kGapMargin, 8);
     Call(SCI_SETCARETLINEVISIBLEALWAYS, 1);
     Call(SCI_SETCARETWIDTH, 2);
     Call(SCI_SETEXTRADESCENT, 2);
@@ -59,27 +59,43 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_ASSIGNCMDKEY, 'D' + (SCMOD_CTRL << 16), SCI_SELECTIONDUPLICATE);
 
     Call(SCI_MARKERDEFINE, kMarkerError, SC_MARK_BACKGROUND);
-    Call(SCI_MARKERSETBACK, kMarkerError, Hex(0x3A2427));
     Call(SCI_MARKERDEFINE, kMarkerWarning, SC_MARK_BACKGROUND);
-    Call(SCI_MARKERSETBACK, kMarkerWarning, Hex(0x37321F));
     Call(SCI_MARKERDEFINE, kMarkerBreakpoint, SC_MARK_CIRCLE);
-    Call(SCI_MARKERSETFORE, kMarkerBreakpoint, Hex(0xDB5C5C));
-    Call(SCI_MARKERSETBACK, kMarkerBreakpoint, Hex(0xDB5C5C));
+    Call(SCI_MARKERDEFINE, kMarkerConditional, SC_MARK_CIRCLE);
     Call(SCI_MARKERDEFINE, kMarkerExecArrow, SC_MARK_SHORTARROW);
-    Call(SCI_MARKERSETFORE, kMarkerExecArrow, Hex(0x1E1F22));
-    Call(SCI_MARKERSETBACK, kMarkerExecArrow, Hex(0xF2C55C));
     Call(SCI_MARKERDEFINE, kMarkerExecLine, SC_MARK_BACKGROUND);
-    Call(SCI_MARKERSETBACK, kMarkerExecLine, Hex(0x3B3520));
 
     Call(SCI_INDICSETSTYLE, kIndicatorError, INDIC_SQUIGGLEPIXMAP);
-    Call(SCI_INDICSETFORE, kIndicatorError, Theme::Error);
     Call(SCI_INDICSETSTYLE, kIndicatorWarning, INDIC_SQUIGGLEPIXMAP);
-    Call(SCI_INDICSETFORE, kIndicatorWarning, Theme::Warning);
     Call(SCI_INDICSETSTYLE, kIndicatorFind, INDIC_ROUNDBOX);
-    Call(SCI_INDICSETFORE, kIndicatorFind, Theme::Accent);
     Call(SCI_INDICSETALPHA, kIndicatorFind, 60);
     Call(SCI_INDICSETSTYLE, kIndicatorLink, INDIC_PLAIN);
-    Call(SCI_INDICSETFORE, kIndicatorLink, Theme::Link);
+    Call(SCI_INDICSETSTYLE, kIndicatorOccurrence, INDIC_FULLBOX);
+    Call(SCI_INDICSETALPHA, kIndicatorOccurrence, 255);
+    Call(SCI_INDICSETUNDER, kIndicatorOccurrence, 1);
+    Call(SCI_INDICSETSTYLE, kIndicatorPair, INDIC_STRAIGHTBOX);
+    Call(SCI_INDICSETALPHA, kIndicatorPair, 70);
+    Call(SCI_INDICSETOUTLINEALPHA, kIndicatorPair, 160);
+    Call(SCI_INDICSETUNDER, kIndicatorPair, 1);
+
+    // Folding: %macro, %if, %rep blocks and the bodies of global labels (levels come from Lex).
+    Call(SCI_SETMARGINTYPEN, kFoldMargin, SC_MARGIN_SYMBOL);
+    Call(SCI_SETMARGINMASKN, kFoldMargin, SC_MASK_FOLDERS);
+    Call(SCI_SETMARGINSENSITIVEN, kFoldMargin, 1);
+    Call(SCI_SETAUTOMATICFOLD, SC_AUTOMATICFOLD_SHOW | SC_AUTOMATICFOLD_CLICK | SC_AUTOMATICFOLD_CHANGE);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDEROPEN, SC_MARK_BOXMINUS);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDER, SC_MARK_BOXPLUS);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDERSUB, SC_MARK_VLINE);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDERTAIL, SC_MARK_LCORNER);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDEREND, SC_MARK_BOXPLUSCONNECTED);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDEROPENMID, SC_MARK_BOXMINUSCONNECTED);
+    Call(SCI_MARKERDEFINE, SC_MARKNUM_FOLDERMIDTAIL, SC_MARK_TCORNER);
+
+    // Several carets: Alt+click, Alt+J (next occurrence), typing goes to every caret.
+    Call(SCI_SETMULTIPLESELECTION, 1);
+    Call(SCI_SETADDITIONALSELECTIONTYPING, 1);
+    Call(SCI_SETMULTIPASTE, SC_MULTIPASTE_EACH);
+    Call(SCI_SETVIRTUALSPACEOPTIONS, SCVS_RECTANGULARSELECTION);
 
     // Completion list: we filter and sort (case-insensitively) ourselves; "word?kind" picks the icon.
     Call(SCI_AUTOCSETTYPESEPARATOR, '?');
@@ -89,11 +105,6 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_AUTOCSETMAXHEIGHT, 12);
     Call(SCI_AUTOCSETMAXWIDTH, 40);
     Call(SCI_AUTOCSETDROPRESTOFWORD, 1);
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST, Opaque(Theme::Text));
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_BACK, Opaque(Hex(0x2B2D30)));
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED, Opaque(RGB(255, 255, 255)));
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED_BACK, Opaque(Hex(0x2E436E)));
-    RegisterCompletionIcons();
 
     ApplyStyles(fontSize);
     Call(SCI_EMPTYUNDOBUFFER);
@@ -106,7 +117,7 @@ void Editor::RegisterCompletionIcons() {
     Call(SCI_RGBAIMAGESETWIDTH, size);
     Call(SCI_RGBAIMAGESETHEIGHT, size);
     std::vector<uint8_t> pixels(static_cast<size_t>(size) * size * 4);
-    for (int kind = 1; kind <= static_cast<int>(Completion::Kind::Section); kind++) {
+    for (int kind = 1; kind <= static_cast<int>(Completion::Kind::Snippet); kind++) {
         COLORREF c = Completion::KindColor(static_cast<Completion::Kind>(kind));
         double r = size / 4.0;
         for (int y = 0; y < size; y++) {
@@ -139,41 +150,75 @@ void Editor::ApplyStyles(int fontSize) {
     Call(SCI_STYLECLEARALL);
 
     StyleColors(*this, T_DEFAULT, Theme::Text);
-    StyleColors(*this, T_COMMENT, Hex(0x7A7E85), true);
-    StyleColors(*this, T_STRING, Hex(0x6AAB73));
-    StyleColors(*this, T_NUMBER, Hex(0x2AACB8));
-    StyleColors(*this, T_REGISTER, Hex(0xC77DBB));
-    StyleColors(*this, T_INSTRUCTION, Hex(0xCF8E6D));
-    StyleColors(*this, T_DIRECTIVE, Hex(0x56A8F5));
-    StyleColors(*this, T_PREPROCESSOR, Hex(0xB3AE60));
-    StyleColors(*this, T_LABEL, Hex(0xFFC66D));
-    StyleColors(*this, T_KEYWORD, Hex(0xE0957B));
+    StyleColors(*this, T_COMMENT, Theme::Comment, true);
+    StyleColors(*this, T_STRING, Theme::String);
+    StyleColors(*this, T_NUMBER, Theme::Number);
+    StyleColors(*this, T_REGISTER, Theme::Register);
+    StyleColors(*this, T_INSTRUCTION, Theme::Instruction);
+    StyleColors(*this, T_DIRECTIVE, Theme::Directive);
+    StyleColors(*this, T_PREPROCESSOR, Theme::Preprocessor);
+    StyleColors(*this, T_LABEL, Theme::Label);
+    StyleColors(*this, T_KEYWORD, Theme::Keyword);
 
-    Call(SCI_STYLESETFORE, STYLE_LINENUMBER, Hex(0x4B5059));
+    Call(SCI_STYLESETFORE, STYLE_LINENUMBER, Theme::LineNumber);
     Call(SCI_STYLESETBACK, STYLE_LINENUMBER, Theme::EditorBg);
     Call(SCI_STYLESETFORE, STYLE_CALLTIP, Theme::Bright);
-    Call(SCI_STYLESETBACK, STYLE_CALLTIP, Hex(0x3C3F41));
+    Call(SCI_STYLESETBACK, STYLE_CALLTIP, Theme::CallTipBg);
     Call(SCI_STYLESETFORE, STYLE_BRACELIGHT, Theme::Bright);
-    Call(SCI_STYLESETBACK, STYLE_BRACELIGHT, Hex(0x43454A));
-    Call(SCI_CALLTIPSETBACK, Hex(0x3C3F41));
+    Call(SCI_STYLESETBACK, STYLE_BRACELIGHT, Theme::Blend(Theme::EditorBg, Theme::Accent, 30));
+    Call(SCI_STYLESETBOLD, STYLE_BRACELIGHT, 1);
+    Call(SCI_STYLESETFORE, STYLE_BRACEBAD, Theme::Error);
+    Call(SCI_CALLTIPSETBACK, Theme::CallTipBg);
     Call(SCI_CALLTIPSETFORE, Theme::Bright);
     Call(SCI_CALLTIPSETFOREHLT, Theme::Link);  // syntax line of instruction hints
 
+    Call(SCI_MARKERSETBACK, kMarkerError, Theme::ErrorLine);
+    Call(SCI_MARKERSETBACK, kMarkerWarning, Theme::WarningLine);
+    Call(SCI_MARKERSETFORE, kMarkerBreakpoint, Theme::Breakpoint);
+    Call(SCI_MARKERSETBACK, kMarkerBreakpoint, Theme::Breakpoint);
+    Call(SCI_MARKERSETFORE, kMarkerConditional, Theme::ConditionalBreakpoint);
+    Call(SCI_MARKERSETBACK, kMarkerConditional, Theme::ConditionalBreakpoint);
+    Call(SCI_MARKERSETFORE, kMarkerExecArrow, Theme::EditorBg);
+    Call(SCI_MARKERSETBACK, kMarkerExecArrow, Theme::ExecArrow);
+    Call(SCI_MARKERSETBACK, kMarkerExecLine, Theme::ExecLine);
+    for (int m = SC_MARKNUM_FOLDEREND; m <= SC_MARKNUM_FOLDEROPEN; m++) {
+        Call(SCI_MARKERSETFORE, m, Theme::EditorBg);
+        Call(SCI_MARKERSETBACK, m, Theme::LineNumber);
+        Call(SCI_MARKERSETBACKSELECTED, m, Theme::Muted);
+    }
+    Call(SCI_INDICSETFORE, kIndicatorError, Theme::Error);
+    Call(SCI_INDICSETFORE, kIndicatorWarning, Theme::Warning);
+    Call(SCI_INDICSETFORE, kIndicatorFind, Theme::Accent);
+    Call(SCI_INDICSETFORE, kIndicatorLink, Theme::Link);
+    Call(SCI_INDICSETFORE, kIndicatorOccurrence, Theme::Occurrence);
+    Call(SCI_INDICSETFORE, kIndicatorPair, Theme::Accent);
+
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST, Opaque(Theme::Text));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_BACK, Opaque(Theme::PanelBg));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED, Opaque(Theme::Bright));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_LIST_SELECTED_BACK, Opaque(Theme::ListSelected));
+    RegisterCompletionIcons();
+
     Call(SCI_SETMARGINBACKN, 0, Theme::EditorBg);
-    Call(SCI_SETMARGINBACKN, 2, Theme::EditorBg);
+    Call(SCI_SETMARGINBACKN, kGapMargin, Theme::EditorBg);
     Call(SCI_SETFOLDMARGINCOLOUR, 1, Theme::EditorBg);
     Call(SCI_SETFOLDMARGINHICOLOUR, 1, Theme::EditorBg);
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET, Opaque(Hex(0xCED0D6)));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET, Opaque(Theme::Bright));
     // Translucent caret line drawn under the text, so marker backgrounds (errors, execution line) stay visible.
     Call(SCI_SETCARETLINELAYER, SC_LAYER_UNDER_TEXT);
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK, Opaque(RGB(255, 255, 255), 0x0C));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET_LINE_BACK,
+         Theme::Dark ? Opaque(RGB(255, 255, 255), 0x0C) : Opaque(RGB(0, 0, 0), 0x08));
     Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_BACK, Opaque(Theme::Selection));
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK, Opaque(Hex(0x2A3550)));
-    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_WHITE_SPACE, Opaque(Hex(0x4B5059)));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_ADDITIONAL_BACK, Opaque(Theme::Selection));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_SELECTION_INACTIVE_BACK, Opaque(Theme::InactiveSelection));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_CARET_ADDITIONAL, Opaque(Theme::Bright));
+    Call(SCI_SETELEMENTCOLOUR, SC_ELEMENT_WHITE_SPACE, Opaque(Theme::LineNumber));
 
     int digitWidth = static_cast<int>(Call(SCI_TEXTWIDTH, STYLE_LINENUMBER, reinterpret_cast<sptr_t>("9")));
     Call(SCI_SETMARGINWIDTHN, 0, digitWidth * 2 + 6);
     Call(SCI_SETMARGINWIDTHN, 1, digitWidth * 5);
+    Call(SCI_SETMARGINWIDTHN, kFoldMargin, digitWidth + 6);
+    Call(SCI_SETMARGINBACKN, kFoldMargin, Theme::EditorBg);
     Call(SCI_COLOURISE, 0, -1);
 }
 
@@ -229,6 +274,35 @@ bool Editor::Load(const fs::path& path, std::wstring& error) {
     Call(SCI_EMPTYUNDOBUFFER);
     Call(SCI_SETSAVEPOINT);
     file_ = NormalizePath(path);
+    RememberDiskTime();
+    return true;
+}
+
+void Editor::RememberDiskTime() {
+    std::error_code ec;
+    diskTime_ = fs::last_write_time(file_, ec);
+    if (ec) diskTime_ = {};
+}
+
+bool Editor::ChangedOnDisk() const {
+    if (file_.empty()) return false;
+    std::error_code ec;
+    auto t = fs::last_write_time(file_, ec);
+    return !ec && t != diskTime_;
+}
+
+void Editor::ForgetDiskChange() {
+    RememberDiskTime();
+}
+
+bool Editor::Reload(std::wstring& error) {
+    Sci_Position caret = Call(SCI_GETCURRENTPOS);
+    Sci_Position first = Call(SCI_GETFIRSTVISIBLELINE);
+    std::map<int, std::string> bps = Breakpoints();
+    if (!Load(file_, error)) return false;
+    SetBreakpoints(bps);
+    Call(SCI_GOTOPOS, std::min(caret, Call(SCI_GETLENGTH)));
+    Call(SCI_SETFIRSTVISIBLELINE, first);
     return true;
 }
 
@@ -252,24 +326,36 @@ bool Editor::Save(const fs::path& path, std::wstring& error) {
         error = L"ошибка записи";
         return false;
     }
+    out.close();
     file_ = NormalizePath(path);
     Call(SCI_SETSAVEPOINT);
+    RememberDiskTime();
     return true;
 }
 
 // ---- lexer ----------------------------------------------------------------------------------------------------
 
+// Styles lines with the tokenizer and computes fold levels. The line state keeps what the fold level of the next
+// line depends on: the nesting of %macro/%if/%rep blocks (bits 0-7) and whether we are in a global label's body
+// (bit 8). When a line's state changes, the following lines are redone until the state matches again.
 void Editor::Lex(Sci_Position endPos) {
     Sci_Position line = Call(SCI_LINEFROMPOSITION, Call(SCI_GETENDSTYLED));
     Sci_Position lastLine = Call(SCI_LINEFROMPOSITION, endPos);
     Sci_Position length = Call(SCI_GETLENGTH);
-    for (; line <= lastLine; line++) {
+    Sci_Position lineCount = Call(SCI_GETLINECOUNT);
+    auto word = [&](const char* text, const Token& t) {
+        std::string w(text + t.start, t.end - t.start);
+        for (char& c : w) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        return w;
+    };
+    for (; line < lineCount; line++) {
         Sci_Position start = Call(SCI_POSITIONFROMLINE, line);
         Sci_Position end = Call(SCI_GETLINEENDPOSITION, line);
-        Sci_Position next = line + 1 < Call(SCI_GETLINECOUNT) ? Call(SCI_POSITIONFROMLINE, line + 1) : length;
+        Sci_Position next = line + 1 < lineCount ? Call(SCI_POSITIONFROMLINE, line + 1) : length;
         if (start < 0 || next < start) break;
         const char* text = reinterpret_cast<const char*>(Call(SCI_GETRANGEPOINTER, start, end - start));
-        Tokenize(text ? text : "", static_cast<int>(end - start), tokens_);
+        if (!text) text = "";
+        Tokenize(text, static_cast<int>(end - start), tokens_);
         Call(SCI_STARTSTYLING, start);
         Sci_Position cur = 0;
         for (const Token& t : tokens_) {
@@ -278,6 +364,33 @@ void Editor::Lex(Sci_Position endPos) {
             cur = t.end;
         }
         if (next - start > cur) Call(SCI_SETSTYLING, next - start - cur, T_DEFAULT);
+
+        int before = line > 0 ? static_cast<int>(Call(SCI_GETLINESTATE, line - 1)) : 0;
+        int depth = before & 0xFF, body = (before >> 8) & 1;
+        int level = SC_FOLDLEVELBASE + body + depth;
+        if (!tokens_.empty()) {
+            const Token& t = tokens_[0];
+            std::string w = word(text, t);
+            if (t.type == T_LABEL && w.find(':') != std::string::npos && w[0] != '.') {
+                level = SC_FOLDLEVELBASE + depth;  // a global label starts a function body
+                body = 1;
+            } else if (t.type == T_DIRECTIVE && (w == "section" || w == "segment")) {
+                level = SC_FOLDLEVELBASE + depth;
+                body = 0;
+            } else if (t.type == T_PREPROCESSOR) {
+                if (w == "%macro" || w == "%imacro" || w == "%rep" || w.rfind("%if", 0) == 0) {
+                    depth = std::min(depth + 1, 0xFF);
+                } else if ((w == "%endmacro" || w == "%endrep" || w == "%endif") && depth > 0) {
+                    depth--;
+                }
+            }
+        }
+        int after = depth | (body << 8);
+        int nextLevel = SC_FOLDLEVELBASE + body + depth;
+        Call(SCI_SETFOLDLEVEL, line, level | (nextLevel > level ? SC_FOLDLEVELHEADERFLAG : 0));
+        int old = static_cast<int>(Call(SCI_GETLINESTATE, line));
+        Call(SCI_SETLINESTATE, line, after);
+        if (line >= lastLine && old == after) break;
     }
 }
 
@@ -407,27 +520,67 @@ void Editor::ToggleComment() {
     Call(SCI_ENDUNDOACTION);
 }
 
-std::set<int> Editor::Breakpoints() const {
-    std::set<int> lines;
-    for (Sci_Position l = Call(SCI_MARKERNEXT, 0, 1 << kMarkerBreakpoint); l >= 0;
-         l = Call(SCI_MARKERNEXT, l + 1, 1 << kMarkerBreakpoint)) {
-        lines.insert(static_cast<int>(l) + 1);
+std::map<int, std::string> Editor::Breakpoints() const {
+    std::map<int, std::string> lines;
+    int mask = (1 << kMarkerBreakpoint) | (1 << kMarkerConditional);
+    for (Sci_Position l = Call(SCI_MARKERNEXT, 0, mask); l >= 0; l = Call(SCI_MARKERNEXT, l + 1, mask)) {
+        std::string condition;
+        for (int i = 0;; i++) {
+            int handle = static_cast<int>(Call(SCI_MARKERHANDLEFROMLINE, l, i));
+            if (handle < 0) break;
+            auto it = conditions_.find(handle);
+            if (it != conditions_.end()) condition = it->second;
+        }
+        lines[static_cast<int>(l) + 1] = condition;
     }
     return lines;
 }
 
-void Editor::SetBreakpoints(const std::set<int>& lines) {
+void Editor::SetBreakpoints(const std::map<int, std::string>& lines) {
     Call(SCI_MARKERDELETEALL, kMarkerBreakpoint);
+    Call(SCI_MARKERDELETEALL, kMarkerConditional);
+    conditions_.clear();
     Sci_Position count = Call(SCI_GETLINECOUNT);
-    for (int line : lines) {
-        if (line >= 1 && line <= count) Call(SCI_MARKERADD, line - 1, kMarkerBreakpoint);
+    for (const auto& [line, condition] : lines) {
+        if (line < 1 || line > count) continue;
+        if (condition.empty()) {
+            Call(SCI_MARKERADD, line - 1, kMarkerBreakpoint);
+        } else {
+            int handle = static_cast<int>(Call(SCI_MARKERADD, line - 1, kMarkerConditional));
+            conditions_[handle] = condition;
+        }
     }
 }
 
+bool Editor::HasBreakpoint(int line) const {
+    return (Call(SCI_MARKERGET, line - 1) & ((1 << kMarkerBreakpoint) | (1 << kMarkerConditional))) != 0;
+}
+
 void Editor::ToggleBreakpoint(int line) {
+    if (!HasBreakpoint(line)) {
+        Call(SCI_MARKERADD, line - 1, kMarkerBreakpoint);
+        return;
+    }
+    SetBreakpointCondition(line, {});  // drops the condition, leaves an ordinary marker
+    Call(SCI_MARKERDELETE, line - 1, kMarkerBreakpoint);
+}
+
+// Replaces the breakpoint on a line by one with the condition (an empty condition makes an ordinary one).
+void Editor::SetBreakpointCondition(int line, const std::string& condition) {
     Sci_Position l = line - 1;
-    if (Call(SCI_MARKERGET, l) & (1 << kMarkerBreakpoint)) Call(SCI_MARKERDELETE, l, kMarkerBreakpoint);
-    else Call(SCI_MARKERADD, l, kMarkerBreakpoint);
+    for (int i = 0;; i++) {
+        int handle = static_cast<int>(Call(SCI_MARKERHANDLEFROMLINE, l, i));
+        if (handle < 0) break;
+        conditions_.erase(handle);
+    }
+    Call(SCI_MARKERDELETE, l, kMarkerConditional);
+    Call(SCI_MARKERDELETE, l, kMarkerBreakpoint);
+    if (condition.empty()) {
+        Call(SCI_MARKERADD, l, kMarkerBreakpoint);
+    } else {
+        int handle = static_cast<int>(Call(SCI_MARKERADD, l, kMarkerConditional));
+        conditions_[handle] = condition;
+    }
 }
 
 void Editor::SetExecutionLine(int line) {

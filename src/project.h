@@ -8,6 +8,7 @@
 namespace Project {
 
 std::wstring Key(const fs::path& p);  // normalized lower-case path, for comparisons
+bool DefinesMain(const fs::path& file);  // has a main / wmain / WinMain label
 bool IsSourceFile(const fs::path& p);  // assembled on its own (.asm/.s/.nasm); .inc/.mac are only included
 
 // Files pulled in by %include (transitively) that exist on disk.

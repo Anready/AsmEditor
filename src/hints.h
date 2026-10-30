@@ -20,6 +20,9 @@ size_t HeaderLength(const std::string& card);
 // Empty for unknown names.
 std::string Function(const std::string& name);
 
+// Parameter names of a known function's prototype ("format" for printf); variadic for "...". False: unknown.
+bool Parameters(const std::string& name, std::vector<std::string>& names, bool& variadic, std::string& prototype);
+
 // Every instruction mnemonic the reference knows (for tests and completeness checks).
 std::vector<std::string> KnownInstructions();
 

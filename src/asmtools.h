@@ -24,6 +24,43 @@ namespace StackCheck {
 std::vector<Diagnostic> Analyze(const std::string& text);
 }
 
+namespace Analyzer {
+// Code checks (warnings): a callee-saved register (rbx rbp rsi rdi r12–r15) changed and not saved; div/idiv without
+// preparing rdx; instructions after ret/jmp that no label leads to.
+std::vector<Diagnostic> Analyze(const std::string& text);
+
+struct Edit {
+    int line = 0;           // 0-based
+    bool replace = false;   // replace the line, or insert before it
+    std::string text;       // without the line break
+};
+struct Fix {
+    std::string title;      // Russian; the UI translates it
+    std::vector<Edit> edits;
+};
+// Fixes for a diagnostic with a code (from Analyze, StackCheck or NASM's "symbol not defined").
+std::vector<Fix> QuickFixes(const std::string& text, const Diagnostic& d);
+// Applies edits (any order) to the text; `eol` is "\r\n" or "\n".
+std::string Apply(const std::string& text, const std::vector<Edit>& edits, const std::string& eol);
+
+// The arguments of "call name" on a line (0-based): which of the argument registers (and stack slots) were set
+// in the lines above it, back to the previous call, label or ret.
+struct Argument {
+    std::string where;   // "rcx", "rdx", "r8", "r9", "[rsp+32]"…
+    std::string name;    // parameter name from the prototype ("format"), or empty
+    int setOnLine = -1;  // 0-based line that sets it, -1: not set
+};
+struct CallArguments {
+    std::string function;
+    std::string prototype;
+    bool known = false;     // the prototype is known (C runtime / WinAPI)
+    bool variadic = false;
+    std::vector<Argument> arguments;  // the prototype's fixed arguments, or the registers set (unknown function)
+    std::vector<Argument> extra;      // registers set beyond the fixed ones (for variadic functions)
+};
+std::optional<CallArguments> ArgumentsOfCall(const std::string& text, int line);
+}
+
 namespace Disasm {
 struct Line {
     uint64_t address = 0;

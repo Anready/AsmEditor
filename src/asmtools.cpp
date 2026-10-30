@@ -1,5 +1,7 @@
 #include "asmtools.h"
 
+#include "hints.h"
+
 #include <fstream>
 #include <regex>
 #include <set>
@@ -98,6 +100,31 @@ const std::set<std::string> kData = {"db", "dw", "dd", "dq", "dt", "do", "dy", "
                                      "resq", "rest", "reso", "resy", "resz", "equ", "times", "incbin"};
 const std::set<std::string> kPrefixes = {"rep", "repe", "repz", "repne", "repnz", "lock", "xacquire", "xrelease",
                                          "bnd", "o16", "o32", "o64", "a16", "a32", "a64"};
+
+std::vector<std::string> SplitOperands(const std::string& s) {
+    std::vector<std::string> out;
+    std::string cur;
+    int depth = 0;
+    char quote = 0;
+    for (char c : s) {
+        if (quote) {
+            cur += c;
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' || c == '"' || c == '`') quote = c;
+        if (c == '[' || c == '(') depth++;
+        if (c == ']' || c == ')') depth--;
+        if (c == ',' && depth == 0) {
+            out.push_back(LTrim(RTrim(cur)));
+            cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    if (!LTrim(cur).empty()) out.push_back(LTrim(RTrim(cur)));
+    return out;
+}
 }
 
 // ---- formatter --------------------------------------------------------------------------------------------------
@@ -260,30 +287,6 @@ std::optional<int64_t> Constant(const std::string& s) {
     return v;
 }
 
-std::vector<std::string> SplitOperands(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
-    int depth = 0;
-    char quote = 0;
-    for (char c : s) {
-        if (quote) {
-            cur += c;
-            if (c == quote) quote = 0;
-            continue;
-        }
-        if (c == '\'' || c == '"' || c == '`') quote = c;
-        if (c == '[' || c == '(') depth++;
-        if (c == ']' || c == ')') depth--;
-        if (c == ',' && depth == 0) {
-            out.push_back(LTrim(RTrim(cur)));
-            cur.clear();
-        } else {
-            cur += c;
-        }
-    }
-    if (!LTrim(cur).empty()) out.push_back(LTrim(RTrim(cur)));
-    return out;
-}
 }
 
 std::vector<Diagnostic> Analyze(const std::string& text) {
@@ -400,12 +403,14 @@ std::vector<Diagnostic> Analyze(const std::string& text) {
                     out.push_back({{}, lineNo, Severity::Warning,
                                    Widen(Tr(std::string("Перед call стек, вероятно, не выровнен на 16 байт (rsp mod 16 = 8): "
                                                         "функции C (printf и др.) могут упасть. Измените sub rsp на 8 байт "
-                                                        "(например, 40 вместо 32) или уберите лишний push.")))});
+                                                        "(например, 40 вместо 32) или уберите лишний push."))),
+                                   "stack-align"});
                 } else if (allocated < 32) {
                     out.push_back({{}, lineNo, Severity::Warning,
                                    Widen(Tr(std::string("Перед вызовом внешней функции не выделено теневое место: "
                                                         "по соглашению Win64 нужно sub rsp, 32 (или больше) — "
-                                                        "вызываемая функция может затереть данные в стеке.")))});
+                                                        "вызываемая функция может затереть данные в стеке."))),
+                                   "shadow"});
                 }
             }
         } else if (dstRsp && lw != "cmp" && lw != "test") {
@@ -413,6 +418,436 @@ std::vector<Diagnostic> Analyze(const std::string& text) {
         }
     }
     return out;
+}
+
+}
+
+// ---- analyzer ---------------------------------------------------------------------------------------------------
+
+namespace Analyzer {
+namespace {
+
+// One statement of the source: label, mnemonic and operands.
+struct Stmt {
+    int line = 0;                     // 0-based
+    std::string label;                // label defined on the line
+    bool function = false;            // a global label with ':' (starts a function)
+    std::string mnemonic;             // lower case ("" for a line with only a label)
+    std::vector<std::string> ops;     // lower case
+    std::vector<std::string> rawOps;  // as written (names are case-sensitive)
+    std::string indent;               // whitespace before the mnemonic
+};
+
+std::vector<Stmt> Parse(const std::string& text) {
+    std::vector<Stmt> out;
+    std::istringstream in(text);
+    std::string raw;
+    bool inMacro = false, codeSection = true;
+    for (int no = 0; std::getline(in, raw); no++) {
+        std::string code, comment;
+        SplitComment(RTrim(raw), code, comment);
+        std::string t = LTrim(code);
+        if (t.empty()) continue;
+        if (t[0] == '%') {
+            std::string w = LowerAscii(ReadWord(t, 1));
+            if (w == "macro" || w == "imacro") inMacro = true;
+            else if (w == "endmacro") inMacro = false;
+            continue;
+        }
+        if (inMacro) continue;
+        Stmt st;
+        st.line = no;
+        std::string rest = code;
+        std::vector<Token> tokens;
+        Tokenize(code.data(), static_cast<int>(code.size()), tokens);
+        if (!tokens.empty() && tokens[0].type == T_LABEL) {
+            st.label = ReadWord(code, tokens[0].start);
+            bool colon = code.find(':', tokens[0].start) < static_cast<size_t>(tokens[0].end);
+            st.function = colon && !st.label.empty() && st.label[0] != '.' && st.label.find("..") != 0;
+            rest = code.substr(tokens[0].end);
+            size_t c = rest.find_first_not_of(" \t");
+            if (c != std::string::npos && rest[c] == ':') rest = rest.substr(c + 1);
+        }
+        t = LTrim(rest);
+        std::string w = LowerAscii(ReadWord(t, 0));
+        if (w == "section" || w == "segment") {
+            std::string name = LowerAscii(LTrim(t.substr(w.size())));
+            codeSection = name.find("text") != std::string::npos || name.find("code") != std::string::npos;
+            continue;
+        }
+        if (!codeSection || kTopLevel.count(w)) continue;
+        if (kPrefixes.count(w)) {
+            t = LTrim(t.substr(w.size()));
+            w = LowerAscii(ReadWord(t, 0));
+        }
+        st.mnemonic = w;
+        size_t at = rest.find_first_not_of(" \t");
+        st.indent = st.label.empty() && at != std::string::npos ? rest.substr(0, at) : "    ";
+        for (const std::string& op : SplitOperands(t.size() > w.size() ? t.substr(w.size()) : std::string())) {
+            st.rawOps.push_back(op);
+            st.ops.push_back(LowerAscii(op));
+        }
+        out.push_back(std::move(st));
+    }
+    return out;
+}
+
+// 64-bit register a register name belongs to ("ecx" -> "rcx"), or "" for anything else.
+std::string Canon(const std::string& r) {
+    static const std::map<std::string, std::string> names = [] {
+        std::map<std::string, std::string> m;
+        const char* r64[] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp"};
+        const char* r32[] = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"};
+        const char* r16[] = {"ax", "bx", "cx", "dx", "si", "di", "bp", "sp"};
+        const char* r8[] = {"al", "bl", "cl", "dl", "sil", "dil", "bpl", "spl"};
+        for (int i = 0; i < 8; i++) m[r64[i]] = m[r32[i]] = m[r16[i]] = m[r8[i]] = r64[i];
+        m["ah"] = "rax", m["bh"] = "rbx", m["ch"] = "rcx", m["dh"] = "rdx";
+        for (int i = 8; i < 16; i++) {
+            std::string n = "r" + std::to_string(i);
+            m[n] = m[n + "d"] = m[n + "w"] = m[n + "b"] = m[n + "l"] = n;
+        }
+        return m;
+    }();
+    auto it = names.find(r);
+    return it == names.end() ? std::string() : it->second;
+}
+
+bool IsByteRegister(const std::string& r) {
+    static const std::set<std::string> bytes = {"al", "bl", "cl", "dl", "ah", "bh", "ch", "dh", "sil", "dil", "bpl", "spl"};
+    return bytes.count(r) || (r.size() > 2 && r[0] == 'r' && (r.back() == 'b' || r.back() == 'l') && isdigit(static_cast<unsigned char>(r[1])));
+}
+
+// Registers (64-bit names, and xmm0-15) an instruction writes.
+std::vector<std::string> Writes(const Stmt& s) {
+    const std::string& m = s.mnemonic;
+    std::vector<std::string> out;
+    static const std::set<std::string> readOnly = {"cmp", "test", "push", "call", "jmp", "ret", "retn", "nop", "int",
+                                                   "bt", "ucomisd", "ucomiss", "comisd", "comiss", "ptest", "loop",
+                                                   "loope", "loopne", "prefetch", "clflush"};
+    if (m.empty() || kData.count(m)) return out;
+    if (m == "div" || m == "idiv" || ((m == "mul" || m == "imul") && s.ops.size() == 1)) return {"rax", "rdx"};
+    if (m == "cqo" || m == "cdq" || m == "cwd") return {"rdx"};
+    if (m == "cpuid") return {"rax", "rbx", "rcx", "rdx"};
+    if (m == "rdtsc") return {"rax", "rdx"};
+    if (m.rfind("movs", 0) == 0 && s.ops.empty()) return {"rsi", "rdi"};
+    if ((m.rfind("lods", 0) == 0 || m.rfind("cmps", 0) == 0) && s.ops.empty()) return {"rsi", "rax"};
+    if ((m.rfind("stos", 0) == 0 || m.rfind("scas", 0) == 0) && s.ops.empty()) return {"rdi"};
+    if (readOnly.count(m) || (m[0] == 'j' && m != "jmp")) return out;
+    if (s.ops.empty()) return out;
+    std::string d = Canon(s.ops[0]);
+    if (!d.empty()) out.push_back(d);
+    else if (s.ops[0].rfind("xmm", 0) == 0) out.push_back(s.ops[0]);
+    if (m == "xchg" && s.ops.size() > 1 && !Canon(s.ops[1]).empty()) out.push_back(Canon(s.ops[1]));
+    return out;
+}
+
+bool Has(const std::vector<std::string>& v, const std::string& x) {
+    return std::find(v.begin(), v.end(), x) != v.end();
+}
+
+// Index ranges [first, last) of the functions (a global label with ':' up to the next one).
+std::vector<std::pair<size_t, size_t>> Functions(const std::vector<Stmt>& st) {
+    std::vector<std::pair<size_t, size_t>> out;
+    for (size_t i = 0; i < st.size(); i++) {
+        if (!st[i].function) continue;
+        if (!out.empty() && out.back().second == st.size()) out.back().second = i;
+        out.push_back({i, st.size()});
+    }
+    return out;
+}
+
+std::pair<size_t, size_t> FunctionAt(const std::vector<Stmt>& st, int line) {
+    for (auto f : Functions(st)) {
+        int from = st[f.first].line, to = f.second < st.size() ? st[f.second].line : INT_MAX;
+        if (line >= from && line < to) return f;
+    }
+    return {0, 0};
+}
+
+std::string Format(const char* russianTemplate, const std::string& arg) {
+    std::string t = Tr(std::string(russianTemplate));
+    size_t at = t.find("%s");
+    return at == std::string::npos ? t : t.replace(at, 2, arg);
+}
+
+const char* kCalleeSaved[] = {"rbx", "rbp", "rsi", "rdi", "r12", "r13", "r14", "r15"};
+
+// A constant from "sub rsp, 40".
+std::optional<int64_t> Number(const std::string& s) {
+    std::string t = LowerAscii(LTrim(RTrim(s)));
+    if (t.empty() || !isdigit(static_cast<unsigned char>(t[0]))) return std::nullopt;
+    int base = 10;
+    if (t.rfind("0x", 0) == 0) base = 16, t = t.substr(2);
+    else if (t.back() == 'h') base = 16, t.pop_back();
+    char* end = nullptr;
+    int64_t v = static_cast<int64_t>(strtoull(t.c_str(), &end, base));
+    return *end ? std::nullopt : std::optional<int64_t>(v);
+}
+
+// "[rsp+40]" (with an optional size before it) -> 40.
+std::optional<int64_t> RspSlot(const std::string& op) {
+    size_t open = op.find('['), close = op.find(']');
+    if (open == std::string::npos || close == std::string::npos) return std::nullopt;
+    std::string in;
+    for (char c : op.substr(open + 1, close - open - 1)) {
+        if (c != ' ' && c != '\t') in += c;
+    }
+    if (in.rfind("rsp+", 0) != 0) return std::nullopt;
+    return Number(in.substr(4));
+}
+}
+
+std::vector<Diagnostic> Analyze(const std::string& text) {
+    std::vector<Diagnostic> out;
+    std::vector<Stmt> st = Parse(text);
+    std::set<std::string> instructions;
+    for (const std::string& i : Hints::KnownInstructions()) instructions.insert(i);
+    auto warn = [&](const Stmt& s, const std::string& message, const std::string& code) {
+        out.push_back({{}, s.line + 1, Severity::Warning, Widen(message), code});
+    };
+
+    for (auto [first, last] : Functions(st)) {
+        bool returns = false;
+        std::vector<std::string> saved;
+        for (size_t i = first; i < last; i++) {
+            const Stmt& s = st[i];
+            if (s.mnemonic == "ret" || s.mnemonic == "retn") returns = true;
+            if (s.mnemonic == "push" && !s.ops.empty() && !Canon(s.ops[0]).empty()) saved.push_back(Canon(s.ops[0]));
+            if (s.mnemonic == "mov" && s.ops.size() == 2 && s.ops[0].find('[') != std::string::npos && !Canon(s.ops[1]).empty()) {
+                saved.push_back(Canon(s.ops[1]));  // mov [rsp+8], rbx
+            }
+        }
+        // Callee-saved registers: the caller expects them unchanged after the call.
+        std::set<std::string> reported;
+        for (size_t i = first; i < last && returns; i++) {
+            for (const std::string& r : Writes(st[i])) {
+                bool calleeSaved = std::find(std::begin(kCalleeSaved), std::end(kCalleeSaved), r) != std::end(kCalleeSaved);
+                if (!calleeSaved || Has(saved, r) || reported.count(r)) continue;
+                reported.insert(r);
+                warn(st[i],
+                     Format("%s изменяется, но не сохраняется: по соглашению о вызовах функция должна вернуть его прежним "
+                            "(push в начале, pop перед ret) — иначе вызвавший код (в том числе C runtime для main) "
+                            "получит испорченное значение.", r),
+                     "callee-saved:" + r);
+            }
+        }
+        // div / idiv divide rdx:rax: rdx has to be prepared right before.
+        for (size_t i = first; i < last; i++) {
+            const Stmt& s = st[i];
+            if ((s.mnemonic != "div" && s.mnemonic != "idiv") || s.ops.size() != 1) continue;
+            const std::string& op = s.ops[0];
+            if (IsByteRegister(op) || op.rfind("byte", 0) == 0) continue;  // 8-bit division uses ax only
+            bool prepared = false;
+            for (size_t k = i; k-- > first;) {
+                const Stmt& p = st[k];
+                if (p.mnemonic == "call" || p.mnemonic == "div" || p.mnemonic == "idiv") break;
+                if (p.mnemonic != "mul" && p.mnemonic != "imul" && Has(Writes(p), "rdx")) {
+                    prepared = true;
+                    break;
+                }
+                if (!p.label.empty()) break;
+            }
+            if (prepared) continue;
+            if (s.mnemonic == "div") {
+                warn(s, Tr(std::string("div делит пару rdx:rax: перед ним нужно обнулить rdx (xor edx, edx), иначе частное "
+                                       "будет неверным или программа упадёт с «переполнением при делении».")),
+                     "div-rdx");
+            } else {
+                warn(s, Tr(std::string("idiv делит пару rdx:rax: перед ним нужно расширить знак rax в rdx (cqo; для 32 бит — "
+                                       "cdq), иначе частное будет неверным или программа упадёт.")),
+                     "idiv-rdx");
+            }
+        }
+    }
+
+    // Instructions right after ret / jmp that no label leads to.
+    bool dead = false;
+    for (const Stmt& s : st) {
+        if (!s.label.empty()) dead = false;
+        if (dead && !s.mnemonic.empty() && instructions.count(s.mnemonic) && s.mnemonic != "nop" && s.mnemonic != "int3") {
+            warn(s, Tr(std::string("Недостижимый код: перед ним ret или jmp, а метки, на которую можно перейти, нет.")),
+                 "unreachable");
+            dead = false;
+        }
+        if (s.mnemonic == "ret" || s.mnemonic == "retn" || s.mnemonic == "jmp" || s.mnemonic == "ud2") dead = true;
+    }
+    std::sort(out.begin(), out.end(), [](const Diagnostic& a, const Diagnostic& b) { return a.line < b.line; });
+    return out;
+}
+
+std::vector<Fix> QuickFixes(const std::string& text, const Diagnostic& d) {
+    std::vector<Fix> fixes;
+    std::vector<Stmt> st = Parse(text);
+    int line = d.line - 1;
+    std::vector<std::string> lines;
+    {
+        std::istringstream in(text);
+        for (std::string l; std::getline(in, l);) lines.push_back(RTrim(l));
+    }
+    auto indentOf = [&](int l) {
+        if (l < 0 || l >= static_cast<int>(lines.size())) return std::string("    ");
+        size_t at = lines[l].find_first_not_of(" \t");
+        return at == std::string::npos || at == 0 ? std::string("    ") : lines[l].substr(0, at);
+    };
+    auto [first, last] = FunctionAt(st, line);
+    bool inFunction = last > first;
+    // Insert after the function's label and before each of its ret.
+    auto wrap = [&](const std::string& atStart, const std::string& beforeRet) {
+        std::vector<Edit> edits;
+        int labelLine = st[first].line;
+        int bodyIndentLine = first + 1 < last ? st[first + 1].line : labelLine;
+        if (st[first].mnemonic.empty()) edits.push_back({labelLine + 1, false, indentOf(bodyIndentLine) + atStart});
+        else edits.push_back({labelLine, false, indentOf(bodyIndentLine) + atStart});  // "f: mov…" on one line
+        for (size_t i = first; i < last && !beforeRet.empty(); i++) {
+            if (st[i].mnemonic == "ret" || st[i].mnemonic == "retn") {
+                edits.push_back({st[i].line, false, indentOf(st[i].line) + beforeRet});
+            }
+        }
+        return edits;
+    };
+
+    const std::string& code = d.code;
+    if (code.rfind("undefined:", 0) == 0) {
+        std::string name = code.substr(10);
+        bool called = false;
+        for (const Stmt& s : st) {
+            if (s.line == line && s.mnemonic == "call") called = true;
+        }
+        if (called || !Hints::Function(name).empty()) {
+            int at = 0, lastExtern = -1, firstSection = -1;
+            for (int i = 0; i < static_cast<int>(lines.size()); i++) {
+                std::string w = LowerAscii(ReadWord(LTrim(lines[i]), 0));
+                if (w == "extern") lastExtern = i;
+                if ((w == "section" || w == "segment" || w == "global") && firstSection < 0) firstSection = i;
+            }
+            at = lastExtern >= 0 ? lastExtern + 1 : firstSection >= 0 ? firstSection : 0;
+            fixes.push_back({Format("Добавить extern %s", name), {{at, false, "extern " + name}}});
+        }
+    } else if (code.rfind("callee-saved:", 0) == 0 && inFunction) {
+        std::string r = code.substr(13);
+        fixes.push_back({Format("Сохранить %s: push в начале функции, pop перед каждым ret", r), wrap("push " + r, "pop " + r)});
+    } else if ((code == "div-rdx" || code == "idiv-rdx") && line >= 0) {
+        std::string op;
+        for (const Stmt& s : st) {
+            if (s.line == line && !s.ops.empty()) op = s.ops[0];
+        }
+        std::string prep = "xor edx, edx";
+        if (code == "idiv-rdx") {  // sign extension of the size of the divisor
+            bool reg = !Canon(op).empty();
+            bool d32 = op.rfind("dword", 0) == 0 || (reg && (op[0] == 'e' || (op[0] == 'r' && op.back() == 'd')));
+            bool d16 = op.rfind("word", 0) == 0 || (reg && (op.size() == 2 || (op[0] == 'r' && op.back() == 'w')));
+            prep = d32 ? "cdq" : d16 ? "cwd" : "cqo";
+        }
+        fixes.push_back({Format("Вставить %s перед делением", prep), {{line, false, indentOf(line) + prep}}});
+    } else if ((code == "stack-align" || code == "shadow") && inFunction) {
+        int64_t add = code == "stack-align" ? 8 : 32;
+        // An existing "sub rsp, N" before the call (and its "add rsp, N"): change N.
+        std::optional<int64_t> n;
+        std::vector<Edit> edits;
+        for (size_t i = first; i < last && st[i].line < line; i++) {
+            if (st[i].mnemonic == "sub" && st[i].ops.size() == 2 && st[i].ops[0] == "rsp" && (n = Number(st[i].ops[1]))) {
+                edits.push_back({st[i].line, true, indentOf(st[i].line) + "sub rsp, " + std::to_string(*n + add)});
+                break;
+            }
+        }
+        if (n) {
+            for (size_t i = first; i < last; i++) {
+                if (st[i].mnemonic == "add" && st[i].ops.size() == 2 && st[i].ops[0] == "rsp" && Number(st[i].ops[1]) == n) {
+                    edits.push_back({st[i].line, true, indentOf(st[i].line) + "add rsp, " + std::to_string(*n + add)});
+                }
+            }
+            fixes.push_back({Format("Изменить на sub rsp, %s (и add rsp)", std::to_string(*n + add)), edits});
+        } else {
+            std::string sz = std::to_string(add == 32 ? 32 : 8);
+            if (code == "shadow") {
+                int pushes = 0;
+                for (size_t i = first; i < last && st[i].line < line; i++) pushes += st[i].mnemonic == "push";
+                sz = pushes % 2 ? "32" : "40";
+            }
+            fixes.push_back({Format("Выделить место в стеке: sub rsp, %s в начале функции, add rsp перед ret", sz),
+                             wrap("sub rsp, " + sz, "add rsp, " + sz)});
+        }
+    }
+    return fixes;
+}
+
+std::string Apply(const std::string& text, const std::vector<Edit>& edits, const std::string& eol) {
+    std::vector<std::string> lines;
+    size_t pos = 0;
+    while (true) {
+        size_t nl = text.find('\n', pos);
+        lines.push_back(text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    }
+    std::vector<Edit> sorted = edits;
+    std::stable_sort(sorted.begin(), sorted.end(), [](const Edit& a, const Edit& b) {
+        return a.line != b.line ? a.line > b.line : a.replace > b.replace;  // bottom up; on one line: replace first
+    });
+    std::string cr = eol == "\r\n" ? "\r" : "";
+    for (const Edit& e : sorted) {
+        int at = std::clamp(e.line, 0, static_cast<int>(lines.size()));
+        if (e.replace && at < static_cast<int>(lines.size())) {
+            bool hadCr = !lines[at].empty() && lines[at].back() == '\r';
+            lines[at] = e.text + (hadCr ? "\r" : "");
+        } else {
+            lines.insert(lines.begin() + at, e.text + cr);
+        }
+    }
+    std::string out;
+    for (size_t i = 0; i < lines.size(); i++) {
+        if (i) out += '\n';
+        out += lines[i];
+    }
+    return out;
+}
+
+std::optional<CallArguments> ArgumentsOfCall(const std::string& text, int line) {
+    std::vector<Stmt> st = Parse(text);
+    size_t at = st.size();
+    for (size_t i = 0; i < st.size(); i++) {
+        if (st[i].line == line && st[i].mnemonic == "call" && !st[i].rawOps.empty()) at = i;
+    }
+    if (at == st.size()) return std::nullopt;
+    CallArguments r;
+    std::string target = st[at].rawOps[0];
+    size_t imp = target.find("__imp_");
+    r.function = ReadWord(imp != std::string::npos ? target.substr(imp + 6) : LTrim(target), 0);
+    if (r.function.empty()) return std::nullopt;
+    std::vector<std::string> names;
+    r.known = Hints::Parameters(r.function, names, r.variadic, r.prototype);
+
+    static const char* regs[] = {"rcx", "rdx", "r8", "r9"};
+    std::map<int, int> setOn;  // argument index -> line
+    for (size_t k = at; k-- > 0;) {
+        const Stmt& p = st[k];
+        if (p.mnemonic == "call" || p.mnemonic == "ret" || p.mnemonic == "retn" || p.mnemonic == "jmp") break;
+        for (const std::string& w : Writes(p)) {
+            for (int i = 0; i < 4; i++) {
+                if (w == regs[i] || w == "xmm" + std::to_string(i)) setOn.emplace(i, p.line);
+            }
+        }
+        if (p.mnemonic == "mov" && !p.ops.empty()) {
+            if (auto slot = RspSlot(p.ops[0]); slot && *slot >= 32 && *slot % 8 == 0) setOn.emplace(4 + static_cast<int>((*slot - 32) / 8), p.line);
+        }
+        if (!p.label.empty()) break;
+    }
+    auto where = [](int i) { return i < 4 ? std::string(regs[i]) : "[rsp+" + std::to_string(32 + 8 * (i - 4)) + "]"; };
+    auto lineOf = [&](int i) {
+        auto it = setOn.find(i);
+        return it == setOn.end() ? -1 : it->second;
+    };
+    if (r.known) {
+        for (int i = 0; i < static_cast<int>(names.size()); i++) r.arguments.push_back({where(i), names[i], lineOf(i)});
+        if (r.variadic) {
+            for (const auto& [i, l] : setOn) {
+                if (i >= static_cast<int>(names.size())) r.extra.push_back({where(i), "", l});
+            }
+        }
+    } else {
+        for (const auto& [i, l] : setOn) r.arguments.push_back({where(i), "", l});
+    }
+    return r;
 }
 
 }

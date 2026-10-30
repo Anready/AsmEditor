@@ -1,4 +1,5 @@
 #include "mw_internal.h"
+#include "hints.h"
 
 // ---- completion -------------------------------------------------------------------------------------------------
 
@@ -587,6 +588,93 @@ void MainWindow::FormatCode(Editor* ed) {
     ed->Call(SCI_REPLACETARGET, formatted.size(), reinterpret_cast<sptr_t>(formatted.c_str()));
     ed->Call(SCI_GOTOPOS, ed->Call(SCI_GETLINEENDPOSITION, caretLine));
     ed->Call(SCI_SETFIRSTVISIBLELINE, top);
+}
+
+// Alt+Enter: a menu of fixes for the problems on the caret line (missing extern, stack space, saving rbx...).
+void MainWindow::QuickFix(Editor* ed) {
+    int line = ed->CaretLine();
+    std::vector<Diagnostic> here;
+    if (const auto* live = ed->DiagnosticsAt(line)) here = *live;
+    for (const Diagnostic& d : buildDiagnostics_) {
+        if (d.line == line && !ed->file().empty() && SamePath(d.file, ed->file())) here.push_back(d);
+    }
+    std::string text = ed->Text();
+    std::vector<Analyzer::Fix> fixes;
+    for (const Diagnostic& d : here) {
+        if (d.code.empty()) continue;
+        for (Analyzer::Fix& f : Analyzer::QuickFixes(text, d)) {
+            bool dup = std::any_of(fixes.begin(), fixes.end(), [&](const Analyzer::Fix& x) { return x.title == f.title; });
+            if (!dup) fixes.push_back(std::move(f));
+        }
+    }
+    if (fixes.empty()) {
+        ShowMessage(hwnd_, Tr(L"Для этой строки нет быстрых исправлений."), false);
+        return;
+    }
+    HMENU menu = CreatePopupMenu();
+    for (size_t i = 0; i < fixes.size(); i++) AppendMenuW(menu, MF_STRING, i + 1, Widen(fixes[i].title).c_str());
+    Sci_Position caret = ed->Call(SCI_GETCURRENTPOS);
+    POINT pt{static_cast<LONG>(ed->Call(SCI_POINTXFROMPOSITION, 0, caret)),
+             static_cast<LONG>(ed->Call(SCI_POINTYFROMPOSITION, 0, caret) + ed->Call(SCI_TEXTHEIGHT, 0))};
+    ClientToScreen(ed->hwnd(), &pt);
+    int chosen = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, pt.x, pt.y, hwnd_, nullptr);
+    DestroyMenu(menu);
+    if (chosen <= 0) return;
+    // Apply through Scintilla (bottom up), so breakpoints, folding and undo keep working.
+    std::vector<Analyzer::Edit> edits = fixes[chosen - 1].edits;
+    std::stable_sort(edits.begin(), edits.end(), [](const auto& a, const auto& b) {
+        return a.line != b.line ? a.line > b.line : a.replace > b.replace;
+    });
+    std::string eol = ed->Call(SCI_GETEOLMODE) == SC_EOL_LF ? "\n" : "\r\n";
+    ed->Call(SCI_BEGINUNDOACTION);
+    for (const Analyzer::Edit& e : edits) {
+        Sci_Position lines = ed->Call(SCI_GETLINECOUNT);
+        if (e.replace && e.line < lines) {
+            ed->Call(SCI_SETTARGETRANGE, ed->Call(SCI_POSITIONFROMLINE, e.line), ed->Call(SCI_GETLINEENDPOSITION, e.line));
+            ed->Call(SCI_REPLACETARGET, e.text.size(), reinterpret_cast<sptr_t>(e.text.c_str()));
+        } else {
+            Sci_Position at = e.line < lines ? ed->Call(SCI_POSITIONFROMLINE, e.line) : ed->Call(SCI_GETLENGTH);
+            std::string insert = e.line < lines ? e.text + eol : eol + e.text;
+            ed->Call(SCI_INSERTTEXT, at, reinterpret_cast<sptr_t>(insert.c_str()));
+        }
+    }
+    ed->Call(SCI_ENDUNDOACTION);
+    RequestCheck(ed);
+}
+
+// Which argument registers (and stack slots) are set before "call name" on a line, for the hint.
+std::string MainWindow::CallArgumentsText(Editor* ed, int line) {
+    auto args = Analyzer::ArgumentsOfCall(ed->Text(), line);
+    if (!args || (!args->known && args->arguments.empty())) return {};
+    std::string out = Tr(std::string("Аргументы перед этим call:"));
+    auto row = [&](const Analyzer::Argument& a, bool required) {
+        out += "\n  " + PadRight(a.where, 9) + PadRight(a.name.empty() ? "…" : a.name, 10);
+        if (a.setOnLine >= 0) out += "✓ " + Tr(std::string("строка ")) + std::to_string(a.setOnLine + 1);
+        else out += required ? "✗ " + Tr(std::string("не задан")) : "—";
+    };
+    for (const auto& a : args->arguments) row(a, args->known);
+    for (const auto& a : args->extra) row(a, false);
+    if (args->known && args->variadic) out += "\n  " + Tr(std::string("(дальше — сколько нужно формату)"));
+    return out;
+}
+
+// While typing "call name" with a known C / WinAPI function: its prototype and the arguments set so far.
+void MainWindow::ShowCallArguments(Editor* ed) {
+    Sci_Position pos = ed->Call(SCI_GETCURRENTPOS);
+    int line = static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, pos));
+    Sci_Position lineStart = ed->Call(SCI_POSITIONFROMLINE, line);
+    std::string before(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, lineStart, pos - lineStart)),
+                       pos - lineStart);
+    static const std::regex call("^\\s*(?:[\\w.]+:\\s*)?call\\s+([A-Za-z_]\\w*)$", std::regex::icase);
+    std::smatch m;
+    if (!std::regex_match(before, m, call)) return;
+    std::string card = Hints::Function(m[1].str());
+    if (card.empty()) return;
+    std::string tip = card.substr(0, Hints::HeaderLength(card));
+    std::string args = CallArgumentsText(ed, line);
+    if (!args.empty()) tip += "\n" + args;
+    ed->Call(SCI_CALLTIPSHOW, lineStart + m.position(1), reinterpret_cast<sptr_t>(tip.c_str()));
+    ed->Call(SCI_CALLTIPSETHLT, 0, Hints::HeaderLength(card));
 }
 
 // Ctrl+Alt+Up/Down: a caret on the line above / below the main one, at the same column.

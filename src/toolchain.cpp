@@ -560,6 +560,9 @@ std::vector<Diagnostic> ParseNasm(const std::string& output) {
         d.line = _wtoi(m[2].str().c_str());
         d.severity = _wcsicmp(m[3].str().c_str(), L"warning") == 0 ? Severity::Warning : Severity::Error;
         d.message = m[4].str();
+        std::wsmatch u;
+        static const std::wregex undefined(L"symbol `([^']+)' not defined");
+        if (std::regex_search(d.message, u, undefined)) d.code = "undefined:" + Narrow(u[1].str());
         out.push_back(d);
     }
     return out;
@@ -730,6 +733,7 @@ std::vector<Diagnostic> Check(const Settings& s, const RunConfig& config, const 
     }
     if (s.stackCheck && !config.Wsl()) {  // the Win64 calling convention: stack alignment and shadow space
         for (Diagnostic& d : StackCheck::Analyze(text)) result.push_back(std::move(d));
+        for (Diagnostic& d : Analyzer::Analyze(text)) result.push_back(std::move(d));
     }
     return result;
 }

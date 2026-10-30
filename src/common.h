@@ -93,6 +93,7 @@ struct Diagnostic {
     int line = 0;    // 1-based
     Severity severity = Severity::Error;
     std::wstring message;
+    std::string code;  // what kind of problem, for quick fixes ("undefined:printf", "callee-saved:rbx", "div-rdx"...)
 };
 
 // ---- settings -------------------------------------------------------------------------------------------------

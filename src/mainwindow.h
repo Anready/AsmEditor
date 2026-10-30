@@ -233,6 +233,9 @@ private:
     void HighlightOccurrences(Editor* ed);
     void UpdateBracePairs(Editor* ed);
     void FoldAll(Editor* ed, bool fold);
+    void QuickFix(Editor* ed);                           // Alt+Enter: fixes for the problems on the caret line
+    void ShowCallArguments(Editor* ed);                  // while typing "call name": its arguments
+    std::string CallArgumentsText(Editor* ed, int line); // which argument registers are set before a call
 
     // find
     void ShowFind(bool replace);

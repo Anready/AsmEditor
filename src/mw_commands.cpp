@@ -40,6 +40,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_COMMENT, L"Закомментировать / раскомментировать", L"Ctrl+/ / Ctrl+Divide"},
         {ID_DUPLICATE, L"Дублировать строку", L"~Ctrl+D"},
         {ID_FORMAT, L"Форматировать код", L"Ctrl+Alt+L"},
+        {ID_QUICK_FIX, L"Быстрое исправление…", L"Alt+Enter"},
         {ID_ADD_CARET_UP, L"Добавить курсор выше", L"Ctrl+Alt+Up"},
         {ID_ADD_CARET_DOWN, L"Добавить курсор ниже", L"Ctrl+Alt+Down"},
         {ID_SELECT_NEXT, L"Выделить следующее вхождение", L"Alt+J"},

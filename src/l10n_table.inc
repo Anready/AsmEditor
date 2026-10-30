@@ -536,6 +536,33 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
     {L"счётчик после уменьшения не ноль, и было равно", L"the counter is not zero after the decrement, and equal"},
     {L"счётчик после уменьшения не ноль, и было не равно", L"the counter is not zero after the decrement, and not equal"},
     {L"переход всегда", L"always jumps"},
+    // analyzer, quick fixes, call arguments
+    {L"%s изменяется, но не сохраняется: по соглашению о вызовах функция должна вернуть его прежним (push в начале, pop "
+     L"перед ret) — иначе вызвавший код (в том числе C runtime для main) получит испорченное значение.",
+     L"%s is changed but not saved: by the calling convention a function must return it unchanged (push at the start, "
+     L"pop before ret), or the caller (including the C runtime for main) gets a broken value."},
+    {L"div делит пару rdx:rax: перед ним нужно обнулить rdx (xor edx, edx), иначе частное будет неверным или программа "
+     L"упадёт с «переполнением при делении».",
+     L"div divides the pair rdx:rax: clear rdx before it (xor edx, edx), or the quotient is wrong or the program "
+     L"crashes with a divide overflow."},
+    {L"idiv делит пару rdx:rax: перед ним нужно расширить знак rax в rdx (cqo; для 32 бит — cdq), иначе частное будет "
+     L"неверным или программа упадёт.",
+     L"idiv divides the pair rdx:rax: sign-extend rax into rdx before it (cqo; cdq for 32 bits), or the quotient is "
+     L"wrong or the program crashes."},
+    {L"Недостижимый код: перед ним ret или jmp, а метки, на которую можно перейти, нет.",
+     L"Unreachable code: it follows ret or jmp and has no label to jump to."},
+    {L"Добавить extern %s", L"Add extern %s"},
+    {L"Сохранить %s: push в начале функции, pop перед каждым ret", L"Save %s: push at the start of the function, pop before each ret"},
+    {L"Вставить %s перед делением", L"Insert %s before the division"},
+    {L"Изменить на sub rsp, %s (и add rsp)", L"Change to sub rsp, %s (and add rsp)"},
+    {L"Выделить место в стеке: sub rsp, %s в начале функции, add rsp перед ret",
+     L"Reserve stack space: sub rsp, %s at the start of the function, add rsp before ret"},
+    {L"Быстрое исправление…", L"Quick fix…"},
+    {L"Для этой строки нет быстрых исправлений.", L"There are no quick fixes for this line."},
+    {L"Аргументы перед этим call:", L"Arguments before this call:"},
+    {L"строка ", L"line "},
+    {L"не задан", L"not set"},
+    {L"(дальше — сколько нужно формату)", L"(then as many as the format needs)"},
     // stack animation, call stack
     {L"call: адрес возврата положен на вершину стека", L"call: the return address was pushed"},
     {L"push: значение положено на вершину стека", L"push: a value was put on top of the stack"},

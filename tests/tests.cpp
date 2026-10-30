@@ -242,8 +242,132 @@ TEST(StackCheckMisalignedAndNoShadow) {
 }
 
 TEST(TemplatesPassStackCheck) {
-    for (const auto& t : Templates::All()) CHECK(StackCheck::Analyze(t.text).empty());
+    for (const auto& t : Templates::All()) {
+        CHECK(StackCheck::Analyze(t.text).empty());
+        for (const Diagnostic& d : Analyzer::Analyze(t.text)) {
+            printf("    %s:%d %s\n", Narrow(t.fileName).c_str(), d.line, d.code.c_str());
+            CHECK(false);
+        }
+    }
     for (const auto& e : Exercises::All()) CHECK(StackCheck::Analyze(e.starter).empty());
+}
+
+TEST(AnalyzerCalleeSavedDivUnreachable) {
+    std::string text =
+        "global f\n"            // 1
+        "f:\n"                  // 2
+        "    mov rbx, 1\n"      // 3  rbx not saved
+        "    ret\n"             // 4
+        "    mov eax, 2\n"      // 5  unreachable
+        "global g\n"            // 6
+        "g:\n"                  // 7
+        "    push rbx\n"        // 8
+        "    mov rbx, 2\n"      // 9
+        "    mov rax, 10\n"     // 10
+        "    mov rcx, 3\n"      // 11
+        "    div rcx\n"         // 12 rdx not cleared
+        "    xor edx, edx\n"    // 13
+        "    div rcx\n"         // 14 fine
+        "    div cl\n"          // 15 8-bit: fine
+        "    jmp .done\n"       // 16
+        ".done:\n"              // 17 reachable through the label
+        "    pop rbx\n"         // 18
+        "    ret\n";            // 19
+    auto d = Analyzer::Analyze(text);
+    CHECK_EQ(d.size(), 3u);
+    if (d.size() == 3) {
+        CHECK_EQ(d[0].line, 3);
+        CHECK_EQ(d[0].code, std::string("callee-saved:rbx"));
+        CHECK_EQ(d[1].line, 5);
+        CHECK_EQ(d[1].code, std::string("unreachable"));
+        CHECK_EQ(d[2].line, 12);
+        CHECK_EQ(d[2].code, std::string("div-rdx"));
+        // quick fixes remove the warnings
+        auto fixes = Analyzer::QuickFixes(text, d[2]);
+        CHECK_EQ(fixes.size(), 1u);
+        std::string fixed = Analyzer::Apply(text, fixes[0].edits, "\n");
+        CHECK(fixed.find("    xor edx, edx\n    div rcx\n    xor edx, edx") != std::string::npos);
+        fixes = Analyzer::QuickFixes(fixed, d[0]);
+        CHECK_EQ(fixes.size(), 1u);
+        fixed = Analyzer::Apply(fixed, fixes[0].edits, "\n");
+        CHECK(fixed.find("f:\n    push rbx\n    mov rbx, 1\n    pop rbx\n    ret\n") != std::string::npos);
+        int calleeSaved = 0;
+        for (const Diagnostic& x : Analyzer::Analyze(fixed)) calleeSaved += x.code.rfind("callee", 0) == 0 || x.code == "div-rdx";
+        CHECK_EQ(calleeSaved, 0);
+    }
+}
+
+TEST(QuickFixesExternAndStack) {
+    std::string text =
+        "default rel\n"          // 1
+        "extern puts\n"          // 2
+        "global main\n"          // 3
+        "section .text\n"        // 4
+        "main:\n"                // 5
+        "    sub rsp, 32\n"      // 6
+        "    call printf\n"      // 7
+        "    add rsp, 32\n"      // 8
+        "    ret\n";             // 9
+    Diagnostic undefined{{}, 7, Severity::Error, L"symbol `printf' not defined", "undefined:printf"};
+    auto fixes = Analyzer::QuickFixes(text, undefined);
+    CHECK_EQ(fixes.size(), 1u);
+    if (!fixes.empty()) {
+        std::string fixed = Analyzer::Apply(text, fixes[0].edits, "\n");
+        CHECK(fixed.find("extern puts\nextern printf\nglobal main") != std::string::npos);
+        auto stack = StackCheck::Analyze(fixed);
+        CHECK_EQ(stack.size(), 1u);  // misaligned: 32 instead of 40
+        if (stack.size() == 1) {
+            CHECK_EQ(stack[0].code, std::string("stack-align"));
+            auto align = Analyzer::QuickFixes(fixed, stack[0]);
+            CHECK_EQ(align.size(), 1u);
+            if (!align.empty()) {
+                std::string done = Analyzer::Apply(fixed, align[0].edits, "\n");
+                CHECK(done.find("sub rsp, 40") != std::string::npos && done.find("add rsp, 40") != std::string::npos);
+                CHECK(StackCheck::Analyze(done).empty());
+            }
+        }
+    }
+    // CRLF text keeps its line endings
+    std::string crlf = "a\r\nb\r\n";
+    CHECK_EQ(Analyzer::Apply(crlf, {{1, false, "x"}}, "\r\n"), std::string("a\r\nx\r\nb\r\n"));
+}
+
+TEST(CallArguments) {
+    std::string text =
+        "extern printf\n"            // 0 (0-based)
+        "extern WriteFile\n"         // 1
+        "main:\n"                    // 2
+        "    sub rsp, 56\n"          // 3
+        "    lea rcx, [fmt]\n"       // 4
+        "    mov rdx, 5\n"           // 5
+        "    call printf\n"          // 6
+        "    mov rcx, [handle]\n"    // 7
+        "    lea rdx, [buf]\n"       // 8
+        "    mov qword [rsp+32], 0\n" // 9
+        "    call WriteFile\n"       // 10
+        "    call helper\n";         // 11
+    auto a = Analyzer::ArgumentsOfCall(text, 6);
+    CHECK(a && a->known && a->variadic);
+    if (a) {
+        CHECK_EQ(a->arguments.size(), 1u);
+        CHECK(a->arguments[0].where == "rcx" && a->arguments[0].name == "format" && a->arguments[0].setOnLine == 4);
+        CHECK_EQ(a->extra.size(), 1u);
+        if (!a->extra.empty()) CHECK(a->extra[0].where == "rdx" && a->extra[0].setOnLine == 5);
+    }
+    a = Analyzer::ArgumentsOfCall(text, 10);
+    CHECK(a && a->known && !a->variadic);
+    if (a && a->arguments.size() == 5) {
+        CHECK_EQ(a->arguments[0].setOnLine, 7);
+        CHECK_EQ(a->arguments[1].setOnLine, 8);
+        CHECK_EQ(a->arguments[2].setOnLine, -1);  // r8 forgotten
+        CHECK_EQ(a->arguments[3].setOnLine, -1);
+        CHECK(a->arguments[4].where == "[rsp+32]" && a->arguments[4].setOnLine == 9);
+    } else {
+        CHECK(false);
+    }
+    a = Analyzer::ArgumentsOfCall(text, 11);  // unknown function, nothing set since the previous call
+    CHECK(a && !a->known && a->arguments.empty());
+    CHECK(!Analyzer::ArgumentsOfCall(text, 5));
 }
 
 // ---- disassembler output, exercises ----------------------------------------------------------------------------
@@ -375,9 +499,12 @@ TEST(EveryUiTextTranslated) {
         if (entry.path().extension() != L".cpp") continue;
         std::ifstream in(entry.path(), std::ios::binary);
         std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        for (size_t at = text.find("Tr("); at != std::string::npos; at = text.find("Tr(", at + 3)) {
+        // Tr("…") and Format("… %s …", arg) of the analyzer
+        for (const std::string needle : {"Tr(", "Format("})
+        for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + 1)) {
             if (at > 0 && (isalnum(static_cast<unsigned char>(text[at - 1])) || text[at - 1] == '_')) continue;
-            size_t i = at + 3;
+            size_t i = at + needle.size();
+            bool format = needle[0] == 'F';
             bool wide = false;
             if (text.compare(i, 12, "std::string(") == 0) i += 12;
             std::string value;
@@ -401,7 +528,7 @@ TEST(EveryUiTextTranslated) {
                 i++;
             }
             while (i < text.size() && isspace(static_cast<unsigned char>(text[i]))) i++;
-            if (!any || text[i] != ')') continue;  // not a plain literal
+            if (!any || (text[i] != ')' && !(format && text[i] == ','))) continue;  // not a plain literal
             if (value.find('\xD0') == std::string::npos && value.find('\xD1') == std::string::npos) continue;
             bool ok = wide ? std::wstring(Tr(Widen(value).c_str())) != Widen(value) : Tr(value) != value;
             if (!ok) {

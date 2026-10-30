@@ -1022,6 +1022,23 @@ void MainWindow::AddDataBreakpoint(const std::string& text) {
 
 std::string MainWindow::DebugTipText(Editor* ed, Sci_Position pos) {
     if (pos < 0 || !DebugStopped()) return {};
+    // Hovering a selection: its value as an expression ("[rsp+8]", "rax*2+1", "dword [counter]").
+    Sci_Position selStart = ed->Call(SCI_GETSELECTIONSTART), selEnd = ed->Call(SCI_GETSELECTIONEND);
+    if (selEnd > selStart && pos >= selStart && pos <= selEnd && selEnd - selStart < 200) {
+        std::string expr(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, selStart, selEnd - selStart)),
+                         selEnd - selStart);
+        if (expr.find('\n') == std::string::npos) {
+            std::wstring error;
+            auto v = debugger_->Evaluate(Narrow(Trim(Widen(expr))), error);
+            if (!v) return expr + ": " + Narrow(Tr(error.c_str()));
+            char buf[96];
+            sprintf_s(buf, " = 0x%llX  (%lld)", static_cast<unsigned long long>(*v), static_cast<long long>(*v));
+            std::string tip = Narrow(Trim(Widen(expr))) + buf;
+            std::wstring sym = debugger_->SymbolAt(*v);
+            if (!sym.empty()) tip += "  " + Narrow(sym);
+            return tip;
+        }
+    }
     std::string word = ed->WordAt(pos);
     if (word.empty() || isdigit(static_cast<unsigned char>(word[0]))) return {};
     std::string lower = LowerAscii(word);
@@ -1152,6 +1169,8 @@ void MainWindow::ShowHint(Editor* ed, Sci_Position pos) {
     if (card.empty() && (style == T_DEFAULT || style == T_LABEL || style == T_PREPROCESSOR)) {
         card = Hints::Function(word);
         if (!card.empty()) header = Hints::HeaderLength(card);
+        std::string args = CallArgumentsText(ed, static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, start)));
+        if (!card.empty() && !args.empty()) card += "\n\n" + args;
         else card = SymbolHint(ed, word);
         if (!card.empty() && !header) header = card.find('\n') == std::string::npos ? card.size() : card.find('\n');
     }

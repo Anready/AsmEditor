@@ -549,6 +549,39 @@ std::string Function(const std::string& name) {
     return {};
 }
 
+bool Parameters(const std::string& name, std::vector<std::string>& names, bool& variadic, std::string& prototype) {
+    for (const FunctionInfo& f : kFunctions) {
+        std::istringstream in(f.names);
+        std::string n;
+        bool match = false;
+        while (in >> n) match |= n == name;
+        if (!match) continue;
+        prototype = f.prototype;
+        names.clear();
+        variadic = false;
+        size_t open = prototype.find('('), close = prototype.rfind(')');
+        std::string list = open != std::string::npos && close > open ? prototype.substr(open + 1, close - open - 1) : "";
+        std::istringstream params(list);
+        std::string p;
+        while (std::getline(params, p, ',')) {
+            size_t a = p.find_first_not_of(" "), b = p.find_last_not_of(" ");
+            if (a == std::string::npos) continue;
+            p = p.substr(a, b - a + 1);
+            if (p == "void") continue;
+            if (p == "...") {
+                variadic = true;
+                continue;
+            }
+            size_t e = p.size();  // the parameter name is the last identifier ("const char *format" -> format)
+            size_t s = e;
+            while (s > 0 && (isalnum(static_cast<unsigned char>(p[s - 1])) || p[s - 1] == '_')) s--;
+            names.push_back(p.substr(s, e - s));
+        }
+        return true;
+    }
+    return false;
+}
+
 size_t HeaderLength(const std::string& card) {
     size_t nl = card.find('\n');
     return nl == std::string::npos ? card.size() : nl;

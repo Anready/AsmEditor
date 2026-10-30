@@ -245,7 +245,7 @@ void MainWindow::BuildMenus() {
     editMenu_ = CreatePopupMenu();
     for (int id : std::initializer_list<int>{ID_UNDO, ID_REDO, 0, ID_FIND, ID_REPLACE, ID_FIND_NEXT, ID_FIND_PREV, ID_FIND_IN_FILES, ID_GOTO, 0,
                    ID_COMPLETE, ID_SNIPPET, ID_SHOW_HINT, ID_GOTO_DEF, ID_FIND_USAGES, ID_RENAME, ID_NAV_BACK,
-                   ID_NAV_FORWARD, 0, ID_COMMENT, ID_DUPLICATE, ID_FORMAT, 0, ID_ADD_CARET_UP, ID_ADD_CARET_DOWN,
+                   ID_NAV_FORWARD, 0, ID_COMMENT, ID_DUPLICATE, ID_FORMAT, ID_QUICK_FIX, 0, ID_ADD_CARET_UP, ID_ADD_CARET_DOWN,
                    ID_SELECT_NEXT, ID_SELECT_ALL_OCCURRENCES, 0, ID_TOGGLE_FOLD, ID_FOLD_ALL, ID_UNFOLD_ALL}) {
         if (id) AppendCommand(editMenu_, id);
         else AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
@@ -718,6 +718,7 @@ void MainWindow::OnCommand(int id) {
     case ID_NAV_FORWARD: Navigate(false); break;
     case ID_DUPLICATE: if (ed) ed->Call(SCI_SELECTIONDUPLICATE); break;
     case ID_FORMAT: if (ed) FormatCode(ed); break;
+    case ID_QUICK_FIX: if (ed) QuickFix(ed); break;
     case ID_ADD_CARET_UP: if (ed) AddCaret(ed, false); break;
     case ID_ADD_CARET_DOWN: if (ed) AddCaret(ed, true); break;
     case ID_SELECT_NEXT:
@@ -1079,6 +1080,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
         int ch = scn->ch;
         if (isalnum(ch) || ch == '_' || ch == '.' || ch == '%' || ch == '@' || ch == '?' || ch >= 0x80) Complete(ed, false);
         else if (ed->Call(SCI_AUTOCACTIVE)) ed->Call(SCI_AUTOCCANCEL);
+        if (isalnum(ch) || ch == '_') ShowCallArguments(ed);
         if (ch == ' ' || ch == '\t') ShowSignature(ed);
         else if (ch == '\n' || ch == '\r' || ch == ';') ed->Call(SCI_CALLTIPCANCEL);
         break;

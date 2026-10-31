@@ -43,6 +43,11 @@ const wchar_t* Tr(const wchar_t* russian) {
     return it == WideTable().end() ? russian : it->second;
 }
 
+std::string TrEnglish(const std::string& russian) {
+    auto it = Utf8Table().find(russian);
+    return it == Utf8Table().end() ? russian : it->second;
+}
+
 std::string Tr(const std::string& russian) {
     if (!g_english) return russian;
     auto it = Utf8Table().find(russian);

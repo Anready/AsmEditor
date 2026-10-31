@@ -1980,15 +1980,18 @@ const std::vector<Exercise>& All() {
         struct Extra {
             const char* id;
             std::vector<std::string> mustUse, mustNotUse, hints;
+            uint64_t maxInstructions = 0;
         };
         const Extra extras[] = {
             {"sum", {"add"}, {}, {"Сложите: mov rdx, [a] и add rdx, [b].", "Ответ уже должен лежать в rdx перед lea rcx, [fmt_out]."}},
             {"max", {"cmp"}, {}, {"Сравните a с b (cmp) и оставьте большее: cmovl или условный переход.",
                                   "mov rdx, [a] / cmp rdx, [b] / cmovl rdx, [b] — так же с c."}},
             {"factorial", {}, {}, {"Начните с rax = 1 и умножайте на 2, 3, …, n в цикле (imul).",
-                                   "Счётчик держите в регистре, который не портит printf, или считайте до вызова printf."}},
+                                   "Счётчик держите в регистре, который не портит printf, или считайте до вызова printf."},
+             1000},
             {"fib", {}, {}, {"Храните два последних числа в двух регистрах и сдвигайте их в цикле.",
-                             "a = 1, b = 1; повторить n − 2 раз: c = a + b, a = b, b = c."}},
+                             "a = 1, b = 1; повторить n − 2 раз: c = a + b, a = b, b = c."},
+             2000},
             {"digits", {"div"}, {}, {"Остаток от деления на 10 — последняя цифра: xor edx, edx / div rcx (rcx = 10).",
                                      "Повторяйте, пока частное (rax) не станет 0, складывая остатки (rdx)."}},
             {"power", {"and"}, {"div"}, {"У степени двойки n & (n − 1) = 0 — но 0 степенью двойки не считается.",
@@ -2034,6 +2037,7 @@ const std::vector<Exercise>& All() {
                 e.mustUse = x.mustUse;
                 e.mustNotUse = x.mustNotUse;
                 e.hints = x.hints;
+                e.maxInstructions = x.maxInstructions;
             }
         }
         return v;
@@ -2049,7 +2053,26 @@ std::string StarterText(const Exercise& e, bool english) {
     std::istringstream in(e.descriptionEn);
     for (std::string line; std::getline(in, line);) text += "; " + line + "\r\n";
     text += ";\r\n; Check the solution: Run → Check solution (Ctrl+Shift+T).\r\n";
-    return text + e.starter.substr(code);
+    // The code with its comments translated ("; TODO: …").
+    std::string body = e.starter.substr(code);
+    std::string out;
+    size_t pos = 0;
+    while (pos < body.size()) {
+        size_t end = body.find('\n', pos);
+        std::string line = body.substr(pos, end == std::string::npos ? std::string::npos : end - pos + 1);
+        pos = end == std::string::npos ? body.size() : end + 1;
+        std::string code, comment;
+        std::string bare = line;
+        while (!bare.empty() && (bare.back() == '\n' || bare.back() == '\r')) bare.pop_back();
+        SplitComment(bare, code, comment);
+        if (comment.size() > 1) {
+            std::string inner = LTrim(comment.substr(1));
+            std::string translated = TrEnglish(inner);
+            if (translated != inner) line = (code.empty() ? bare.substr(0, bare.find(';')) : code + " ") + "; " + translated + "\r\n";
+        }
+        out += line;
+    }
+    return text + out;
 }
 
 std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source) {

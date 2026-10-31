@@ -50,6 +50,7 @@ struct LaunchOptions {
     std::string wslTty;        // the pseudo-terminal in WSL that becomes the program's console
     bool linux32 = false;      // a 32-bit Linux program (eax… registers, 4-byte pointers)
     DWORD attachPid = 0;       // attach to this running process instead of starting exe (Stop detaches)
+    HANDLE stdinFile = nullptr; // inheritable: the program's stdin, without a console (output is discarded)
 };
 
 // Profiler result for one source line.
@@ -126,6 +127,9 @@ public:
     std::vector<DataWatch> DataWatches();
 
     static std::wstring Key(const fs::path& p) { return Lower(NormalizePath(p).wstring()); }
+    // Runs a program under the tracing profiler with `input` typed into its console and returns how many
+    // instructions it executed on its source lines (nothing if it did not finish in time).
+    static std::optional<uint64_t> CountInstructions(const fs::path& exe, const std::string& input, DWORD timeoutMs);
     static std::optional<uint64_t> Register(const CONTEXT& c, const std::string& lowerName);
     static bool SetRegisterIn(CONTEXT& c, const std::string& lowerName, uint64_t value);
 

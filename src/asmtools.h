@@ -157,6 +157,7 @@ struct Exercise {
     std::vector<std::string> mustNotUse;  // instructions it may not contain
     std::vector<std::string> hints;       // shown one by one on request (Russian; the UI translates)
     std::string descriptionEn;
+    uint64_t maxInstructions = 0;         // on the last test, counted by the tracing profiler (0: no limit)
 };
 // The starter file in the UI language (the task text in its comments).
 std::string StarterText(const Exercise& e, bool english);

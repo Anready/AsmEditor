@@ -1691,6 +1691,29 @@ TEST(NewExercisesAreSolvable) {
                 "lea r8, [copy]\ncall fscanf\nmov rcx, [fp]\ncall fclose");
 }
 
+// The instruction limit: an iterative Fibonacci fits, and the count is the profiler's.
+TEST(ExerciseInstructionLimit) {
+    const Exercises::Exercise* fib = Exercises::Find("fib");
+    CHECK(fib && fib->maxInstructions > 0);
+    if (!fib) return;
+    std::string solution = Replace(fib->starter, "    ; TODO: вычислите ответ в rdx\r\n    mov     rdx, [n]\r\n",
+                                   Code("mov rcx, [n]\nmov rax, 1\nmov rdx, 1\ncmp rcx, 2\njle .done\nsub rcx, 2\n.next:\n"
+                                        "lea r8, [rax+rdx]\nmov rax, rdx\nmov rdx, r8\ndec rcx\njnz .next\n.done:"));
+    auto exe = BuildProgram("fib", solution);
+    if (!exe) return;
+    std::string output;
+    CHECK(RunExe(*exe, "50", output) && Exercises::OutputMatches(output, "12586269025"));
+    auto count = Debugger::CountInstructions(*exe, fib->tests.back().input, 30000);
+    CHECK(count.has_value());
+    if (count) {
+        printf("    fib(50): %llu instructions (limit %llu)\n", static_cast<unsigned long long>(*count),
+               static_cast<unsigned long long>(fib->maxInstructions));
+        CHECK(*count > 200 && *count <= fib->maxInstructions);
+    }
+    auto counter = BuildProgram("counter", kCounterProgram);
+    if (counter) CHECK_EQ(Debugger::CountInstructions(*counter, "", 30000).value_or(0), 43ull);
+}
+
 TEST(LessonsAndResults) {
     CHECK(Lessons::All().size() >= 9u);
     for (const Lessons::Lesson& l : Lessons::All()) {
@@ -1727,6 +1750,13 @@ TEST(LessonsAndResults) {
         std::string header = text.substr(0, text.find("default rel"));
         CHECK(!e.descriptionEn.empty() && header.find('\xD0') == std::string::npos && header.find('\xD1') == std::string::npos);
         CHECK_EQ(Exercises::IdFromSource(text), e.id);
+        std::istringstream lines(text);
+        for (std::string l; std::getline(lines, l);) {
+            if (l.find('\xD0') != std::string::npos || l.find('\xD1') != std::string::npos) {
+                printf("    RUSSIAN [%s]\n", l.c_str());
+                CHECK(false);
+            }
+        }
     }
     // the teacher's summary of two students
     std::map<std::string, Results::Entry> other;

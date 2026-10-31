@@ -611,6 +611,29 @@ void MainWindow::CheckSolution() {
             }
         }
         bool all = passed == static_cast<int>(exercise.tests.size());
+        if (all && broken.empty() && exercise.maxInstructions) {  // fast enough? count on the last test
+            const Exercises::Test& t = exercise.tests.back();
+            auto count = Debugger::CountInstructions(built.exe, t.input, 60000);
+            char buf[256];
+            if (!count) {
+                post(Tr(std::string("Не удалось посчитать инструкции решения.")) + "\n", Out::Warning);
+            } else if (*count > exercise.maxInstructions) {
+                sprintf_s(buf, Tr(std::string("Решение выполнило %llu инструкций на тесте «%s», а можно не больше %llu — "
+                                              "найдите способ быстрее.")).c_str(),
+                          static_cast<unsigned long long>(*count), OneLine(t.input).c_str(),
+                          static_cast<unsigned long long>(exercise.maxInstructions));
+                post(std::string(buf) + "\n", Out::Error);
+                passed--;
+                auto* done = new SolutionDone{Tr(std::string("Тесты пройдены, но решение слишком медленное.")) + "\n",
+                                              exercise.id, passed, static_cast<int>(exercise.tests.size()), true};
+                PostMessageW(hwnd, WM_APP_SOLUTION_DONE, 0, reinterpret_cast<LPARAM>(done));
+                return;
+            } else {
+                sprintf_s(buf, Tr(std::string("Инструкций на последнем тесте: %llu (можно до %llu).")).c_str(),
+                          static_cast<unsigned long long>(*count), static_cast<unsigned long long>(exercise.maxInstructions));
+                post(std::string(buf) + "\n", Out::Info);
+            }
+        }
         if (all && !broken.empty()) {  // the output is right, the way is not: one short of solved
             passed--;
             all = false;
@@ -669,6 +692,9 @@ void MainWindow::NewExercise() {
                                                            : Tr(std::string("нужна инструкция ")) + r) + "\n";
     }
     for (const std::string& r : e.mustNotUse) conditions += "  " + Tr(std::string("нельзя использовать ")) + r + "\n";
+    if (e.maxInstructions) {
+        conditions += "  " + Tr(std::string("не больше инструкций на последнем тесте: ")) + std::to_string(e.maxInstructions) + "\n";
+    }
     if (!conditions.empty()) conditions = Tr(std::string("Условия:")) + "\n" + conditions;
     Print(Narrow(Tr(e.title.c_str())) + "\n" + (English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description) +
               "\n" + conditions + "\n" +

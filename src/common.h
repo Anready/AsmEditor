@@ -273,6 +273,7 @@ void SetLanguage(const std::wstring& id);  // "ru" | "en"
 bool English();
 const wchar_t* Tr(const wchar_t* russian);
 std::string Tr(const std::string& russianUtf8);
+std::string TrEnglish(const std::string& russianUtf8);  // the English text whatever the UI language
 
 // ---- dialogs --------------------------------------------------------------------------------------------------
 

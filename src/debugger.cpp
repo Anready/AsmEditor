@@ -3,6 +3,8 @@
 
 #include <dbghelp.h>
 
+#include <fstream>
+
 namespace {
 
 constexpr DWORD kTrapFlag = 0x100;
@@ -348,6 +350,63 @@ bool Debugger::SetRegisterIn(CONTEXT& c, const std::string& n, uint64_t v) {
 }
 
 Debugger::Debugger(HWND notify) : notify_(notify) {}
+
+std::optional<uint64_t> Debugger::CountInstructions(const fs::path& exe, const std::string& input, DWORD timeoutMs) {
+    // The input goes in through a temporary file as stdin (a pseudoconsole may drop text typed too early).
+    wchar_t tmp[MAX_PATH + 1];
+    GetTempPathW(MAX_PATH + 1, tmp);
+    fs::path file = fs::path(tmp) / (L"asmeditor-input-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                     std::to_wstring(GetCurrentThreadId()) + L".txt");
+    std::ofstream(file, std::ios::binary | std::ios::trunc) << input << "\n";
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    HANDLE in = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, &sa, OPEN_EXISTING, 0, nullptr);
+    if (in == INVALID_HANDLE_VALUE) return std::nullopt;
+    HWND window = CreateWindowExW(0, L"STATIC", L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, nullptr, nullptr);
+    auto drop = [](const MSG& msg) {  // the payload of a debugger message
+        if (msg.message == WM_DEBUG_PROFILE) delete reinterpret_cast<std::vector<ProfileLine>*>(msg.lParam);
+        else if (msg.message == WM_DEBUG_STOPPED) delete reinterpret_cast<DebugStop*>(msg.lParam);
+        else if (msg.message == WM_DEBUG_EXITED || msg.message == WM_DEBUG_LOG || msg.message == WM_DEBUG_ODS) {
+            delete reinterpret_cast<std::string*>(msg.lParam);
+        }
+    };
+    std::optional<uint64_t> result;
+    {
+        Debugger d(window);
+        LaunchOptions launch;
+        launch.exe = exe;
+        launch.cwd = exe.parent_path();
+        launch.profile = true;
+        launch.stdinFile = in;
+        std::wstring error;
+        if (d.Start(launch, nullptr, {}, false, std::nullopt, error)) {
+            uint64_t total = 0;
+            bool exited = false;
+            for (ULONGLONG start = GetTickCount64(); !exited && GetTickCount64() - start < timeoutMs;) {
+                MSG msg;
+                while (PeekMessageW(&msg, window, 0, 0, PM_REMOVE)) {
+                    if (msg.message == WM_DEBUG_PROFILE) {
+                        for (const ProfileLine& p : *reinterpret_cast<std::vector<ProfileLine>*>(msg.lParam)) total += p.instructions;
+                    } else if (msg.message == WM_DEBUG_EXITED) {
+                        exited = true;
+                    } else if (msg.message == WM_DEBUG_STOPPED) {  // an exception: the program will not finish
+                        d.Stop();
+                    }
+                    drop(msg);
+                }
+                if (!exited) Sleep(5);
+            }
+            if (exited) result = total;
+            else d.Stop();
+        }
+    }
+    MSG msg;
+    while (PeekMessageW(&msg, window, 0, 0, PM_REMOVE)) drop(msg);
+    DestroyWindow(window);
+    CloseHandle(in);
+    std::error_code ec;
+    fs::remove(file, ec);
+    return result;
+}
 
 Debugger::~Debugger() {
     sampling_ = false;
@@ -882,7 +941,21 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
         PROCESS_INFORMATION pi{};
         std::wstring cmd = Toolchain::QuoteCommandLine({launch.exe.wstring()});
         if (!launch.args.empty()) cmd += L" " + launch.args;
-        if (!Toolchain::SpawnInConsole(cmd, launch.cwd, console, DEBUG_ONLY_THIS_PROCESS, pi, launch.environment)) {
+        bool spawned = false;
+        if (launch.stdinFile) {  // no console: stdin from the handle, output discarded
+            HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+            SetHandleInformation(nul, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+            STARTUPINFOW si{sizeof(si)};
+            si.dwFlags = STARTF_USESTDHANDLES;
+            si.hStdInput = launch.stdinFile;
+            si.hStdOutput = si.hStdError = nul;
+            spawned = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, TRUE, DEBUG_ONLY_THIS_PROCESS | CREATE_NO_WINDOW,
+                                     nullptr, launch.cwd.empty() ? nullptr : launch.cwd.c_str(), &si, &pi) != FALSE;
+            CloseHandle(nul);
+        } else {
+            spawned = Toolchain::SpawnInConsole(cmd, launch.cwd, console, DEBUG_ONLY_THIS_PROCESS, pi, launch.environment);
+        }
+        if (!spawned) {
             started->set_value(Tr(L"не удалось запустить процесс, код ") + std::to_wstring(GetLastError()));
             return;
         }

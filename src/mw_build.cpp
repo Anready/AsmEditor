@@ -575,7 +575,9 @@ void MainWindow::CheckSolution() {
     Settings copy = *settings_;
     HWND hwnd = hwnd_;
     Exercises::Exercise exercise = *ex;
-    std::thread([copy, plan, hwnd, exercise] {
+    std::vector<std::string> broken = Exercises::CheckRequirements(*ex, ed->Text());
+    for (const std::string& b : broken) Print(Tr(std::string("Условие задачи: ")) + b + "\n", Out::Error);
+    std::thread([copy, plan, hwnd, exercise, broken] {
         auto post = [hwnd](const std::string& text, Out style) {
             PostMessageW(hwnd, WM_APP_OUTPUT, static_cast<WPARAM>(style), reinterpret_cast<LPARAM>(new std::string(text)));
         };
@@ -608,6 +610,16 @@ void MainWindow::CheckSolution() {
             }
         }
         bool all = passed == static_cast<int>(exercise.tests.size());
+        if (all && !broken.empty()) {  // the output is right, the way is not: one short of solved
+            passed--;
+            all = false;
+            PostMessageW(hwnd, WM_APP_SOLUTION_DONE, 0,
+                         reinterpret_cast<LPARAM>(new SolutionDone{Tr(std::string("Тесты пройдены, но не выполнены условия "
+                                                                                  "задачи (см. выше).\n")),
+                                                                   exercise.id, passed,
+                                                                   static_cast<int>(exercise.tests.size()), true}));
+            return;
+        }
         std::string summary = all ? Tr(std::string("Все тесты пройдены — задача решена!"))
                                   : Tr(std::string("Пройдено тестов:")) + " " + std::to_string(passed) + " / " +
                                         std::to_string(exercise.tests.size());
@@ -649,9 +661,80 @@ void MainWindow::NewExercise() {
     OpenFile(file);
     ClearPane(Pane::Output);
     ShowPane(Pane::Output);
-    Print(Narrow(Tr(e.title.c_str())) + "\n" + e.description + "\n\n" +
+    std::string conditions;
+    for (const std::string& r : e.mustUse) {
+        conditions += "  " + (r.rfind("recursion:", 0) == 0 ? Tr(std::string("рекурсивная функция ")) + r.substr(10)
+                                                           : Tr(std::string("нужна инструкция ")) + r) + "\n";
+    }
+    for (const std::string& r : e.mustNotUse) conditions += "  " + Tr(std::string("нельзя использовать ")) + r + "\n";
+    if (!conditions.empty()) conditions = Tr(std::string("Условия:")) + "\n" + conditions;
+    Print(Narrow(Tr(e.title.c_str())) + "\n" + e.description + "\n" + conditions + "\n" +
               Tr(std::string("Напишите решение и нажмите Ctrl+Shift+T — редактор соберёт программу и проверит её на тестах.")) +
               "\n", Out::Info);
+}
+
+// Ctrl+Shift+H: the next hint of the task in the current file.
+void MainWindow::ExerciseHint() {
+    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    const Exercises::Exercise* ex = ed ? Exercises::Find(Exercises::IdFromSource(ed->Text())) : nullptr;
+    if (!ex) {
+        ShowMessage(hwnd_, Tr(L"В начале файла нет строки «; task: …» с названием задачи. Создайте задачу: "
+                              L"Запуск → «Новая учебная задача»."), false);
+        return;
+    }
+    if (ex->hints.empty()) {
+        ShowMessage(hwnd_, Tr(L"У этой задачи нет подсказок."), false);
+        return;
+    }
+    size_t& shown = hintsShown_[ex->id];
+    size_t n = std::min(shown, ex->hints.size() - 1);
+    shown = n + 1;
+    ShowPane(Pane::Output);
+    Print(Tr(std::string("Подсказка")) + " " + std::to_string(n + 1) + "/" + std::to_string(ex->hints.size()) + ": " +
+              Tr(ex->hints[n]) + "\n", Out::Info);
+}
+
+// Run → Group summary: several exported result files → one table (a row per student).
+void MainWindow::GroupSummary() {
+    std::vector<wchar_t> buf(65536, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = hwnd_;
+    ofn.lpstrFilter = L"CSV (*.csv)\0*.csv\0";
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = static_cast<DWORD>(buf.size());
+    ofn.lpstrTitle = Tr(L"Файлы результатов учеников");
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_ALLOWMULTISELECT | OFN_EXPLORER | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return;
+    std::vector<fs::path> paths;
+    fs::path first = buf.data();
+    const wchar_t* p = buf.data() + wcslen(buf.data()) + 1;
+    if (!*p) paths.push_back(first);
+    for (; *p; p += wcslen(p) + 1) paths.push_back(first / p);
+    std::vector<std::string> texts;
+    for (const fs::path& f : paths) {
+        std::ifstream in(f, std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        texts.push_back(ss.str());
+    }
+    std::vector<wchar_t> out(MAX_PATH * 4, L'\0');
+    wcsncpy_s(out.data(), out.size(), L"group-summary.csv", _TRUNCATE);
+    OPENFILENAMEW save{sizeof(save)};
+    save.hwndOwner = hwnd_;
+    save.lpstrFilter = L"CSV (*.csv)\0*.csv\0";
+    save.lpstrFile = out.data();
+    save.nMaxFile = static_cast<DWORD>(out.size());
+    save.lpstrDefExt = L"csv";
+    save.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&save)) return;
+    std::ofstream file(fs::path(out.data()), std::ios::binary | std::ios::trunc);
+    file << Results::GroupSummary(texts, English());
+    if (!file) {
+        ShowMessage(hwnd_, Tr(L"Не удалось записать файл."));
+        return;
+    }
+    Print(Tr(std::string("Сводка по группе сохранена: ")) + Narrow(out.data()) + " (" + Tr(std::string("файлов: ")) +
+              std::to_string(paths.size()) + ")\n", Out::Success);
 }
 
 fs::path MainWindow::ResultsFile() {

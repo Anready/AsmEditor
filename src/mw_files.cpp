@@ -153,6 +153,13 @@ Editor* MainWindow::OpenFile(const fs::path& path, int line) {
 bool MainWindow::Save(Editor* ed) {
     if (!ed) return false;
     if (ed->file().empty()) return SaveAs(ed);
+    std::wstring ext = Lower(ed->file().extension().wstring());
+    if (settings_->formatOnSave && (ext == L".asm" || ext == L".inc" || ext == L".nasm" || ext == L".s")) {
+        Sci_Position selStart = ed->Call(SCI_GETSELECTIONSTART), selEnd = ed->Call(SCI_GETSELECTIONEND);
+        ed->Call(SCI_SETEMPTYSELECTION, ed->Call(SCI_GETCURRENTPOS));
+        FormatCode(ed);  // the whole file (no selection)
+        if (selEnd > selStart) ed->Call(SCI_SETSEL, selStart, selEnd);
+    }
     std::wstring error;
     if (!ed->Save(ed->file(), error)) {
         ShowMessage(hwnd_, std::wstring(Tr(L"Не удалось сохранить: ")) + error);

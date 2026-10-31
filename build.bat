@@ -63,7 +63,9 @@ out\tests\tests.exe || exit /b 1
 exit /b 0
 
 :package
-powershell -NoProfile -Command "Compress-Archive -Force -Path AsmEditor.exe,README.md,ROADMAP.md -DestinationPath AsmEditor-portable.zip" || exit /b 1
+if not exist out\package mkdir out\package
+echo The settings of AsmEditor are kept in the "settings" folder next to it.> out\package\portable.txt
+powershell -NoProfile -Command "Compress-Archive -Force -Path AsmEditor.exe,README.md,ROADMAP.md,out\package\portable.txt -DestinationPath AsmEditor-portable.zip" || exit /b 1
 echo Packed AsmEditor-portable.zip
 exit /b 0
 

@@ -173,6 +173,9 @@ private:
     void CheckSolution();
     void NewExercise();
     void OpenLesson();
+    void ExerciseHint();
+    void GroupSummary();
+    std::map<std::string, size_t> hintsShown_;  // exercise -> hints given
     void ExportResults();
     void RecordResult(const std::string& id, int passed, int total);
     static fs::path ResultsFile();

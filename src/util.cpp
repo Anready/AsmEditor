@@ -315,6 +315,16 @@ fs::path Settings::Dir() {
     wchar_t home[MAX_PATH];  // ASMEDITOR_HOME: another settings folder (the UI test uses a clean one)
     DWORD n = GetEnvironmentVariableW(L"ASMEDITOR_HOME", home, MAX_PATH);
     if (n && n < MAX_PATH) return fs::path(home);
+    // Portable: "portable.txt" (or an existing "settings" folder) next to AsmEditor.exe keeps the settings there.
+    wchar_t exe[MAX_PATH * 2];
+    DWORD len = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(std::size(exe)));
+    if (len && len < std::size(exe)) {
+        fs::path dirOfExe = fs::path(exe).parent_path();
+        std::error_code ec;
+        if (fs::exists(dirOfExe / L"portable.txt", ec) || fs::is_directory(dirOfExe / L"settings", ec)) {
+            return dirOfExe / L"settings";
+        }
+    }
     wchar_t* appData = nullptr;
     fs::path dir;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appData))) dir = fs::path(appData) / L"AsmEditor";
@@ -366,6 +376,7 @@ void Settings::Load() {
     releaseLinkerArgs = get(L"release.linkerArgs");
     stackCheck = get(L"editor.stackCheck", L"1") == L"1";
     autosave = get(L"editor.autosave") == L"1";
+    formatOnSave = get(L"editor.formatOnSave") == L"1";
     log = get(L"log") == L"1";
     theme = get(L"ui.theme", L"dark");
     language = get(L"ui.language", L"ru");
@@ -418,6 +429,7 @@ void Settings::Save() const {
         {L"release.linkerArgs", releaseLinkerArgs},
         {L"editor.stackCheck", stackCheck ? L"1" : L"0"},
         {L"editor.autosave", autosave ? L"1" : L"0"},
+        {L"editor.formatOnSave", formatOnSave ? L"1" : L"0"},
         {L"log", log ? L"1" : L"0"},
         {L"ui.theme", theme},
         {L"ui.language", language},

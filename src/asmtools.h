@@ -130,7 +130,12 @@ struct Exercise {
     std::string description;  // task text (goes into the starter file as a comment)
     std::string starter;      // code to begin with
     std::vector<Test> tests;
+    std::vector<std::string> mustUse;     // instructions the solution has to contain (as the task says)
+    std::vector<std::string> mustNotUse;  // instructions it may not contain
+    std::vector<std::string> hints;       // shown one by one on request (Russian; the UI translates)
 };
+// Instructions of the requirements the source breaks: "нужна инструкция div", "нельзя использовать imul".
+std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source);
 const std::vector<Exercise>& All();
 const Exercise* Find(const std::string& id);
 // "; task: sum" in the first lines of a solution names its exercise.
@@ -166,4 +171,6 @@ bool Save(const fs::path& file, const std::map<std::string, Entry>& results, con
 void Record(std::map<std::string, Entry>& results, const std::string& id, int passed, int total, const std::string& when);
 // One row per exercise (unattempted ones too), ';'-separated, UTF-8 with BOM.
 std::string ExportCsv(const std::map<std::string, Entry>& results, const std::string& student, bool english);
+// The teacher's summary of several exported files: a row per student, a column per task (+ / best/total), total.
+std::string GroupSummary(const std::vector<std::string>& csvFiles, bool english);
 }

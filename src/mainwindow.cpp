@@ -272,7 +272,7 @@ void MainWindow::BuildMenus() {
     for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_PROFILE_RUN, ID_PROFILE_SAMPLE, ID_PROFILE_CLEAR, 0, ID_STEP_OVER, ID_STEP_INTO,
                    ID_STEP_OUT, ID_STEP_BACK, ID_SET_NEXT, ID_PAUSE, ID_STOP, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
                    0, ID_CHOOSE_TARGET, ID_RUN_CONFIG, ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_RESET_MAIN, 0,
-                   ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_LESSONS, ID_EXPORT_RESULTS, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
+                   ID_CHECK_SOLUTION, ID_EXERCISE_HINT, ID_NEW_EXERCISE, ID_LESSONS, ID_EXPORT_RESULTS, ID_GROUP_SUMMARY, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
         if (id) AppendCommand(runMenu_, id);
         else AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
     }
@@ -850,6 +850,8 @@ void MainWindow::OnCommand(int id) {
     case ID_CHECK_SOLUTION: CheckSolution(); break;
     case ID_NEW_EXERCISE: NewExercise(); break;
     case ID_LESSONS: OpenLesson(); break;
+    case ID_EXERCISE_HINT: ExerciseHint(); break;
+    case ID_GROUP_SUMMARY: GroupSummary(); break;
     case ID_EXPORT_RESULTS: ExportResults(); break;
     case ID_SETTINGS: {
         std::wstring theme = settings_->theme, language = settings_->language;

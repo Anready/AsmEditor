@@ -1894,9 +1894,74 @@ const std::vector<Exercise>& All() {
             "    xor     eax, eax\r\n"
             "    ret\r\n",
             {{"hello", "hello"}, {"NASM", "NASM"}});
+
+        // Requirements and hints (one more per request).
+        struct Extra {
+            const char* id;
+            std::vector<std::string> mustUse, mustNotUse, hints;
+        };
+        const Extra extras[] = {
+            {"sum", {"add"}, {}, {"Сложите: mov rdx, [a] и add rdx, [b].", "Ответ уже должен лежать в rdx перед lea rcx, [fmt_out]."}},
+            {"max", {"cmp"}, {}, {"Сравните a с b (cmp) и оставьте большее: cmovl или условный переход.",
+                                  "mov rdx, [a] / cmp rdx, [b] / cmovl rdx, [b] — так же с c."}},
+            {"factorial", {}, {}, {"Начните с rax = 1 и умножайте на 2, 3, …, n в цикле (imul).",
+                                   "Счётчик держите в регистре, который не портит printf, или считайте до вызова printf."}},
+            {"fib", {}, {}, {"Храните два последних числа в двух регистрах и сдвигайте их в цикле.",
+                             "a = 1, b = 1; повторить n − 2 раз: c = a + b, a = b, b = c."}},
+            {"digits", {"div"}, {}, {"Остаток от деления на 10 — последняя цифра: xor edx, edx / div rcx (rcx = 10).",
+                                     "Повторяйте, пока частное (rax) не станет 0, складывая остатки (rdx)."}},
+            {"power", {"and"}, {"div"}, {"У степени двойки n & (n − 1) = 0 — но 0 степенью двойки не считается.",
+                                         "Выберите строку yes или no и передайте её адрес в rcx для printf."}},
+            {"reverse", {}, {}, {"Сначала найдите длину: идите по байтам до 0.",
+                                 "Затем копируйте с конца: result[i] = input[len − 1 − i]; в конце запишите 0."}},
+            {"upper", {"cmp"}, {}, {"Проверьте, что символ между 'a' и 'z' (cmp и jb / ja).", "Заглавная = строчная − 32."}},
+            {"array_sum", {}, {}, {"Сначала цикл чтения: lea rdx, [arr + rbx*8] и call scanf для каждого элемента.",
+                                   "Второй цикл складывает элементы в rdx; rbx обнуляйте перед каждым циклом."}},
+            {"sort", {}, {}, {"Пузырёк: внешний цикл n − 1 раз, внутренний сравнивает соседей и меняет их местами.",
+                              "Элементы i и i + 1: [arr + rcx*8] и [arr + rcx*8 + 8]."}},
+            {"gcd", {"div", "recursion:gcd"}, {}, {"Если rdx = 0 — ответ в rcx (mov rax, rcx / ret).",
+                                                   "Иначе: остаток rcx mod rdx (div), затем call gcd с (rdx, остаток). "
+                                                   "Не забудьте sub rsp, 40 вокруг call."}},
+            {"binary", {"recursion:print_bin"}, {}, {"Если n ≥ 2, сначала вызовите print_bin(n / 2) — shr rcx, 1.",
+                                                     "Потом напечатайте n & 1. n сохраните в rbx (push rbx в начале)."}},
+            {"file", {}, {}, {"fopen возвращает FILE* в rax: сохраните его в переменную (resq 1) до следующих call.",
+                              "fprintf(rcx = FILE*, rdx = fmt_str, r8 = input); затем fclose(rcx = FILE*)."}},
+        };
+        for (const Extra& x : extras) {
+            for (Exercise& e : v) {
+                if (e.id != x.id) continue;
+                e.mustUse = x.mustUse;
+                e.mustNotUse = x.mustNotUse;
+                e.hints = x.hints;
+            }
+        }
         return v;
     }();
     return list;
+}
+
+std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source) {
+    std::vector<std::string> problems;
+    std::vector<Analyzer::Stmt> st = Analyzer::Parse(source);
+    std::set<std::string> used;
+    for (const auto& x : st) used.insert(x.mnemonic);
+    for (const std::string& r : e.mustUse) {
+        if (r.rfind("recursion:", 0) == 0) {  // the function calls itself
+            std::string f = r.substr(10);
+            bool inside = false, calls = false;
+            for (const auto& x : st) {
+                if (x.function) inside = x.label == f;
+                if (inside && x.mnemonic == "call" && !x.rawOps.empty() && ReadWord(LTrim(x.rawOps[0]), 0) == f) calls = true;
+            }
+            if (!calls) problems.push_back(Tr(std::string("нужна рекурсия: функция ")) + f + Tr(std::string(" должна вызывать сама себя")));
+        } else if (!used.count(r)) {
+            problems.push_back(Tr(std::string("нужна инструкция ")) + r);
+        }
+    }
+    for (const std::string& r : e.mustNotUse) {
+        if (used.count(r)) problems.push_back(Tr(std::string("нельзя использовать ")) + r);
+    }
+    return problems;
 }
 
 const Exercise* Find(const std::string& id) {
@@ -2137,6 +2202,76 @@ void Record(std::map<std::string, Entry>& results, const std::string& id, int pa
         e.solved = true;
         e.firstSolved = when;
     }
+}
+
+namespace {
+std::vector<std::string> CsvFields(const std::string& line) {
+    std::vector<std::string> out;
+    std::string cur;
+    bool quoted = false;
+    for (size_t i = 0; i < line.size(); i++) {
+        char c = line[i];
+        if (quoted) {
+            if (c == '"' && i + 1 < line.size() && line[i + 1] == '"') cur += '"', i++;
+            else if (c == '"') quoted = false;
+            else cur += c;
+        } else if (c == '"') {
+            quoted = true;
+        } else if (c == ';') {
+            out.push_back(cur);
+            cur.clear();
+        } else if (c != '\r') {
+            cur += c;
+        }
+    }
+    out.push_back(cur);
+    return out;
+}
+}
+
+std::string GroupSummary(const std::vector<std::string>& files, bool english) {
+    struct Cell {
+        bool solved = false;
+        std::string best;
+        int attempts = 0;
+    };
+    std::map<std::string, std::map<std::string, Cell>> students;
+    for (std::string text : files) {
+        if (text.rfind("\xEF\xBB\xBF", 0) == 0) text.erase(0, 3);
+        std::istringstream in(text);
+        std::string line;
+        std::getline(in, line);  // header
+        while (std::getline(in, line)) {
+            auto f = CsvFields(line);
+            if (f.size() < 6) continue;
+            std::string name = f[0].empty() ? (english ? "(no name)" : "(без имени)") : f[0];
+            Cell& c = students[name][f[1]];
+            c.solved = c.solved || f[3] == "да" || f[3] == "yes";
+            c.best = f[4];
+            c.attempts = std::max(c.attempts, atoi(f[5].c_str()));
+        }
+    }
+    std::string out = "\xEF\xBB\xBF";
+    out += english ? "Student" : "Ученик";
+    for (const Exercises::Exercise& e : Exercises::All()) out += ";" + e.id;
+    out += english ? ";Solved\r\n" : ";Решено\r\n";
+    for (const auto& [name, cells] : students) {
+        out += name.find_first_of(";\"") == std::string::npos ? name : "\"" + name + "\"";
+        int solved = 0;
+        for (const Exercises::Exercise& e : Exercises::All()) {
+            auto it = cells.find(e.id);
+            out += ";";
+            if (it == cells.end() || (!it->second.solved && it->second.attempts == 0)) continue;
+            if (it->second.solved) {
+                out += "+";
+                solved++;
+            } else {
+                out += it->second.best;
+            }
+        }
+        out += ";" + std::to_string(solved) + "\r\n";
+    }
+    return out;
 }
 
 std::string ExportCsv(const std::map<std::string, Entry>& results, const std::string& student, bool english) {

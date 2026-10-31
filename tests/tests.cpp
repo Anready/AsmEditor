@@ -664,6 +664,18 @@ TEST(EveryUiTextTranslated) {
             }
         }
     }
+    for (const Exercises::Exercise& e : Exercises::All()) {
+        if (std::wstring(Tr(e.title.c_str())) == e.title) {
+            missing++;
+            printf("    untranslated task title: %s\n", Narrow(e.title).c_str());
+        }
+        for (const std::string& h : e.hints) {
+            if (Tr(h) == h) {
+                missing++;
+                printf("    untranslated hint: %s\n", h.c_str());
+            }
+        }
+    }
     for (const Conditions::Condition& c : Conditions::All(0)) {
         if (Tr(c.meaning) == c.meaning) {
             missing++;
@@ -1348,6 +1360,11 @@ void CheckSolves(const std::string& id, const std::string& todo, const std::stri
     if (!ex) return;
     std::string source = Replace(ex->starter, todo, Code(solution));
     CHECK(StackCheck::Analyze(ex->starter).empty());
+    for (const std::string& p : Exercises::CheckRequirements(*ex, source)) {
+        printf("    %s: %s\n", id.c_str(), p.c_str());
+        CHECK(false);
+    }
+    CHECK(!ex->hints.empty());
     auto exe = BuildProgram("ex-" + id, source);
     if (!exe) return;
     for (const Exercises::Test& t : ex->tests) {
@@ -1426,6 +1443,19 @@ TEST(LessonsAndResults) {
     CHECK(csv.find("Иванов И.;sum;") != std::string::npos);
     CHECK(csv.find(";да;3/3;3;2026-10-31 10:05;2026-10-31 10:09") != std::string::npos);
     CHECK(csv.find(";gcd;") != std::string::npos);  // unattempted tasks are listed too
+    // the teacher's summary of two students
+    std::map<std::string, Results::Entry> other;
+    Results::Record(other, "max", 2, 4, "2026-10-31 11:00");
+    std::string summary = Results::GroupSummary({csv, Results::ExportCsv(other, "Петров П.", false)}, false);
+    CHECK(summary.find("Ученик;sum;max;") != std::string::npos);
+    CHECK(summary.find("Иванов И.;+;;") != std::string::npos);
+    CHECK(summary.find("Петров П.;;2/4;") != std::string::npos);
+    CHECK(summary.find(";1\r\n") != std::string::npos && summary.find(";0\r\n") != std::string::npos);
+    // requirements: gcd has to be recursive, power may not divide
+    const Exercises::Exercise* gcd = Exercises::Find("gcd");
+    CHECK(gcd && Exercises::CheckRequirements(*gcd, gcd->starter).size() == 2);  // no div, no recursion yet
+    const Exercises::Exercise* power = Exercises::Find("power");
+    CHECK(power && Exercises::CheckRequirements(*power, power->starter + "    and rax, rbx\n    div rcx\n").size() == 1);
 }
 
 const char* kSleepProgram =

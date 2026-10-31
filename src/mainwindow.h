@@ -30,6 +30,7 @@ private:
     void UiTestTick();
     std::unique_ptr<UiTest> uiTest_;
     int uiTestExit_ = 0;
+    bool compactTools_ = false;  // narrow window: toolbar buttons show icons only
 
     struct ToolItem {
         int id;

@@ -112,14 +112,25 @@ void MainWindow::Layout() {
     // toolbar item rectangles
     HDC dc = GetDC(hwnd_);
     HGDIOBJ old = SelectObject(dc, uiFont_);
+    // In a narrow window the buttons with icons lose their labels, so nothing overlaps.
+    auto width = [&](const ToolItem& t, bool compact) {
+        if (compact && t.icon && !t.menu) return S(32);
+        return TextWidth(dc, ToolLabel(t)) + S(t.icon || t.id == ID_TARGET ? 36 : 20);
+    };
+    auto visible = [&](const ToolItem& t) { return !((t.show == 1 && !debugging_) || (t.show == 2 && debugging_)); };
+    int needed = S(60);
+    for (const ToolItem& t : tools_) {
+        if (visible(t)) needed += width(t, false) + S(4);
+    }
+    compactTools_ = needed > rc.right;
     int x = S(6), rightEdge = rc.right - S(6);
     for (size_t i = 0; i < tools_.size(); i++) {
         ToolItem& t = tools_[i];
-        if ((t.show == 1 && !debugging_) || (t.show == 2 && debugging_)) {
+        if (!visible(t)) {
             t.rc = {};
             continue;
         }
-        int w = TextWidth(dc, ToolLabel(t)) + S(t.icon || t.id == ID_TARGET ? 36 : 20);
+        int w = width(t, compactTools_);
         if (t.right) {
             t.rc = {rightEdge - w, S(5), rightEdge, tb - S(5)};
             rightEdge -= w + S(4);
@@ -164,17 +175,23 @@ std::wstring MainWindow::ToolLabel(const ToolItem& t) const {
 void MainWindow::PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
                                  std::vector<RECT>& rects, int hover) {
     rects.assign(titles.size(), RECT{});
+    // When the titles do not fit, every tab gets an equal share and its title is shortened with "…".
+    int total = 0;
+    SelectObject(dc, uiBold_);
+    for (const std::wstring& t : titles) total += TextWidth(dc, t) + S(16);
+    int available = area.right - area.left - S(12);
+    int cap = total > available && !titles.empty() ? std::max(S(24), available / static_cast<int>(titles.size()) - S(16)) : INT_MAX;
     int x = area.left + S(12);
     for (size_t i = 0; i < titles.size(); i++) {
         bool on = static_cast<int>(i) == active;
         SelectObject(dc, on ? uiBold_ : uiFont_);
-        int w = TextWidth(dc, titles[i]);
+        int w = std::min(TextWidth(dc, titles[i]), cap);
         RECT r{x - S(4), area.top, x + w + S(4), area.bottom};
         if (r.right > area.right) break;
         rects[i] = r;
         DrawTextColor(dc, titles[i], {x, area.top, x + w + S(2), area.bottom},
                       on ? Theme::Bright : (static_cast<int>(i) == hover ? Theme::Text : Theme::Muted),
-                      DT_SINGLELINE | DT_VCENTER);
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         if (on) FillRectColor(dc, {x, area.bottom - S(2), x + w, area.bottom}, Theme::Accent);
         x += w + S(16);
     }
@@ -262,9 +279,11 @@ void MainWindow::Paint(HDC dc) {
     tabsArea.right = rcClear_.left;
     PaintHeaderTabs(dc, tabsArea, {Tr(L"Вывод"), Tr(L"Терминал"), problemsTitle, Tr(L"Поиск"), Tr(L"Отладочный вывод")},
                     static_cast<int>(pane_), paneRects_, hoverPane_);
-    RECT state = tabsArea;
-    state.left = paneRects_.empty() || paneRects_.back().right == 0 ? tabsArea.left : paneRects_.back().right + S(16);
-    if (debugging_) {
+    RECT state = tabsArea;  // after the last tab that fitted; nothing when there is no room left
+    for (const RECT& r : paneRects_) state.left = std::max(state.left, r.right + S(16));
+    if (state.right - state.left < S(60)) {
+        // no room for the state text
+    } else if (debugging_) {
         bool stopped = DebugStopped();
         DrawTextColor(dc, stopped ? Tr(L"● отладка: остановлено") : Tr(L"● отладка: выполняется"), state,
                       stopped ? Theme::Warning : Theme::Success, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -433,7 +452,7 @@ void MainWindow::PaintToolbar(HDC dc) {
             RECT ir{tr.left + S(6), tr.top, tr.left + S(26), tr.bottom};
             DrawIcon(dc, t.icon, ir, enabled);
             tr.left += S(28);
-            DrawTextColor(dc, text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER);
+            if (!compactTools_) DrawTextColor(dc, text, tr, enabled ? Theme::Text : Theme::Dim, DT_SINGLELINE | DT_VCENTER);
         } else {
             DrawTextColor(dc, text, tr, Theme::Text, DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }

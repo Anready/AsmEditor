@@ -71,6 +71,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_RUN_TO_CURSOR, L"Выполнить до курсора", L"Ctrl+F10"},
         {ID_SET_NEXT, L"Перенести выполнение сюда", L"Ctrl+Shift+F10"},
         {ID_PROFILE_RUN, L"Профилировать (сколько раз выполнилась каждая строка)", L""},
+        {ID_PROFILE_SAMPLE, L"Профилировать по таймеру (быстро, без подсчёта строк)", L""},
         {ID_PROFILE_CLEAR, L"Убрать результаты профилирования", L""},
         {ID_STEP_OVER, L"Шаг с обходом", L"F10"},
         {ID_STEP_INTO, L"Шаг с заходом", L"F11"},

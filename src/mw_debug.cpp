@@ -118,6 +118,13 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
         if (Editor* ed = OpenFile(stop->location.file, stop->location.line)) {
             ed->SetExecutionLine(stop->location.line);
             execFile_ = stop->location.file;
+            // What the line is about to do, with the current values.
+            auto eval = [&](const std::string& expr) {
+                std::wstring error;
+                return debugger_->Evaluate(expr, error);
+            };
+            std::string note = Analyzer::ExplainLine(ed->LineText(stop->location.line - 1), eval, stop->context.EFlags);
+            if (!note.empty()) ed->SetLineNotes({{stop->location.line, " ▸ " + note + " "}});
         }
     }
     frames_ = debugger_->CallStack();
@@ -145,7 +152,11 @@ void MainWindow::OnDebugExited(DWORD code, const std::string& stats) {
 }
 
 void MainWindow::ClearExecutionLine() {
-    for (auto& e : editors_) e->SetExecutionLine(0);
+    for (auto& e : editors_) {
+        e->SetExecutionLine(0);
+        if (profile_.empty()) e->SetLineNotes({});  // the "explain the line" note
+        else ShowProfileNotes(e.get());
+    }
     execFile_.clear();
 }
 
@@ -380,19 +391,26 @@ void MainWindow::RenderFlags() {
 void MainWindow::OnProfile(std::vector<ProfileLine> lines) {
     profile_ = std::move(lines);
     for (auto& e : editors_) ShowProfileNotes(e.get());
-    uint64_t total = 0;
-    for (const ProfileLine& p : profile_) total += p.instructions;
+    uint64_t total = 0, samples = 0;
+    for (const ProfileLine& p : profile_) total += p.instructions, samples += p.samples;
     std::vector<const ProfileLine*> byTime;
     for (const ProfileLine& p : profile_) byTime.push_back(&p);
     std::sort(byTime.begin(), byTime.end(), [](auto* a, auto* b) { return a->seconds > b->seconds; });
-    std::string text = "\n" + Tr(std::string("Профиль: выполнено инструкций — ")) + std::to_string(total) + ". " +
-                       Tr(std::string("Дольше всего:")) + "\n";
+    std::string text = "\n" + (samples ? Tr(std::string("Профиль по таймеру: замеров — ")) + std::to_string(samples)
+                                        : Tr(std::string("Профиль: выполнено инструкций — ")) + std::to_string(total)) +
+                       ". " + Tr(std::string("Дольше всего:")) + "\n";
     for (size_t i = 0; i < byTime.size() && i < 8; i++) {
         const ProfileLine& p = *byTime[i];
         char buf[160];
-        sprintf_s(buf, "  %s:%d  × %llu, %llu %s, %.3f %s\n", Narrow(p.location.file.filename().wstring()).c_str(),
-                  p.location.line, static_cast<unsigned long long>(p.hits), static_cast<unsigned long long>(p.instructions),
-                  Tr(std::string("инстр.")).c_str(), p.seconds * 1000, Tr(std::string("мс")).c_str());
+        if (samples) {
+            sprintf_s(buf, "  %s:%d  %.1f %s, %.0f%%\n", Narrow(p.location.file.filename().wstring()).c_str(),
+                      p.location.line, p.seconds * 1000, Tr(std::string("мс")).c_str(), 100.0 * p.samples / samples);
+        } else {
+            sprintf_s(buf, "  %s:%d  × %llu, %llu %s, %.3f %s\n", Narrow(p.location.file.filename().wstring()).c_str(),
+                      p.location.line, static_cast<unsigned long long>(p.hits),
+                      static_cast<unsigned long long>(p.instructions), Tr(std::string("инстр.")).c_str(), p.seconds * 1000,
+                      Tr(std::string("мс")).c_str());
+        }
         text += buf;
     }
     text += Tr(std::string("Числа у строк в редакторе: сколько раз выполнилась строка, сколько инструкций и время "
@@ -404,9 +422,17 @@ void MainWindow::OnProfile(std::vector<ProfileLine> lines) {
 void MainWindow::ShowProfileNotes(Editor* ed) {
     if (!ed || ed->file().empty()) return;
     std::map<int, std::string> notes;
+    uint64_t samples = 0;
+    for (const ProfileLine& p : profile_) samples += p.samples;
     for (const ProfileLine& p : profile_) {
         if (!SamePath(p.location.file, ed->file())) continue;
         char buf[128];
+        if (samples) {
+            if (!p.samples) continue;
+            sprintf_s(buf, " ≈ %.1f %s · %.0f%% ", p.seconds * 1000, Tr(std::string("мс")).c_str(), 100.0 * p.samples / samples);
+            notes[p.location.line] = buf;
+            continue;
+        }
         sprintf_s(buf, " × %llu · %llu %s · %.3f %s ", static_cast<unsigned long long>(p.hits),
                   static_cast<unsigned long long>(p.instructions), Tr(std::string("инстр.")).c_str(), p.seconds * 1000,
                   Tr(std::string("мс")).c_str());

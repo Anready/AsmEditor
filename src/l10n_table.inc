@@ -683,6 +683,26 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
     {L"STATUS_PRIVILEGED_INSTRUCTION — привилегированная инструкция", L"STATUS_PRIVILEGED_INSTRUCTION: privileged instruction"},
     {L"STATUS_DLL_NOT_FOUND — не найдена DLL", L"STATUS_DLL_NOT_FOUND: a DLL was not found"},
     {L"STATUS_BREAKPOINT — сработал int3", L"STATUS_BREAKPOINT: int3 was hit"},
+    {L"Профилировать по таймеру (быстро, без подсчёта строк)", L"Profile by sampling (fast, no line counts)"},
+    {L"Профиль по таймеру: замеров — ", L"Sampling profile: samples: "},
+    {L"Значение %s после вызова внешней функции не сохранилось: rcx, rdx, r8–r11 вызываемая функция может испортить. "
+     L"Положите его в сохраняемый регистр или в память до call.",
+     L"The value of %s did not survive the call to an external function: the callee may destroy rcx, rdx, r8–r11. "
+     L"Keep it in a non-volatile register or in memory before the call."},
+    // explain the line
+    {L"адрес", L"address"},
+    {L"обнуление", L"cleared"},
+    {L"сравнение", L"compare"},
+    {L"в стек кладётся", L"pushes"},
+    {L"с вершины стека", L"from the top of the stack"},
+    {L"деление на 0 — программа упадёт", L"division by 0: the program will crash"},
+    {L"делится 128-битное rdx:rax", L"the 128-bit rdx:rax is divided"},
+    {L"вызов", L"call"},
+    {L"адрес возврата — в стек", L"the return address goes on the stack"},
+    {L"возврат по адресу", L"return to"},
+    {L"переход на", L"jump to"},
+    {L"перехода не будет", L"no jump"},
+    {L"выход из цикла", L"the loop ends"},
     // stack animation, call stack
     {L"call: адрес возврата положен на вершину стека", L"call: the return address was pushed"},
     {L"push: значение положено на вершину стека", L"push: a value was put on top of the stack"},

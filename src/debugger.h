@@ -45,6 +45,7 @@ struct LaunchOptions {
     fs::path cwd;
     std::wstring environment;  // CreateProcess block (empty = inherit)
     bool profile = false;      // trace every instruction of the program's own code and count lines
+    bool sample = false;       // profile by sampling: where the program is, every millisecond (fast, no counts)
     bool wsl = false;          // a Linux program: debugged by gdb in WSL (GdbSession)
     std::string wslTty;        // the pseudo-terminal in WSL that becomes the program's console
 };
@@ -55,6 +56,7 @@ struct ProfileLine {
     uint64_t hits = 0;          // times the line was entered
     uint64_t instructions = 0;  // instructions executed on it
     double seconds = 0;         // time on it, including the functions it calls outside the program (printf...)
+    uint64_t samples = 0;       // sampling profiler: how many samples fell on the line (hits/instructions are 0)
 };
 
 // Source-level debugger for x64 and 32-bit (WOW64) executables built with NASM (-g -F cv8) and link /debug.
@@ -191,6 +193,10 @@ private:
 
     // Profiler.
     void ProfileStep(const CONTEXT& ctx);
+    int ProfileIndex(uint64_t address);  // the line of an address in profile_, -1: no source
+    void Sampler();
+    std::thread sampler_;
+    std::atomic<bool> sampling_{false};
     bool profiling_ = false;
     bool profileLimitHit_ = false;
     bool profileTrace_ = false;  // the next instruction is on a source line: single-step it

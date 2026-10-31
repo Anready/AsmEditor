@@ -41,7 +41,7 @@ private:
         int show = 0;  // 0 always, 1 only while debugging, 2 only when not debugging
         RECT rc{};
     };
-    enum class After { Nothing, Run, Debug, DebugEntry, RunToCursor, Profile };
+    enum class After { Nothing, Run, Debug, DebugEntry, RunToCursor, Profile, Sample };
     using Runs = std::vector<std::pair<std::string, int>>;  // text + panel style
     struct CheckJob {
         int editorId;

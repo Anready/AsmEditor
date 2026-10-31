@@ -660,6 +660,53 @@ std::vector<Diagnostic> Analyze(const std::string& text) {
         }
     }
 
+    // Registers that a call to an external function destroys (rcx, rdx, r8–r11), read afterwards as if still valid.
+    std::set<std::string> externs;
+    {
+        std::istringstream in(text);
+        for (std::string l; std::getline(in, l);) {
+            std::string t = LTrim(l);
+            if (LowerAscii(ReadWord(t, 0)) != "extern") continue;
+            for (const std::string& n : SplitOperands(t.substr(6))) externs.insert(ReadWord(LTrim(n), 0));
+        }
+    }
+    static const char* volatileRegs[] = {"rcx", "rdx", "r8", "r9", "r10", "r11"};
+    std::set<std::string> clobbered;
+    for (const Stmt& s : st) {
+        if (!s.label.empty() || s.mnemonic == "jmp" || s.mnemonic == "ret" || s.mnemonic == "retn") clobbered.clear();
+        if (s.mnemonic.empty()) continue;
+        if (!clobbered.empty()) {
+            bool zeroing = (s.mnemonic == "xor" || s.mnemonic == "sub") && s.ops.size() == 2 && s.ops[0] == s.ops[1];
+            // Read: every operand except the destination of a plain write (mov, lea, movzx...).
+            static const std::set<std::string> writeOnly = {"mov", "lea", "movzx", "movsx", "movsxd", "pop", "movq", "movd",
+                                                            "cvtsi2sd", "cvttsd2si", "setz"};
+            for (size_t i = 0; i < s.ops.size() && !zeroing; i++) {
+                bool dest = i == 0 && (writeOnly.count(s.mnemonic) || s.mnemonic.rfind("set", 0) == 0) &&
+                            s.ops[0].find('[') == std::string::npos;
+                if (dest) continue;
+                std::string op = s.ops[i];
+                for (char& c : op) {
+                    if (!isalnum(static_cast<unsigned char>(c))) c = ' ';
+                }
+                std::istringstream words(op);
+                for (std::string w; words >> w;) {
+                    std::string reg = Canon(w);
+                    if (reg.empty() || !clobbered.count(reg)) continue;
+                    warn(s, Format("Значение %s после вызова внешней функции не сохранилось: rcx, rdx, r8–r11 вызываемая "
+                                   "функция может испортить. Положите его в сохраняемый регистр или в память до call.", w),
+                         "clobbered:" + reg);
+                    clobbered.erase(reg);
+                }
+            }
+        }
+        for (const std::string& w : Writes(s)) clobbered.erase(w);
+        if (s.mnemonic == "call" && !s.rawOps.empty()) {
+            std::string target = s.rawOps[0];
+            bool external = externs.count(ReadWord(LTrim(target), 0)) || target.find("__imp_") != std::string::npos;
+            if (external) clobbered.insert(std::begin(volatileRegs), std::end(volatileRegs));
+        }
+    }
+
     // Instructions right after ret / jmp that no label leads to.
     bool dead = false;
     for (const Stmt& s : st) {
@@ -816,6 +863,41 @@ std::optional<CallArguments> ArgumentsOfCall(const std::string& text, int line) 
     if (r.function.empty()) return std::nullopt;
     std::vector<std::string> names;
     r.known = Hints::Parameters(r.function, names, r.variadic, r.prototype);
+    if (!r.known) {
+        // The program's own function: its arguments from the comment above its label ("; rcx = a, rdx = b").
+        std::vector<std::string> lines;
+        {
+            std::istringstream in(text);
+            for (std::string l; std::getline(in, l);) lines.push_back(RTrim(l));
+        }
+        for (const Stmt& s : st) {
+            if (s.label != r.function) continue;
+            std::string comment;
+            for (int l = s.line - 1; l >= 0 && l >= s.line - 4; l--) {
+                std::string t = LTrim(lines[l]);
+                if (t.empty() || t[0] != ';') break;
+                comment = t.substr(1) + "\n" + comment;
+            }
+            std::string own = lines[s.line].find(';') != std::string::npos ? lines[s.line].substr(lines[s.line].find(';') + 1) : "";
+            comment += own;
+            std::string lower = LowerAscii(comment);
+            static const char* families[4][2] = {{"rcx", "ecx"}, {"rdx", "edx"}, {"r8", "r8d"}, {"r9", "r9d"}};
+            for (const auto& f : families) {
+                std::smatch m;
+                std::regex re(std::string("\\b(") + f[0] + "|" + f[1] + ")\\b\\s*(=\\s*([^,;\\n)]+))?");
+                if (!std::regex_search(lower, m, re)) break;  // arguments go in order: stop at the first missing one
+                std::string name = m[3].matched ? LTrim(RTrim(m[3].str())) : "";
+                if (name.size() > 20) name = name.substr(0, 20);
+                names.push_back(name);
+            }
+            if (!names.empty()) {
+                r.known = true;
+                std::string first = LTrim(comment.substr(0, comment.find('\n')));
+                r.prototype = r.function + ": " + first;
+            }
+            break;
+        }
+    }
 
     static const char* regs[] = {"rcx", "rdx", "r8", "r9"};
     std::map<int, int> setOn;  // argument index -> line
@@ -848,6 +930,167 @@ std::optional<CallArguments> ArgumentsOfCall(const std::string& text, int line) 
         for (const auto& [i, l] : setOn) r.arguments.push_back({where(i), "", l});
     }
     return r;
+}
+
+namespace {
+int OperandBits(const std::string& op) {
+    std::string c = Canon(op);
+    if (!c.empty()) {
+        if (IsByteRegister(op)) return 8;
+        if (op == c) return 64;
+        if (op[0] == 'e' || (op[0] == 'r' && op.back() == 'd')) return 32;
+        return 16;
+    }
+    if (op.rfind("byte", 0) == 0) return 8;
+    if (op.rfind("word", 0) == 0) return 16;
+    if (op.rfind("dword", 0) == 0) return 32;
+    if (op.rfind("qword", 0) == 0) return 64;
+    return 0;
+}
+
+uint64_t Mask(uint64_t v, int bits) {
+    return bits >= 64 ? v : v & ((1ull << bits) - 1);
+}
+
+int64_t Signed(uint64_t v, int bits) {
+    if (bits >= 64) return static_cast<int64_t>(v);
+    uint64_t m = Mask(v, bits);
+    return (m >> (bits - 1)) & 1 ? static_cast<int64_t>(m | ~((1ull << bits) - 1)) : static_cast<int64_t>(m);
+}
+
+std::string Num(uint64_t v, int bits) {
+    int64_t s = Signed(v, bits);
+    char buf[32];
+    if (s > -100000 && s < 1000000) sprintf_s(buf, "%lld", static_cast<long long>(s));
+    else sprintf_s(buf, "0x%llX", static_cast<unsigned long long>(Mask(v, bits)));
+    return buf;
+}
+}
+
+std::string ExplainLine(const std::string& line, const Eval& eval, uint32_t eflags) {
+    std::vector<Stmt> st = Parse("section .text\n" + line);
+    const Stmt* s = nullptr;
+    for (const Stmt& x : st) {
+        if (!x.mnemonic.empty()) s = &x;
+    }
+    if (!s || s->line != 1) return {};
+    const std::string& m = s->mnemonic;
+    const auto& ops = s->ops;
+    auto value = [&](const std::string& op) { return eval(op); };
+    std::string a = ops.size() > 0 ? ops[0] : "", b = ops.size() > 1 ? ops[1] : "";
+    int bits = OperandBits(a);
+    if (!bits) bits = OperandBits(b);
+    if (!bits) bits = 64;
+    std::string name = a;  // the destination as written, without a size keyword
+    for (const char* kw : {"qword ", "dword ", "word ", "byte "}) {
+        if (name.rfind(kw, 0) == 0) name = LTrim(name.substr(strlen(kw)));
+    }
+
+    if (m == "mov" || m == "movzx" || m == "movsx" || m == "movsxd") {
+        auto v = value(b);
+        if (!v) return {};
+        int srcBits = OperandBits(b) ? OperandBits(b) : bits;
+        uint64_t r = m == "movsx" || m == "movsxd" ? static_cast<uint64_t>(Signed(*v, srcBits)) : Mask(*v, srcBits);
+        return name + " = " + Num(r, bits);
+    }
+    if (m == "lea") {
+        size_t open = b.find('['), close = b.rfind(']');
+        if (open == std::string::npos || close == std::string::npos) return {};
+        auto v = value(b.substr(open + 1, close - open - 1));
+        return v ? name + " = " + Tr(std::string("адрес")) + " " + Num(*v, 64) : std::string();
+    }
+    if (m == "xor" && a == b && !Canon(a).empty()) return name + " = 0 (" + Tr(std::string("обнуление")) + ")";
+    static const std::map<std::string, std::string> binary = {
+        {"add", "+"}, {"sub", "−"}, {"and", "&"}, {"or", "|"}, {"xor", "^"}, {"imul", "×"}, {"shl", "<<"}, {"sal", "<<"},
+        {"shr", ">>"}, {"sar", ">>"}};
+    auto bin = binary.find(m);
+    if (bin != binary.end() && ops.size() == 2) {
+        auto x = value(a), y = value(b);
+        if (!x || !y) return {};
+        uint64_t r = 0;
+        if (m == "add") r = *x + *y;
+        else if (m == "sub") r = *x - *y;
+        else if (m == "and") r = *x & *y;
+        else if (m == "or") r = *x | *y;
+        else if (m == "xor") r = *x ^ *y;
+        else if (m == "imul") r = static_cast<uint64_t>(Signed(*x, bits) * Signed(*y, bits));
+        else if (m == "shl" || m == "sal") r = (*y & 63) ? Mask(*x, bits) << (*y & 63) : *x;
+        else if (m == "shr") r = Mask(*x, bits) >> (*y & 63);
+        else r = static_cast<uint64_t>(Signed(*x, bits) >> (*y & 63));
+        return name + " = " + Num(*x, bits) + " " + bin->second + " " + Num(*y, OperandBits(b) ? OperandBits(b) : bits) +
+               " → " + Num(r, bits);
+    }
+    if ((m == "inc" || m == "dec" || m == "neg" || m == "not") && ops.size() == 1) {
+        auto x = value(a);
+        if (!x) return {};
+        uint64_t r = m == "inc" ? *x + 1 : m == "dec" ? *x - 1 : m == "neg" ? 0 - *x : ~*x;
+        std::string how = m == "inc" ? Num(*x, bits) + " + 1" : m == "dec" ? Num(*x, bits) + " − 1"
+                        : m == "neg" ? "−(" + Num(*x, bits) + ")" : "~" + Num(*x, bits);
+        return name + " = " + how + " → " + Num(r, bits);
+    }
+    if (m == "cmp" && ops.size() == 2) {
+        auto x = value(a), y = value(b);
+        if (!x || !y) return {};
+        int64_t sx = Signed(*x, bits), sy = Signed(*y, OperandBits(b) ? OperandBits(b) : bits);
+        std::string rel = sx == sy ? "=" : sx < sy ? "<" : ">";
+        return Tr(std::string("сравнение")) + ": " + Num(*x, bits) + " " + rel + " " + Num(static_cast<uint64_t>(sy), 64);
+    }
+    if (m == "test" && ops.size() == 2) {
+        auto x = value(a), y = value(b);
+        if (!x || !y) return {};
+        uint64_t r = Mask(*x & *y, bits);
+        return Num(*x, bits) + " & " + Num(*y, bits) + " = " + Num(r, bits) + (r ? "" : " → ZF = 1");
+    }
+    if (m == "push" && ops.size() == 1) {
+        auto x = value(a);
+        return x ? Tr(std::string("в стек кладётся")) + " " + Num(*x, 64) + ", rsp −= 8" : std::string();
+    }
+    if (m == "pop" && ops.size() == 1) {
+        auto x = value("qword [rsp]");
+        return x ? name + " = " + Num(*x, 64) + " (" + Tr(std::string("с вершины стека")) + "), rsp += 8" : std::string();
+    }
+    if ((m == "div" || m == "idiv") && ops.size() == 1) {
+        auto d = value(a), lo = value("rax"), hi = value("rdx");
+        if (!d || !lo || !hi) return {};
+        if (Mask(*d, bits) == 0) return Tr(std::string("деление на 0 — программа упадёт"));
+        if (bits == 64 && *hi != 0 && !(m == "idiv" && *hi == (static_cast<int64_t>(*lo) < 0 ? ~0ull : 0))) {
+            return "rdx = " + Num(*hi, 64) + ": " + Tr(std::string("делится 128-битное rdx:rax"));
+        }
+        if (m == "div") {
+            uint64_t n = bits == 64 ? *lo : (Mask(*hi, bits) << bits) | Mask(*lo, bits);
+            uint64_t q = n / Mask(*d, bits), r = n % Mask(*d, bits);
+            return Num(n, 64) + " / " + Num(*d, bits) + ": rax = " + Num(q, bits) + ", rdx = " + Num(r, bits);
+        }
+        int64_t n = Signed(*lo, bits == 64 ? 64 : bits), dv = Signed(*d, bits);
+        return Num(static_cast<uint64_t>(n), 64) + " / " + Num(static_cast<uint64_t>(dv), 64) + ": rax = " +
+               Num(static_cast<uint64_t>(n / dv), 64) + ", rdx = " + Num(static_cast<uint64_t>(n % dv), 64);
+    }
+    if (m == "call" && !s->rawOps.empty()) {
+        return Tr(std::string("вызов")) + " " + s->rawOps[0] + ": " + Tr(std::string("адрес возврата — в стек"));
+    }
+    if (m == "ret" || m == "retn") {
+        auto x = value("qword [rsp]");
+        return x ? Tr(std::string("возврат по адресу")) + " " + Num(*x, 64) : std::string();
+    }
+    if (m == "jmp" && !s->rawOps.empty()) return Tr(std::string("переход на")) + " " + s->rawOps[0];
+    if (m.size() > 1 && m[0] == 'j' && !s->rawOps.empty()) {
+        std::string cc = m.substr(1);
+        for (const Conditions::Condition& c : Conditions::All(eflags)) {
+            std::istringstream aliases(c.name + " " + c.aliases);
+            for (std::string n; aliases >> n;) {
+                if (n != cc) continue;
+                return m + ": " + c.formula + " (" + c.values + ") → " +
+                       (c.holds ? Tr(std::string("переход на")) + " " + s->rawOps[0] : Tr(std::string("перехода не будет")));
+            }
+        }
+    }
+    if (m == "loop" && !s->rawOps.empty()) {
+        auto c = value("rcx");
+        return c ? "rcx = " + Num(*c, 64) + " − 1 → " + (*c != 1 ? Tr(std::string("переход на")) + " " + s->rawOps[0]
+                                                                 : Tr(std::string("выход из цикла")))
+                 : std::string();
+    }
+    return {};
 }
 
 }

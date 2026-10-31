@@ -162,12 +162,12 @@ void MainWindow::FeedStdin() {
 
 void MainWindow::RunProgram(const fs::path& exe, const fs::path& cwd, After mode) {
     bool debug = mode == After::Debug || mode == After::DebugEntry || mode == After::RunToCursor ||
-                 mode == After::Profile;
+                 mode == After::Profile || mode == After::Sample;
     if (settings_->externalConsole && !debug) {
         RunExternal(exe, cwd);
         return;
     }
-    Print("\n" + Tr(std::string(mode == After::Profile ? "Профилирование " : debug ? "Отладка " : "Запуск ")) +
+    Print("\n" + Tr(std::string(mode == After::Profile || mode == After::Sample ? "Профилирование " : debug ? "Отладка " : "Запуск ")) +
               Narrow(exe.filename().wstring()) +
               (runConfig_.args.empty() ? "" : " " + Narrow(runConfig_.args)) + "\n", Out::Info);
     ClearPane(Pane::Terminal);
@@ -179,6 +179,7 @@ void MainWindow::RunProgram(const fs::path& exe, const fs::path& cwd, After mode
     Toolchain::SetConsoleCodePage(pty_, codePage);
     LaunchOptions launch = MakeLaunch(exe, cwd);
     launch.profile = mode == After::Profile;
+    launch.sample = mode == After::Sample;
     runStartTick_ = GetTickCount64();
     Log::Write("run " + Narrow(exe.wstring()) + (debug ? " (debug)" : ""));
 

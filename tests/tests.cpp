@@ -299,6 +299,45 @@ TEST(AnalyzerCalleeSavedDivUnreachable) {
     }
 }
 
+TEST(AnalyzerClobberedAndOwnArguments) {
+    std::string text =
+        "extern printf\n"                 // 0
+        "global main\n"                   // 1
+        "main:\n"                         // 2
+        "    sub rsp, 40\n"               // 3
+        "    mov r8, 7\n"                 // 4
+        "    lea rcx, [fmt]\n"            // 5
+        "    call printf\n"               // 6
+        "    add rax, r8\n"               // 7 r8 destroyed by printf
+        "    mov rcx, 1\n"                // 8 written again: fine
+        "    add rax, rcx\n"              // 9
+        "    mov rdx, [rdx]\n"            // 10 rdx read (memory operand)
+        "    add rsp, 40\n"
+        "    ret\n"
+        "; rcx = a, rdx = b\n"            // 13
+        "; returns a + b in rax\n"        // 14
+        "sum2:\n"                         // 15
+        "    lea rax, [rcx + rdx]\n"
+        "    ret\n"
+        "f:\n"                            // 18
+        "    mov ecx, 2\n"                // 19
+        "    call sum2\n";                // 20
+    int clobbered = 0;
+    for (const Diagnostic& d : Analyzer::Analyze(text)) {
+        if (d.code.rfind("clobbered:", 0) == 0) {
+            clobbered++;
+            CHECK(d.line == 8 || d.line == 11);
+        }
+    }
+    CHECK_EQ(clobbered, 2);
+    auto a = Analyzer::ArgumentsOfCall(text, 20);
+    CHECK(a && a->known && a->arguments.size() == 2);
+    if (a && a->arguments.size() == 2) {
+        CHECK(a->arguments[0].name == "a" && a->arguments[0].setOnLine == 19);
+        CHECK(a->arguments[1].name == "b" && a->arguments[1].setOnLine == -1);
+    }
+}
+
 TEST(QuickFixesExternAndStack) {
     std::string text =
         "default rel\n"          // 1
@@ -484,6 +523,30 @@ TEST(ReferenceInEnglish) {
     SetLanguage(L"ru");
     CHECK_EQ(left, 0);
     CHECK(russian(Hints::For("mov")));
+}
+
+TEST(ExplainLine) {
+    std::map<std::string, uint64_t> v = {{"rax", 5}, {"rbx", 3}, {"rcx", 1}, {"rdx", 0}, {"eax", 5}, {"qword [counter]", 7},
+                                         {"qword [rsp]", 0x401000}, {"10", 10}, {"3", 3}, {"counter", 0x404000}};
+    Analyzer::Eval eval = [&](const std::string& e) -> std::optional<uint64_t> {
+        auto it = v.find(e);
+        return it == v.end() ? std::nullopt : std::optional<uint64_t>(it->second);
+    };
+    CHECK_EQ(Analyzer::ExplainLine("    add rax, rbx", eval, 0), std::string("rax = 5 + 3 → 8"));
+    CHECK_EQ(Analyzer::ExplainLine("    mov rax, 10   ; comment", eval, 0), std::string("rax = 10"));
+    CHECK_EQ(Analyzer::ExplainLine(".l: inc qword [counter]", eval, 0), std::string("[counter] = 7 + 1 → 8"));
+    CHECK_EQ(Analyzer::ExplainLine("    sub rbx, 10", eval, 0), std::string("rbx = 3 − 10 → -7"));
+    CHECK_EQ(Analyzer::ExplainLine("    xor eax, eax", eval, 0), std::string("eax = 0 (обнуление)"));
+    CHECK_EQ(Analyzer::ExplainLine("    cmp rbx, 10", eval, 0), std::string("сравнение: 3 < 10"));
+    CHECK_EQ(Analyzer::ExplainLine("    div rbx", eval, 0), std::string("5 / 3: rax = 1, rdx = 2"));
+    CHECK_EQ(Analyzer::ExplainLine("    lea rdx, [counter]", eval, 0), std::string("rdx = адрес 0x404000"));
+    std::string jl = Analyzer::ExplainLine("    jl .loop", eval, 1 << 7);  // SF = 1, OF = 0
+    CHECK(jl.find("SF ≠ OF") != std::string::npos && jl.find("переход на .loop") != std::string::npos);
+    CHECK(Analyzer::ExplainLine("    jge .loop", eval, 1 << 7).find("перехода не будет") != std::string::npos);
+    CHECK_EQ(Analyzer::ExplainLine("    loop .l", eval, 0), std::string("rcx = 1 − 1 → выход из цикла"));
+    CHECK_EQ(Analyzer::ExplainLine("    ret", eval, 0), std::string("возврат по адресу 0x401000"));
+    CHECK_EQ(Analyzer::ExplainLine("; only a comment", eval, 0), std::string());
+    CHECK_EQ(Analyzer::ExplainLine("    mov rax, [unknown]", eval, 0), std::string());
 }
 
 TEST(GdbMiRecords) {
@@ -961,6 +1024,49 @@ TEST(DebuggerProfiler) {
     CHECK_EQ(byLine[19].hits, 1ull);
     CHECK(byLine[19].seconds > 0);  // printf, run untraced, is timed on its call line
     CHECK_EQ(host.exitCode, 0ul);
+}
+
+const char* kBusyProgram =
+    "default rel\n"                // 1
+    "extern Sleep\n"               // 2
+    "global main\n"                // 3
+    "section .text\n"              // 4
+    "main:\n"                      // 5
+    "    sub rsp, 40\n"            // 6
+    "    mov rcx, 400000000\n"     // 7
+    ".spin:\n"                     // 8
+    "    dec rcx\n"                // 9
+    "    jnz .spin\n"              // 10
+    "    mov ecx, 300\n"           // 11
+    "    call Sleep\n"             // 12
+    "    add rsp, 40\n"            // 13
+    "    xor eax, eax\n"           // 14
+    "    ret\n";                   // 15
+
+// The sampling profiler: the busy loop and the Sleep call (through kernel32, unwound by .pdata) get the time.
+TEST(DebuggerSamplingProfiler) {
+    auto exe = BuildProgram("busy", kBusyProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    launch.sample = true;
+    auto start = std::chrono::steady_clock::now();
+    CHECK(d.Start(launch, host.pty, {}, false, std::nullopt, error));
+    CHECK(host.Wait(30000));
+    CHECK(host.exited);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    std::map<int, ProfileLine> byLine;
+    uint64_t samples = 0;
+    for (const ProfileLine& p : host.profile) byLine[p.location.line] = p, samples += p.samples;
+    printf("    run %lld ms, %llu samples; loop %.0f ms, Sleep line %.0f ms\n", static_cast<long long>(ms),
+           static_cast<unsigned long long>(samples), (byLine[9].seconds + byLine[10].seconds) * 1000, byLine[12].seconds * 1000);
+    CHECK(samples > 100);
+    CHECK(byLine[9].samples + byLine[10].samples > 10);
+    CHECK(byLine[12].seconds > 0.2);  // Sleep(300)
 }
 
 const char* kCounterProgram32 =

@@ -59,6 +59,11 @@ struct CallArguments {
     std::vector<Argument> extra;      // registers set beyond the fixed ones (for variadic functions)
 };
 std::optional<CallArguments> ArgumentsOfCall(const std::string& text, int line);
+
+// What the instruction on a source line is about to do, with the current values: "rax = 5 + 3 → 8".
+// `eval` gives the value of a register or memory operand ("rbx", "qword [counter]"); empty when unknown.
+using Eval = std::function<std::optional<uint64_t>(const std::string&)>;
+std::string ExplainLine(const std::string& line, const Eval& eval, uint32_t eflags);
 }
 
 namespace Disasm {

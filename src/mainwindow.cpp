@@ -269,7 +269,7 @@ void MainWindow::BuildMenus() {
     CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
 
     runMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_PROFILE_RUN, ID_PROFILE_CLEAR, 0, ID_STEP_OVER, ID_STEP_INTO,
+    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_PROFILE_RUN, ID_PROFILE_SAMPLE, ID_PROFILE_CLEAR, 0, ID_STEP_OVER, ID_STEP_INTO,
                    ID_STEP_OUT, ID_STEP_BACK, ID_SET_NEXT, ID_PAUSE, ID_STOP, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
                    0, ID_CHOOSE_TARGET, ID_RUN_CONFIG, ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_RESET_MAIN, 0,
                    ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_LESSONS, ID_EXPORT_RESULTS, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
@@ -793,6 +793,7 @@ void MainWindow::OnCommand(int id) {
     case ID_STEP_BACK: StepBack(); break;
     case ID_PROFILE_RUN: if (!debugging_) StartBuild(After::Profile); break;
     case ID_PROFILE_CLEAR: ClearProfile(); break;
+    case ID_PROFILE_SAMPLE: if (!debugging_) StartBuild(After::Sample); break;
     case ID_TOGGLE_BP:
         if (ed) ToggleBreakpoint(ed, ed->CaretLine());
         break;

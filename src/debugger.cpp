@@ -350,6 +350,8 @@ bool Debugger::SetRegisterIn(CONTEXT& c, const std::string& n, uint64_t v) {
 Debugger::Debugger(HWND notify) : notify_(notify) {}
 
 Debugger::~Debugger() {
+    sampling_ = false;
+    if (sampler_.joinable()) sampler_.join();
     Stop();
     gdb_.reset();
     if (thread_.joinable()) thread_.join();
@@ -631,6 +633,64 @@ bool Debugger::StepBack(std::wstring& error) {
 // Called for every traced instruction: rip is the next instruction to run, the time since the previous call belongs
 // to the previous one's line. Code without source (DLLs, the C runtime) runs at full speed until it returns to a
 // source line, and its time goes to the line that called it.
+int Debugger::ProfileIndex(uint64_t address) {
+    if (!InMainImage(address)) return -1;
+    auto it = profileIndex_.find(address);
+    if (it != profileIndex_.end()) return it->second;
+    int index = -1;
+    SourceLocation loc = LocationOf(address);
+    if (loc.valid()) {
+        auto key = std::make_pair(Key(loc.file), loc.line);
+        auto byLine = profileByLine_.find(key);
+        if (byLine == profileByLine_.end()) {
+            byLine = profileByLine_.emplace(key, static_cast<int>(profile_.size())).first;
+            profile_.push_back({loc});
+        }
+        index = byLine->second;
+    }
+    profileIndex_[address] = index;
+    return index;
+}
+
+// The sampling profiler: every millisecond the main thread is suspended for a moment and its position counted.
+// Time in code without source (printf, the WinAPI) goes to the source line that called it (unwinding by .pdata).
+void Debugger::Sampler() {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!timer) timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    LARGE_INTEGER due{};
+    due.QuadPart = -10000;  // 1 ms
+    SetWaitableTimer(timer, &due, 1, nullptr, nullptr, FALSE);
+    LARGE_INTEGER freq, last, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&last);
+    while (sampling_) {
+        WaitForSingleObject(timer, 100);
+        QueryPerformanceCounter(&now);
+        double dt = double(now.QuadPart - last.QuadPart) / freq.QuadPart;
+        last = now;
+        HANDLE thread = mainThread_;
+        if (stopped_ || !thread || SuspendThread(thread) == static_cast<DWORD>(-1)) continue;
+        alignas(16) CONTEXT ctx;
+        bool ok = GetContext(thread, ctx);
+        ResumeThread(thread);
+        if (!ok) continue;
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        uint64_t regs[16] = {ctx.Rax, ctx.Rcx, ctx.Rdx, ctx.Rbx, ctx.Rsp, ctx.Rbp, ctx.Rsi, ctx.Rdi,
+                             ctx.R8, ctx.R9, ctx.R10, ctx.R11, ctx.R12, ctx.R13, ctx.R14, ctx.R15};
+        uint64_t pc = ctx.Rip;
+        for (int depth = 0; depth < 24; depth++) {
+            int index = ProfileIndex(depth ? pc - 1 : pc);  // a return address: the line of its call
+            if (index >= 0) {
+                profile_[index].samples++;
+                profile_[index].seconds += dt;
+                break;
+            }
+            if (wow64_ || !UnwindFrame(regs, pc, depth > 0)) break;
+        }
+    }
+    CloseHandle(timer);
+}
+
 void Debugger::ProfileStep(const CONTEXT& ctx) {
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
@@ -638,24 +698,7 @@ void Debugger::ProfileStep(const CONTEXT& ctx) {
     if (profilePrev_ >= 0) profile_[profilePrev_].seconds += double(now.QuadPart - profileTick_) / freq.QuadPart;
     profileTrace_ = false;
     int index = -1;
-    if (!profileLimitHit_ && InMainImage(ctx.Rip)) {
-        auto it = profileIndex_.find(ctx.Rip);
-        if (it != profileIndex_.end()) {
-            index = it->second;
-        } else {
-            SourceLocation loc = LocationOf(ctx.Rip);
-            if (loc.valid()) {
-                auto key = std::make_pair(Key(loc.file), loc.line);
-                auto byLine = profileByLine_.find(key);
-                if (byLine == profileByLine_.end()) {
-                    byLine = profileByLine_.emplace(key, static_cast<int>(profile_.size())).first;
-                    profile_.push_back({loc});
-                }
-                index = byLine->second;
-            }
-            profileIndex_[ctx.Rip] = index;
-        }
-    }
+    if (!profileLimitHit_) index = ProfileIndex(ctx.Rip);
     if (index >= 0) {
         if (++profileTotal_ >= kProfileLimit) profileLimitHit_ = true;
         profile_[index].instructions++;
@@ -825,6 +868,10 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
                 for (const auto& [key, lines] : bps) InstallFile(key, lines);
                 FindWritableSections();
                 profiling_ = launch.profile;
+                if (launch.sample) {
+                    sampling_ = true;
+                    sampler_ = std::thread(&Debugger::Sampler, this);
+                }
                 if (stopAtEntry || profiling_) {
                     SymbolBuffer sym;
                     uint64_t entry = reinterpret_cast<uint64_t>(info.lpStartAddress);
@@ -909,6 +956,11 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
             break;
         case EXIT_PROCESS_DEBUG_EVENT:
             exitCode = ev.u.ExitProcess.dwExitCode;
+            if (sampling_) {
+                sampling_ = false;
+                if (sampler_.joinable()) sampler_.join();
+                PostMessageW(notify_, WM_DEBUG_PROFILE, 0, reinterpret_cast<LPARAM>(new std::vector<ProfileLine>(profile_)));
+            }
             if (profiling_) {
                 auto* lines = new std::vector<ProfileLine>(profile_);
                 if (profileLimitHit_) {

@@ -140,6 +140,35 @@ TEST(FindOccurrencesLocalLabel) {
     CHECK_EQ(g.size(), 3u);  // global main, main:, main. prefix of main.loop
 }
 
+TEST(OccurrencesOfMacrosAndDefines) {
+    std::string text =
+        "%define SIZE 10\n"
+        "%assign COUNT SIZE * 2\n"
+        "%macro print 1\n"
+        "    lea rcx, [%1]\n"
+        "    mov edx, SIZE\n"
+        "%%again:\n"
+        "    jmp %%again\n"
+        "%endmacro\n"
+        "main:\n"
+        "    print msg\n"
+        "    mov rax, %[SIZE]\n"
+        "%ifdef SIZE\n"
+        "%undef SIZE\n"
+        "%endif\n";
+    auto size = Completion::FindOccurrences(text, "SIZE", "", false);
+    CHECK_EQ(size.size(), 6u);
+    int defs = 0;
+    for (const auto& o : size) defs += o.definition;
+    CHECK_EQ(defs, 1);
+    auto print = Completion::FindOccurrences(text, "print", "", false);
+    CHECK_EQ(print.size(), 2u);
+    auto again = Completion::FindOccurrences(text, "%%again", "", false);
+    CHECK_EQ(again.size(), 2u);
+    auto count = Completion::FindOccurrences(text, "COUNT", "", false);
+    CHECK(count.size() == 1u && count[0].definition);
+}
+
 TEST(NamesValidAndReserved) {
     CHECK(Completion::IsValidName("my_label"));
     CHECK(Completion::IsValidName(".loop"));

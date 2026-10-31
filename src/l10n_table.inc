@@ -785,6 +785,7 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
     {L"отладка завершена", L"debugging finished"},
     {L"не удалось подключиться к процессу, код ", L"could not attach to the process, code "},
     {L"отключено, программа продолжает работу", L"detached, the program keeps running"},
+    {L"Метка %% бывает только внутри %macro … %endmacro.", L"A %% label exists only inside %macro … %endmacro."},
     // explain the line
     {L"адрес", L"address"},
     {L"обнуление", L"cleared"},

@@ -120,6 +120,60 @@ void MainWindow::FindUsages(Editor* ed, Sci_Position pos) {
 void MainWindow::Rename(Editor* ed, Sci_Position pos) {
     std::string word, scope;
     if (!SymbolUnderCaret(ed, pos, word, scope)) return;
+    Sci_Position wordStart, wordEnd;
+    if (word.rfind("%%", 0) != 0 && ed->WordRange(pos, wordStart, wordEnd) && wordStart >= 2 &&
+        ed->Call(SCI_GETCHARAT, wordStart - 1) == '%' && ed->Call(SCI_GETCHARAT, wordStart - 2) == '%') {
+        word = "%%" + word;
+    }
+    if (word.rfind("%%", 0) == 0) {  // a macro-local label: only inside its own %macro … %endmacro
+        auto directive = [&](int line) {  // the first word of a 1-based line, lower case
+            std::string t = ed->LineText(line - 1);
+            size_t s = t.find_first_not_of(" \t");
+            if (s == std::string::npos) return std::string();
+            size_t e = t.find_first_of(" \t\r\n", s);
+            std::string w = t.substr(s, e == std::string::npos ? std::string::npos : e - s);
+            for (char& c : w) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            return w;
+        };
+        int caret = static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, pos)) + 1;
+        int lines = static_cast<int>(ed->Call(SCI_GETLINECOUNT));
+        int first = 0, last = 0;
+        for (int l = caret; l >= 1 && !first; l--) {
+            std::string d = directive(l);
+            if (d == "%endmacro" && l != caret) break;
+            if (d == "%macro" || d == "%imacro") first = l;
+        }
+        for (int l = first; first && l <= lines && !last; l++) {
+            if (directive(l) == "%endmacro") last = l;
+        }
+        if (!first || !last) {
+            ShowMessage(hwnd_, Tr(L"Метка %% бывает только внутри %macro … %endmacro."), false);
+            return;
+        }
+        auto answer = InputBox(hwnd_, Tr(L"Переименование"), Tr(L"Новое имя для ") + Widen(word) + L":", Widen(word));
+        if (!answer) return;
+        std::string rest = Narrow(Trim(*answer));
+        if (rest.rfind("%%", 0) == 0) rest = rest.substr(2);
+        if (!Completion::IsValidName(rest) || rest[0] == '.') {
+            ShowMessage(hwnd_, Widen(rest) + Tr(L": недопустимое имя. Можно буквы, цифры, _ . ? @ $ # ~; начинается не с цифры."));
+            return;
+        }
+        std::string name = "%%" + rest;
+        auto found = Completion::FindOccurrences(ed->Text(), word, "", false);
+        size_t total = 0;
+        ed->Call(SCI_BEGINUNDOACTION);
+        for (auto it = found.rbegin(); it != found.rend(); ++it) {  // back to front: earlier offsets stay valid
+            if (it->line < first || it->line > last) continue;
+            Sci_Position at = ed->Call(SCI_POSITIONFROMLINE, it->line - 1) + it->column;
+            ed->Call(SCI_SETTARGETRANGE, at, at + it->length);
+            ed->Call(SCI_REPLACETARGET, name.size(), reinterpret_cast<sptr_t>(name.c_str()));
+            total++;
+        }
+        ed->Call(SCI_ENDUNDOACTION);
+        Print("\n" + Tr(std::string("Переименовано: ")) + word + " → " + name + " (" + Tr(std::string("замен: ")) +
+                  std::to_string(total) + ")\n", Out::Success);
+        return;
+    }
     bool local = word[0] == '.' && word.rfind("..", 0) != 0;
     if (local && scope.empty()) {
         ShowMessage(hwnd_, Tr(L"Локальная метка вне глобальной метки — переименуйте её вручную."), false);

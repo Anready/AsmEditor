@@ -349,8 +349,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         CreateChildren();
         return 0;
     case WM_SIZE:
+        Tip::Hide();
         Layout();
         return 0;
+    case WM_MOVE:
+        Tip::Hide();
+        break;
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT: {
@@ -543,6 +547,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     case WM_ACTIVATEAPP:
+        if (!wp) Tip::Hide();
         if (wp) {
             RefreshTree();
             CheckExternalChanges();
@@ -680,7 +685,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         checkCv_.notify_all();
         if (checkThread_.joinable()) checkThread_.join();
         SaveDebugLayout();  // the parts of the debugger open where they are next time
-        editors_.clear();
+        {
+            auto doomed = std::move(editors_);  // destroyed while the list is already empty
+            editors_.clear();
+        }
         // The parts' views belong to the main window: back into it before the windows of their own close.
         for (int& group : partGroup_) group = kPanelGroup;
         FixGroups();
@@ -1053,7 +1061,9 @@ void MainWindow::OnCommand(int id) {
                 if (i == splitIndex_) splitIndex_ = -1;
                 else if (i < splitIndex_) splitIndex_--;
                 if (i < active_) active_--;  // a closed shown tab is replaced by Layout (FixGroups)
+                std::unique_ptr<Editor> doomed = std::move(editors_[i]);  // destroyed after the list is whole
                 editors_.erase(editors_.begin() + i);
+                doomed.reset();
                 if (active_ >= (int)editors_.size()) active_ = (int)editors_.size() - 1;
             }
         }
@@ -1157,6 +1167,12 @@ void MainWindow::OnNotify(NMHDR* nm) {
         break;
     case SCN_UPDATEUI:
         InvalidateRect(hwnd_, &rcStatus_, FALSE);
+        // The hint card goes when the text scrolls or the caret moves without typing (typing keeps the operands
+        // reminder of the line).
+        if ((scn->updated & (SC_UPDATE_V_SCROLL | SC_UPDATE_H_SCROLL)) ||
+            ((scn->updated & SC_UPDATE_SELECTION) && !(scn->updated & SC_UPDATE_CONTENT))) {
+            Tip::HideUnlessNew();
+        }
         if (scn->updated & (SC_UPDATE_SELECTION | SC_UPDATE_CONTENT)) {
             UpdateBracePairs(ed);
             SetTimer(hwnd_, kOccurrenceTimer, 300, nullptr);
@@ -1178,7 +1194,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
         else if (ed->Call(SCI_AUTOCACTIVE)) ed->Call(SCI_AUTOCCANCEL);
         if (isalnum(ch) || ch == '_') ShowCallArguments(ed);
         if (ch == ' ' || ch == '\t') ShowSignature(ed);
-        else if (ch == '\n' || ch == '\r' || ch == ';') ed->Call(SCI_CALLTIPCANCEL);
+        else if (ch == '\n' || ch == '\r' || ch == ';') Tip::Hide();
         break;
     }
     case SCN_AUTOCCHARDELETED:  // Backspace while the list is open: filter again
@@ -1223,7 +1239,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
         }
         break;
     case SCN_DWELLEND:
-        ed->Call(SCI_CALLTIPCANCEL);
+        Tip::Hide();
         break;
     }
 }

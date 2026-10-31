@@ -68,6 +68,8 @@ public:
     void ToggleComment();
     void GotoLine(int line);
     void ShowDiagnosticTip(Sci_Position pos);
+    // The hint card (tip.h) for the text at pos; bytes [hltFrom, hltTo) of utf8 are its header.
+    void ShowTip(Sci_Position pos, const std::string& utf8, size_t hltFrom = 0, size_t hltTo = 0) const;
     std::string LineText(Sci_Position line) const;  // 0-based line
 
     // Breakpoints: 1-based line -> condition ("" for an ordinary one). The markers move with the text.

@@ -1329,11 +1329,9 @@ void MainWindow::ShowHint(Editor* ed, Sci_Position pos) {
     std::string debug = DebugTipText(ed, pos);
     if (card.empty() && debug.empty()) return;
     std::string tip = debug.empty() ? card : card.empty() ? debug : debug + "\n\n" + card;
-    ed->Call(SCI_CALLTIPSHOW, start, reinterpret_cast<sptr_t>(tip.c_str()));
-    if (!card.empty()) {
-        size_t from = debug.empty() ? 0 : debug.size() + 2;
-        ed->Call(SCI_CALLTIPSETHLT, from, from + header);
-    }
+    size_t from = debug.empty() ? 0 : debug.size() + 2;
+    if (card.empty()) ed->ShowTip(start, tip);
+    else ed->ShowTip(start, tip, from, from + header);
 }
 
 // After "mnemonic " is typed: a one-line reminder of the operands.
@@ -1351,6 +1349,5 @@ void MainWindow::ShowSignature(Editor* ed) {
     std::string mnemonic = before.substr(s, e - s);
     std::string sig = Hints::Signature(mnemonic);
     if (sig.empty()) return;
-    ed->Call(SCI_CALLTIPSHOW, lineStart + s, reinterpret_cast<sptr_t>(sig.c_str()));
-    ed->Call(SCI_CALLTIPSETHLT, 0, Hints::HeaderLength(sig));
+    ed->ShowTip(lineStart + s, sig, 0, Hints::HeaderLength(sig));
 }

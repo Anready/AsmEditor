@@ -6,12 +6,12 @@
 // ---- editors ----------------------------------------------------------------------------------------------------
 
 Editor* MainWindow::FindByHwnd(HWND h) const {
-    for (auto& e : editors_) if (e->hwnd() == h) return e.get();
+    for (auto& e : editors_) if (e && e->hwnd() == h) return e.get();
     return nullptr;
 }
 
 Editor* MainWindow::FindById(int id) const {
-    for (auto& e : editors_) if (e->id() == id) return e.get();
+    for (auto& e : editors_) if (e && e->id() == id) return e.get();
     return nullptr;
 }
 
@@ -89,6 +89,7 @@ bool MainWindow::ConfirmClose(int index) {
 
 void MainWindow::CloseEditor(int index) {
     if (index < 0 || index >= (int)editors_.size() || !ConfirmClose(index)) return;
+    Tip::Hide();
     StashBreakpoints(editors_[index].get());
     RemoveBackup(editors_[index].get());
     Editor* closing = editors_[index].get();
@@ -100,9 +101,13 @@ void MainWindow::CloseEditor(int index) {
     Editor* nextEd = next >= 0 ? editors_[next].get() : nullptr;
     Editor* left = Active();
     Editor* right = SplitEditor();
+    // Taken out of the list first: destroying its window sends notifications (losing the focus), and while the
+    // list is being shifted by erase it holds an empty slot.
+    std::unique_ptr<Editor> doomed = std::move(editors_[index]);
     editors_.erase(editors_.begin() + index);
     active_ = IndexOf(left);
     splitIndex_ = IndexOf(right);
+    doomed.reset();
     if (nextEd) {
         Activate(IndexOf(nextEd));
     } else if (Editor* target = Current(); target && !IsFloating(target)) {
@@ -123,7 +128,9 @@ bool MainWindow::CloseAll() {
         RemoveBackup(e.get());
     }
     usageEditor_ = linkEditor_ = nullptr;
+    auto doomed = std::move(editors_);  // destroyed while the list is already empty
     editors_.clear();
+    doomed.clear();
     splitIndex_ = -1;
     focusRight_ = false;
     Activate(-1);

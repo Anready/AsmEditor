@@ -4,6 +4,7 @@
 
 #include "mainwindow.h"
 #include "asmtools.h"
+#include "tip.h"
 
 #include <cmath>
 #include <fstream>

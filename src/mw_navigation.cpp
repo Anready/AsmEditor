@@ -24,7 +24,7 @@ bool MainWindow::SymbolUnderCaret(Editor* ed, Sci_Position pos, std::string& wor
         style == T_INSTRUCTION || style == T_KEYWORD || style == T_DIRECTIVE || style == T_COMMENT || style == T_STRING) {
         if (!quiet) {
             std::string tip = Tr(std::string("Поставьте курсор на метку, константу или макрос"));
-            ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
+            ed->ShowTip(pos, tip);
         }
         return false;
     }
@@ -304,7 +304,7 @@ bool MainWindow::OpenIncludeAt(Editor* ed, Sci_Position pos) {
         }
     }
     std::string tip = Tr(std::string("Файл не найден: ")) + Narrow(name.wstring());
-    ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
+    ed->ShowTip(pos, tip);
     return true;
 }
 
@@ -387,13 +387,13 @@ void MainWindow::GoToDefinition(Editor* ed, Sci_Position pos) {
             Editor* now = Current();
             if (now && decl->symbol.kind == Completion::Kind::Function) {
                 std::string tip = word + Tr(std::string(": внешний символ, определён вне проекта (библиотека или DLL)"));
-                now->Call(SCI_CALLTIPSHOW, now->Call(SCI_GETCURRENTPOS), reinterpret_cast<sptr_t>(tip.c_str()));
+                now->ShowTip(now->Call(SCI_GETCURRENTPOS), tip);
             }
             return;
         }
     }
     std::string tip = Tr(std::string("Определение не найдено: ")) + word;
-    ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
+    ed->ShowTip(pos, tip);
 }
 
 void MainWindow::JumpTo(const SymbolHit& hit) {
@@ -507,10 +507,18 @@ LRESULT CALLBACK MainWindow::EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
         case WM_KEYDOWN:
         case WM_KEYUP:
             if (wp == VK_CONTROL) self->UpdateLinkHover(ed, msg == WM_KEYDOWN);
+            if (msg == WM_KEYDOWN && wp == VK_ESCAPE) Tip::Hide();
             break;
         case WM_KILLFOCUS:
+            Tip::Hide();
+            self->ClearLinkHover();
+            break;
         case WM_MOUSELEAVE:
             self->ClearLinkHover();
+            break;
+        case WM_RBUTTONDOWN:
+        case WM_MOUSEWHEEL:
+            Tip::Hide();
             break;
         case WM_SETCURSOR:
             if (self->linkEditor_ == ed && LOWORD(lp) == HTCLIENT) {
@@ -519,6 +527,7 @@ LRESULT CALLBACK MainWindow::EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM l
             }
             break;
         case WM_LBUTTONDOWN:
+            Tip::Hide();
             if (wp & MK_CONTROL) {  // Ctrl+click: go to definition (instead of Scintilla's word selection)
                 Sci_Position pos = ed->Call(SCI_POSITIONFROMPOINTCLOSE, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
                 self->ClearLinkHover();
@@ -588,7 +597,7 @@ void MainWindow::ShowSnippets(Editor* ed) {
     // A hint with what each snippet is.
     std::string tip = Tr(std::string("Шаблоны кода:"));
     for (const Snippets::Snippet& s : Snippets::All()) tip += "\n" + std::string(s.name) + " — " + Tr(std::string(s.title));
-    ed->Call(SCI_CALLTIPSHOW, ed->Call(SCI_GETCURRENTPOS), reinterpret_cast<sptr_t>(tip.c_str()));
+    ed->ShowTip(ed->Call(SCI_GETCURRENTPOS), tip);
 }
 
 // Replaces the current line's leading blanks by the snippet and puts the caret at its "|" mark.
@@ -598,7 +607,7 @@ void MainWindow::InsertSnippet(Editor* ed, const std::string& name) {
         if (name == s.name) snippet = &s;
     }
     if (!snippet) return;
-    ed->Call(SCI_CALLTIPCANCEL);
+    Tip::Hide();
     std::string eol = ed->Call(SCI_GETEOLMODE) == SC_EOL_LF ? "\n" : "\r\n";
     size_t caret = 0;
     std::string text = Snippets::Expand(*snippet, eol, caret);
@@ -727,8 +736,7 @@ void MainWindow::ShowCallArguments(Editor* ed) {
     std::string tip = card.substr(0, Hints::HeaderLength(card));
     std::string args = CallArgumentsText(ed, line);
     if (!args.empty()) tip += "\n" + args;
-    ed->Call(SCI_CALLTIPSHOW, lineStart + m.position(1), reinterpret_cast<sptr_t>(tip.c_str()));
-    ed->Call(SCI_CALLTIPSETHLT, 0, Hints::HeaderLength(card));
+    ed->ShowTip(lineStart + m.position(1), tip, 0, Hints::HeaderLength(card));
 }
 
 // Ctrl+Alt+Up/Down: a caret on the line above / below the main one, at the same column.

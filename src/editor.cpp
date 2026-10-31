@@ -1,6 +1,7 @@
 #include "editor.h"
 
 #include "completion.h"
+#include "tip.h"
 
 #include <cmath>
 
@@ -458,8 +459,14 @@ void Editor::ShowDiagnosticTip(Sci_Position pos) {
         if (!tip.empty()) tip += L"\n";
         tip += std::wstring(d.severity == Severity::Error ? Tr(L"Ошибка: ") : Tr(L"Предупреждение: ")) + d.message;
     }
-    std::string utf8 = Narrow(tip);
-    Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(utf8.c_str()));
+    ShowTip(pos, Narrow(tip));
+}
+
+void Editor::ShowTip(Sci_Position pos, const std::string& utf8, size_t hltFrom, size_t hltTo) const {
+    POINT p{static_cast<LONG>(Call(SCI_POINTXFROMPOSITION, 0, pos)), static_cast<LONG>(Call(SCI_POINTYFROMPOSITION, 0, pos))};
+    int height = static_cast<int>(Call(SCI_TEXTHEIGHT, Call(SCI_LINEFROMPOSITION, pos)));
+    ClientToScreen(hwnd_, &p);
+    Tip::Show(hwnd_, p.x, p.y, p.y + height, utf8, hltFrom, hltTo);
 }
 
 // ---- editing helpers ------------------------------------------------------------------------------------------

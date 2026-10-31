@@ -378,6 +378,75 @@ public:
              Screenshot("11-debug-window", w_.GroupHost(w_.partGroup_[0]));
              w_.OnCommand(ID_DETACH_DEBUG);
              Check(w_.floatGroups_.empty() && w_.PanelShown(), "and back into the main window");
+             // With the mouse: a tab dragged onto the right third of the editor, then closed with its ✕.
+             w_.Unsplit(0);
+             for (const wchar_t* name : {L"x.asm", L"y.asm"}) {
+                 std::ofstream(project_ / name, std::ios::binary) << "; " << Narrow(name) << "\r\n";
+                 w_.OpenFile(project_ / name);
+             }
+             RedrawWindow(w_.hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+             int y = w_.FindByPath(project_ / L"x.asm");
+             RECT tab = w_.tabRects_[y], ed = w_.rcEditor_;
+             POINT from{(tab.left + tab.right) / 2, (tab.top + tab.bottom) / 2};
+             POINT to{ed.right - (ed.right - ed.left) / 6, (ed.top + ed.bottom) / 2};
+             SendMessageW(w_.hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(from.x, from.y));
+             SendMessageW(w_.hwnd_, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(from.x + 40, from.y + 40));
+             SendMessageW(w_.hwnd_, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(to.x, to.y));
+             SendMessageW(w_.hwnd_, WM_LBUTTONUP, 0, MAKELPARAM(to.x, to.y));
+             Check(w_.editors_[w_.FindByPath(project_ / L"x.asm")]->group == 1, "a tab dragged onto the right third splits");
+             return true;
+         }},
+        {"close the moved tab",
+         [this] {
+             if (!Waited(300)) return false;
+             RedrawWindow(w_.hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+             int y = w_.FindByPath(project_ / L"x.asm");
+             if (y < 0) return true;
+             RECT close = w_.closeRects_[y];
+             POINT at{(close.left + close.right) / 2, (close.top + close.bottom) / 2};
+             SendMessageW(w_.hwnd_, WM_MOUSEMOVE, 0, MAKELPARAM(at.x, at.y));
+             SendMessageW(w_.hwnd_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(at.x, at.y));
+             SendMessageW(w_.hwnd_, WM_LBUTTONUP, 0, MAKELPARAM(at.x, at.y));
+             Check(w_.FindByPath(project_ / L"x.asm") < 0 && !w_.GroupHasItems(1), "its ✕ closes it and the split goes away");
+             // The hint card of an instruction: above its line.
+             Editor* ed = w_.OpenFile(project_ / L"main.asm");
+             if (ed) {
+                 Sci_Position line = 9;  // "    sub rsp, 32"
+                 Sci_Position pos = ed->Call(SCI_POSITIONFROMLINE, line) + 4;
+                 ed->Call(SCI_SETFIRSTVISIBLELINE, 0);
+                 w_.ShowHint(ed, pos);
+             }
+             return true;
+         }},
+        {"hint card",
+         [this] {
+             if (!Waited(400)) return false;
+             Editor* ed = w_.Active();
+             RECT card{};
+             if (Tip::Handle()) GetWindowRect(Tip::Handle(), &card);
+             POINT line{0, ed ? static_cast<LONG>(ed->Call(SCI_POINTYFROMPOSITION, 0, ed->Call(SCI_POSITIONFROMLINE, 9))) : 0};
+             if (ed) ClientToScreen(ed->hwnd(), &line);
+             Check(Tip::Visible() && card.bottom <= line.y, "the hint card shows above the line");
+             // From the screen: the card is a window of its own over the editor.
+             RECT rc;
+             GetWindowRect(w_.hwnd_, &rc);
+             UnionRect(&rc, &rc, &card);
+             int width = rc.right - rc.left, height = rc.bottom - rc.top;
+             HDC screen = GetDC(nullptr);
+             HDC dc = CreateCompatibleDC(screen);
+             HBITMAP bmp = CreateCompatibleBitmap(screen, width, height);
+             HGDIOBJ old = SelectObject(dc, bmp);
+             BitBlt(dc, 0, 0, width, height, screen, rc.left, rc.top, SRCCOPY);
+             SelectObject(dc, old);
+             {
+                 Gdiplus::Bitmap image(bmp, nullptr);
+                 CLSID png = PngEncoder();
+                 Check(image.Save((out_ / L"12-hint.png").c_str(), &png, nullptr) == Gdiplus::Ok, "screenshot 12-hint");
+             }
+             DeleteObject(bmp);
+             DeleteDC(dc);
+             ReleaseDC(nullptr, screen);
+             Tip::Hide();
              return true;
          }},    };
 };

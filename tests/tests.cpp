@@ -892,6 +892,27 @@ TEST(DisassemblerRoundTrip64) {
         "cvtss2sd xmm0, xmm1", "cvtsd2ss xmm2, [rax]", "ucomisd xmm0, xmm1", "comiss xmm2, [rax]",
         "pxor xmm0, xmm0", "paddd xmm1, xmm2", "psubq xmm3, [rax]", "pcmpeqb xmm4, xmm5", "pand xmm6, xmm7",
         "por xmm8, xmm9", "pmovmskb eax, xmm1", "pshufd xmm0, xmm1, 0x1b", "punpcklbw xmm2, xmm3",
+        // x87
+        "fld dword [rax]", "fld qword [rbx+8]", "fld tword [rcx]", "fld st1", "fild dword [rax]", "fild qword [rax]",
+        "fild word [rax]", "fst qword [rax]", "fstp dword [rbx]", "fstp tword [rcx]", "fstp st1", "fist dword [rax]",
+        "fistp qword [rax]", "fisttp qword [rax]", "fadd dword [rax]", "fadd qword [rax]", "fadd st0, st2",
+        "fadd st3, st0", "faddp st1, st0", "fsub qword [rax]", "fsub st0, st1", "fsub st1, st0", "fsubr st1, st0",
+        "fsubp st1, st0", "fsubrp st1, st0", "fmul st0, st1", "fmulp st2, st0", "fdiv dword [rax]",
+        "fdiv st1, st0", "fdivr st1, st0", "fdivp st1, st0", "fdivrp st1, st0", "fiadd dword [rax]",
+        "fimul word [rax]", "fcom st1", "fcomp qword [rax]", "fcompp", "fucomi st0, st1", "fcomip st0, st2",
+        "fucompp", "fxch st1", "fchs", "fabs", "fsqrt", "fsin", "fcos", "fsincos", "fptan", "fpatan", "fprem",
+        "frndint", "fscale", "fld1", "fldz", "fldpi", "fldl2e", "fninit", "fnclex", "fnstsw ax",
+        "fnstcw word [rax]", "fldcw word [rax]", "ffree st3", "fcmovb st0, st1", "fcmovne st0, st2", "wait", "ftst", "fxam",
+        // AVX / AVX2 / FMA
+        "vmovaps ymm0, ymm1", "vmovups ymm2, [rax]", "vmovups [rbx], ymm3", "vmovapd xmm4, [rcx]", "vmovdqa ymm5, [rdx]",
+        "vmovdqu [rax], ymm6", "vmovss xmm0, [rax]", "vmovsd [rbx], xmm1", "vmovss xmm0, xmm1, xmm2",
+        "vaddps ymm0, ymm1, ymm2", "vaddpd xmm3, xmm4, [rax]", "vaddss xmm0, xmm1, xmm2", "vaddsd xmm0, xmm1, [rax]",
+        "vsubps ymm8, ymm9, ymm10", "vmulpd ymm0, ymm1, [rax+32]", "vdivss xmm1, xmm2, xmm3", "vmaxps ymm0, ymm1, ymm2",
+        "vsqrtps ymm0, ymm1", "vsqrtsd xmm0, xmm1, xmm2", "vxorps ymm0, ymm0, ymm0", "vandpd xmm1, xmm2, xmm3",
+        "vpxor ymm0, ymm1, ymm2", "vpaddd ymm3, ymm4, [rax]", "vpsubq xmm5, xmm6, xmm7", "vpcmpeqb ymm1, ymm2, ymm3",
+        "vpmulld ymm0, ymm1, ymm2", "vbroadcastss ymm0, [rax]", "vpbroadcastd ymm1, xmm2", "vzeroupper", "vzeroall",
+        "vfmadd231ps ymm0, ymm1, ymm2", "vfmadd213sd xmm0, xmm1, [rax]", "vfmsub132pd ymm3, ymm4, ymm5",
+        "vfnmadd231ss xmm1, xmm2, xmm3",
     });
 }
 

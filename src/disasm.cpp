@@ -42,6 +42,8 @@ const char* SizeName(int size) {
     return "";
 }
 
+std::string Join(const std::string& m, const std::string& a = "", const std::string& b = "", const std::string& c = "");
+
 struct Decoder {
     const uint8_t* p;
     size_t n;
@@ -182,9 +184,198 @@ struct Decoder {
 
     std::string Decode();
     std::string Decode0F();
+    std::string DecodeX87(uint8_t op);
+    std::string DecodeVex(uint8_t first);
 };
 
-std::string Join(const std::string& m, const std::string& a = "", const std::string& b = "", const std::string& c = "") {
+// AVX / AVX2 / FMA with a VEX prefix (C4 / C5): the common moves, arithmetic, logic and fused multiply-add.
+std::string Decoder::DecodeVex(uint8_t first) {
+    uint8_t b1 = Byte();
+    int map = 1, pp, vvvv, L;
+    bool w = false;
+    if (first == 0xC5) {
+        rex = static_cast<uint8_t>((b1 & 0x80) ? 0 : 4);
+        vvvv = (~b1 >> 3) & 15;
+        L = (b1 >> 2) & 1;
+        pp = b1 & 3;
+    } else {
+        uint8_t b2 = Byte();
+        rex = static_cast<uint8_t>(((b1 & 0x80) ? 0 : 4) | ((b1 & 0x40) ? 0 : 2) | ((b1 & 0x20) ? 0 : 1));
+        map = b1 & 31;
+        w = (b2 & 0x80) != 0;
+        vvvv = (~b2 >> 3) & 15;
+        L = (b2 >> 2) & 1;
+        pp = b2 & 3;
+    }
+    if (!x64) vvvv &= 7;
+    uint8_t op = Byte();
+    std::string kind = L ? "ymm" : "xmm";
+    auto V = [&](int n) { return kind + std::to_string(n); };
+    auto RM = [&]() { return mod == 3 ? V(rm) : mem; };
+    if (map == 1 && op == 0x77) return L ? "vzeroall" : "vzeroupper";
+    ReadModRM();
+    if (!ok) return "";
+    std::string sfx = pp == 0 ? "ps" : pp == 1 ? "pd" : pp == 2 ? "ss" : "sd";
+    bool scalar = pp >= 2;
+    if (map == 1) {
+        if (op == 0x10 || op == 0x11) {
+            std::string m = std::string("vmov") + (scalar ? sfx : (pp == 1 ? "upd" : "ups"));
+            if (scalar && mod == 3) {
+                return op == 0x10 ? Join(m, Xmm(reg), Xmm(vvvv), Xmm(rm)) : Join(m, Xmm(rm), Xmm(vvvv), Xmm(reg));
+            }
+            std::string r = scalar ? Xmm(reg) : V(reg);
+            return op == 0x10 ? Join(m, r, scalar ? mem : RM()) : Join(m, scalar ? mem : RM(), r);
+        }
+        if ((op == 0x28 || op == 0x29) && pp < 2) {
+            std::string m = pp == 1 ? "vmovapd" : "vmovaps";
+            return op == 0x28 ? Join(m, V(reg), RM()) : Join(m, RM(), V(reg));
+        }
+        if ((op == 0x6F || op == 0x7F) && (pp == 1 || pp == 2)) {
+            std::string m = pp == 1 ? "vmovdqa" : "vmovdqu";
+            return op == 0x6F ? Join(m, V(reg), RM()) : Join(m, RM(), V(reg));
+        }
+        static const std::map<int, std::string> arith = {{0x58, "vadd"}, {0x59, "vmul"}, {0x5C, "vsub"}, {0x5D, "vmin"},
+                                                         {0x5E, "vdiv"}, {0x5F, "vmax"}};
+        static const std::map<int, std::string> logic = {{0x54, "vand"}, {0x55, "vandn"}, {0x56, "vor"}, {0x57, "vxor"}};
+        auto a = arith.find(op);
+        if (a != arith.end()) {
+            if (scalar) return Join(a->second + sfx, Xmm(reg), Xmm(vvvv), mod == 3 ? Xmm(rm) : mem);
+            return Join(a->second + sfx, V(reg), V(vvvv), RM());
+        }
+        auto l = logic.find(op);
+        if (l != logic.end() && pp < 2) return Join(l->second + sfx, V(reg), V(vvvv), RM());
+        if (op == 0x51) {
+            if (scalar) return Join("vsqrt" + sfx, Xmm(reg), Xmm(vvvv), mod == 3 ? Xmm(rm) : mem);
+            return Join("vsqrt" + sfx, V(reg), RM());
+        }
+        if (pp == 1) {
+            static const std::map<int, std::string> packed = {
+                {0xEF, "vpxor"}, {0xDB, "vpand"}, {0xDF, "vpandn"}, {0xEB, "vpor"}, {0xFC, "vpaddb"}, {0xFD, "vpaddw"},
+                {0xFE, "vpaddd"}, {0xD4, "vpaddq"}, {0xF8, "vpsubb"}, {0xF9, "vpsubw"}, {0xFA, "vpsubd"}, {0xFB, "vpsubq"},
+                {0x74, "vpcmpeqb"}, {0x75, "vpcmpeqw"}, {0x76, "vpcmpeqd"}, {0xD5, "vpmullw"}};
+            auto p2 = packed.find(op);
+            if (p2 != packed.end()) return Join(p2->second, V(reg), V(vvvv), RM());
+        }
+    }
+    if (map == 2 && pp == 1) {
+        if (op == 0x18) return Join("vbroadcastss", V(reg), mod == 3 ? Xmm(rm) : mem);
+        if (op == 0x58) return Join("vpbroadcastd", V(reg), mod == 3 ? Xmm(rm) : mem);
+        if (op == 0x59) return Join("vpbroadcastq", V(reg), mod == 3 ? Xmm(rm) : mem);
+        if (op == 0x40) return Join("vpmulld", V(reg), V(vvvv), RM());
+        int col = op & 15, row = op >> 4;  // FMA: 9x = 132, Ax = 213, Bx = 231
+        if ((row == 9 || row == 0xA || row == 0xB) && col >= 8 && col <= 0xD) {
+            static const char* kinds[] = {"vfmadd", "vfmadd", "vfmsub", "vfmsub", "vfnmadd", "vfnmadd"};
+            std::string order = row == 9 ? "132" : row == 0xA ? "213" : "231";
+            bool isScalar = col & 1;
+            std::string t = isScalar ? (w ? "sd" : "ss") : (w ? "pd" : "ps");
+            std::string m = std::string(kinds[col - 8]) + order + t;
+            if (isScalar) return Join(m, Xmm(reg), Xmm(vvvv), mod == 3 ? Xmm(rm) : mem);
+            return Join(m, V(reg), V(vvvv), RM());
+        }
+    }
+    ok = false;
+    return "";
+}
+
+// x87 (D8–DF): memory forms by the reg field, register forms by the whole ModRM byte.
+std::string Decoder::DecodeX87(uint8_t op) {
+    ReadModRM();
+    if (!ok) return "";
+    auto st = [](int i) { return "st" + std::to_string(i); };
+    int r = reg & 7, i = rm & 7;
+    static const char* arith[] = {"fadd", "fmul", "fcom", "fcomp", "fsub", "fsubr", "fdiv", "fdivr"};
+    static const char* intArith[] = {"fiadd", "fimul", "ficom", "ficomp", "fisub", "fisubr", "fidiv", "fidivr"};
+    if (mod != 3) {
+        switch (op) {
+        case 0xD8: return std::string(arith[r]) + " dword " + mem;
+        case 0xDC: return std::string(arith[r]) + " qword " + mem;
+        case 0xDA: return std::string(intArith[r]) + " dword " + mem;
+        case 0xDE: return std::string(intArith[r]) + " word " + mem;
+        case 0xD9: {
+            static const char* n[] = {"fld dword", "", "fst dword", "fstp dword", "fldenv", "fldcw word", "fnstenv", "fnstcw word"};
+            if (!*n[r]) break;
+            return std::string(n[r]) + " " + mem;
+        }
+        case 0xDB: {
+            static const char* n[] = {"fild dword", "fisttp dword", "fist dword", "fistp dword", "", "fld tword", "", "fstp tword"};
+            if (!*n[r]) break;
+            return std::string(n[r]) + " " + mem;
+        }
+        case 0xDD: {
+            static const char* n[] = {"fld qword", "fisttp qword", "fst qword", "fstp qword", "frstor", "", "fnsave", "fnstsw word"};
+            if (!*n[r]) break;
+            return std::string(n[r]) + " " + mem;
+        }
+        case 0xDF: {
+            static const char* n[] = {"fild word", "fisttp word", "fist word", "fistp word", "fbld tword", "fild qword", "fbstp tword", "fistp qword"};
+            return std::string(n[r]) + " " + mem;
+        }
+        }
+        ok = false;
+        return "";
+    }
+    uint8_t m = static_cast<uint8_t>(0xC0 | (r << 3) | i);
+    switch (op) {
+    case 0xD8:
+        if (r == 2 || r == 3) return std::string(arith[r]) + " " + st(i);
+        return std::string(arith[r]) + " st0, " + st(i);
+    case 0xD9: {
+        if (r == 0) return "fld " + st(i);
+        if (r == 1) return "fxch " + st(i);
+        static const std::map<int, const char*> n = {
+            {0xD0, "fnop"}, {0xE0, "fchs"}, {0xE1, "fabs"}, {0xE4, "ftst"}, {0xE5, "fxam"}, {0xE8, "fld1"},
+            {0xE9, "fldl2t"}, {0xEA, "fldl2e"}, {0xEB, "fldpi"}, {0xEC, "fldlg2"}, {0xED, "fldln2"}, {0xEE, "fldz"},
+            {0xF0, "f2xm1"}, {0xF1, "fyl2x"}, {0xF2, "fptan"}, {0xF3, "fpatan"}, {0xF4, "fxtract"}, {0xF5, "fprem1"},
+            {0xF6, "fdecstp"}, {0xF7, "fincstp"}, {0xF8, "fprem"}, {0xF9, "fyl2xp1"}, {0xFA, "fsqrt"}, {0xFB, "fsincos"},
+            {0xFC, "frndint"}, {0xFD, "fscale"}, {0xFE, "fsin"}, {0xFF, "fcos"}};
+        auto it = n.find(m);
+        if (it != n.end()) return it->second;
+        break;
+    }
+    case 0xDA: {
+        static const char* n[] = {"fcmovb", "fcmove", "fcmovbe", "fcmovu"};
+        if (r < 4) return std::string(n[r]) + " st0, " + st(i);
+        if (m == 0xE9) return "fucompp";
+        break;
+    }
+    case 0xDB: {
+        static const char* n[] = {"fcmovnb", "fcmovne", "fcmovnbe", "fcmovnu"};
+        if (r < 4) return std::string(n[r]) + " st0, " + st(i);
+        if (m == 0xE2) return "fnclex";
+        if (m == 0xE3) return "fninit";
+        if (r == 5) return "fucomi st0, " + st(i);
+        if (r == 6) return "fcomi st0, " + st(i);
+        break;
+    }
+    case 0xDC: {
+        static const char* n[] = {"fadd", "fmul", "", "", "fsubr", "fsub", "fdivr", "fdiv"};
+        if (*n[r]) return std::string(n[r]) + " " + st(i) + ", st0";
+        break;
+    }
+    case 0xDD:
+        if (r == 0) return "ffree " + st(i);
+        if (r == 2) return "fst " + st(i);
+        if (r == 3) return "fstp " + st(i);
+        if (r == 4) return "fucom " + st(i);
+        if (r == 5) return "fucomp " + st(i);
+        break;
+    case 0xDE: {
+        static const char* n[] = {"faddp", "fmulp", "", "", "fsubrp", "fsubp", "fdivrp", "fdivp"};
+        if (m == 0xD9) return "fcompp";
+        if (*n[r]) return std::string(n[r]) + " " + st(i) + ", st0";
+        break;
+    }
+    case 0xDF:
+        if (m == 0xE0) return "fnstsw ax";
+        if (r == 5) return "fucomip st0, " + st(i);
+        if (r == 6) return "fcomip st0, " + st(i);
+        break;
+    }
+    ok = false;
+    return "";
+}
+
+std::string Join(const std::string& m, const std::string& a, const std::string& b, const std::string& c) {
     std::string s = m;
     if (!a.empty()) s += " " + a;
     if (!b.empty()) s += ", " + b;
@@ -212,6 +403,10 @@ std::string Decoder::Decode() {
     std::string pre = lock ? "lock " : "";
 
     if (op == 0x0F) return pre + Decode0F();
+    if (op >= 0xD8 && op <= 0xDF) return DecodeX87(op);
+    // VEX: always in 64-bit mode; in 32-bit mode only when the next byte could not be a ModRM of les/lds memory
+    if ((op == 0xC4 || op == 0xC5) && (x64 || (i < n && (p[i] & 0xC0) == 0xC0))) return DecodeVex(op);
+    if (op == 0x9B) return "wait";
     if (op < 0x40 && (op & 7) < 6) {  // add / or / adc / sbb / and / sub / xor / cmp
         const char* m = kGroup1[op >> 3];
         switch (op & 7) {

@@ -1284,6 +1284,116 @@ TEST(DebuggerAttachAndDetach) {
     CloseHandle(pi.hThread);
 }
 
+const char* kWindowProgram =
+    "default rel\n"                       // 1
+    "extern GetModuleHandleA\n"           // 2
+    "extern RegisterClassA\n"             // 3
+    "extern CreateWindowExA\n"            // 4
+    "extern PostMessageA\n"               // 5
+    "extern GetMessageA\n"                // 6
+    "extern DispatchMessageA\n"           // 7
+    "extern PostQuitMessage\n"            // 8
+    "extern DefWindowProcA\n"             // 9
+    "global main\n"                       // 10
+    "section .data\n"                     // 11
+    "    cls db \"AsmTestWnd\", 0\n"      // 12
+    "section .bss\n"                      // 13
+    "    wc resb 72\n"                    // 14
+    "    msg resb 48\n"                   // 15
+    "    hits resq 1\n"                   // 16
+    "    inst resq 1\n"                   // 17
+    "section .text\n"                     // 18
+    "main:\n"                             // 19
+    "    sub rsp, 104\n"                  // 20
+    "    xor ecx, ecx\n"                  // 21
+    "    call GetModuleHandleA\n"         // 22
+    "    mov [inst], rax\n"               // 23
+    "    mov [wc+24], rax\n"              // 24
+    "    lea rax, [wndproc]\n"            // 25
+    "    mov [wc+8], rax\n"               // 26
+    "    lea rax, [cls]\n"                // 27
+    "    mov [wc+64], rax\n"              // 28
+    "    lea rcx, [wc]\n"                 // 29
+    "    call RegisterClassA\n"           // 30
+    "    xor ecx, ecx\n"                  // 31
+    "    lea rdx, [cls]\n"                // 32
+    "    lea r8, [cls]\n"                 // 33
+    "    xor r9d, r9d\n"                  // 34
+    "    mov qword [rsp+32], 0\n"         // 35
+    "    mov qword [rsp+40], 0\n"         // 36
+    "    mov qword [rsp+48], 0\n"         // 37
+    "    mov qword [rsp+56], 0\n"         // 38
+    "    mov qword [rsp+64], -3\n"        // 39  HWND_MESSAGE: a message-only window
+    "    mov qword [rsp+72], 0\n"         // 40
+    "    mov rax, [inst]\n"               // 41
+    "    mov [rsp+80], rax\n"             // 42
+    "    mov qword [rsp+88], 0\n"         // 43
+    "    call CreateWindowExA\n"          // 44
+    "    mov rcx, rax\n"                  // 45
+    "    mov edx, 0x400\n"                // 46  WM_USER
+    "    xor r8d, r8d\n"                  // 47
+    "    xor r9d, r9d\n"                  // 48
+    "    call PostMessageA\n"             // 49
+    ".loop:\n"                            // 50
+    "    lea rcx, [msg]\n"                // 51
+    "    xor edx, edx\n"                  // 52
+    "    xor r8d, r8d\n"                  // 53
+    "    xor r9d, r9d\n"                  // 54
+    "    call GetMessageA\n"              // 55
+    "    test eax, eax\n"                 // 56
+    "    jle .done\n"                     // 57
+    "    lea rcx, [msg]\n"                // 58
+    "    call DispatchMessageA\n"         // 59
+    "    jmp .loop\n"                     // 60
+    ".done:\n"                            // 61
+    "    add rsp, 104\n"                  // 62
+    "    xor eax, eax\n"                  // 63
+    "    ret\n"                           // 64
+    "wndproc:\n"                          // 65
+    "    cmp edx, 0x400\n"                // 66
+    "    jne .def\n"                      // 67
+    "    inc qword [hits]\n"              // 68
+    "    sub rsp, 40\n"                   // 69
+    "    xor ecx, ecx\n"                  // 70
+    "    call PostQuitMessage\n"          // 71
+    "    add rsp, 40\n"                   // 72
+    "    xor eax, eax\n"                  // 73
+    "    ret\n"                           // 74
+    ".def:\n"                             // 75
+    "    jmp DefWindowProcA\n";           // 76
+
+// A program with a window: a breakpoint in its window procedure, called by user32 from DispatchMessage.
+TEST(DebuggerWindowProcedure) {
+    auto exe = BuildProgram("window", kWindowProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, {{Debugger::Key(src), {{68, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(15000));
+    if (host.stops.empty()) return;
+    CHECK_EQ(host.stops.back()->location.line, 68);
+    CHECK_EQ(d.Context().Rdx & 0xFFFFFFFF, 0x400ull);  // the message
+    auto frames = d.CallStack();
+    bool user32 = false, dispatch = false;
+    for (const auto& f : frames) {
+        user32 |= Lower(f.function).find(L"user32") != std::wstring::npos;
+        dispatch |= f.location.line == 59;
+    }
+    CHECK(user32);    // called by Windows
+    CHECK(dispatch);  // from DispatchMessageA in main's message loop
+    for (const auto& f : frames) printf("    %s %d\n", Narrow(f.function).c_str(), f.location.line);
+    d.SetBreakpoints(src, {});
+    d.Continue();
+    CHECK(host.Wait(15000));
+    CHECK(host.exited);
+    CHECK_EQ(host.exitCode, 0ul);
+}
+
 // The profiler counts how often each line ran and how many instructions it took.
 TEST(DebuggerProfiler) {
     auto exe = BuildProgram("counter", kCounterProgram);

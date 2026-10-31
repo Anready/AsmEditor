@@ -94,6 +94,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_CHECK_SOLUTION, L"Проверить решение задачи", L"Ctrl+Shift+T"},
         {ID_NEW_EXERCISE, L"Новая учебная задача…", L""},
         {ID_LESSONS, L"Уроки…", L""},
+        {ID_LOAD_TASKS, L"Загрузить задачи преподавателя…", L""},
         {ID_EXERCISE_HINT, L"Подсказка к задаче", L"Ctrl+Shift+H"},
         {ID_GROUP_SUMMARY, L"Сводка по группе (из файлов результатов)…", L""},
         {ID_EXPORT_RESULTS, L"Экспорт результатов задач…", L""},

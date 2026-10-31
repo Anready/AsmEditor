@@ -174,6 +174,7 @@ private:
     void CheckSolution();
     void NewExercise();
     void OpenLesson();
+    void LoadTeacherTasks();  // Run → load a task file (kept in the settings folder, loaded at start)
     void ExerciseHint();
     void GroupSummary();
     std::map<std::string, size_t> hintsShown_;  // exercise -> hints given

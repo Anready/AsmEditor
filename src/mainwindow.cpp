@@ -68,6 +68,15 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
 
     ShowWindow(hwnd_, settings->maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(hwnd_);
+    // A teacher's task files loaded earlier (Run → Load a teacher's tasks).
+    std::error_code ec;
+    for (fs::directory_iterator it(Settings::Dir() / L"tasks", ec), end; !ec && it != end; it.increment(ec)) {
+        std::ifstream in(it->path(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        std::vector<std::string> errors;
+        Exercises::AddCustom(Exercises::ParseTasks(ss.str(), errors));
+    }
     return true;
 }
 

@@ -1691,8 +1691,8 @@ const char* kReadOneNumber =
     "    ret\r\n";
 }
 
-const std::vector<Exercise>& All() {
-    static const std::vector<Exercise> list = [] {
+std::vector<Exercise>& Registry() {
+    static std::vector<Exercise> list = [] {
         std::vector<Exercise> v;
         auto add = [&](std::string id, std::wstring title, std::string description, std::string inFormat,
                        std::string body, std::vector<Test> tests) {
@@ -2099,6 +2099,122 @@ std::vector<std::string> CheckRequirements(const Exercise& e, const std::string&
     return problems;
 }
 
+const std::vector<Exercise>& All() {
+    return Registry();
+}
+
+std::wstring Title(const Exercise& e, bool english) {
+    if (!english) return e.title;
+    if (!e.titleEn.empty()) return Widen(e.titleEn);
+    return Widen(TrEnglish(Narrow(e.title)));
+}
+
+void AddCustom(const std::vector<Exercise>& tasks) {
+    auto& list = Registry();
+    for (const Exercise& t : tasks) {
+        auto it = std::find_if(list.begin(), list.end(), [&](const Exercise& e) { return e.id == t.id; });
+        if (it != list.end()) *it = t;
+        else list.push_back(t);
+    }
+}
+
+// A task file of a teacher:
+//   [task sum3]
+//   title = Сумма трёх чисел          (title.en = …)
+//   description = Прочитайте три числа… (one line each; description.en = …)
+//   format = %lld %lld %lld           (scanf format of the input: %lld or %s, up to 3)
+//   test = 1 2 3 => 6                 (input => expected output, as many as needed)
+//   must = add / forbid = div / max-instructions = 500 / hint = …
+// Lines starting with # are comments.
+std::vector<Exercise> ParseTasks(const std::string& text, std::vector<std::string>& errors) {
+    std::vector<Exercise> out;
+    std::istringstream in(text.rfind("\xEF\xBB\xBF", 0) == 0 ? text.substr(3) : text);
+    std::string line, format;
+    int no = 0;
+    Exercise* cur = nullptr;
+    auto finish = [&] {
+        if (!cur) return;
+        if (cur->tests.empty()) errors.push_back(Tr(std::string("задача ")) + cur->id + Tr(std::string(": нет ни одного test = …")));
+        if (cur->title.empty()) cur->title = Widen(cur->id);
+        // The starter: read the input with scanf into a, b, c (numbers) or input (a word), print rdx.
+        std::vector<std::string> conv;
+        for (size_t i = format.find('%'); i != std::string::npos; i = format.find('%', i + 1)) {
+            if (format.compare(i, 4, "%lld") == 0) conv.push_back("q");
+            else if (format.compare(i, 2, "%s") == 0 || format.compare(i, 4, "%99s") == 0) conv.push_back("s");
+        }
+        if (conv.empty() || conv.size() > 3) {
+            errors.push_back(Tr(std::string("задача ")) + cur->id + Tr(std::string(": format — от одного до трёх %lld или %s")));
+            conv = {"q"};
+            format = "%lld";
+        }
+        std::string bss = "section .bss\r\n", reads;
+        const char* regs[] = {"rdx", "r8", "r9"};
+        const char* names[] = {"a", "b", "c"};
+        for (size_t k = 0; k < conv.size(); k++) {
+            std::string name = conv[k] == "s" ? std::string("input") + (k ? std::to_string(k + 1) : "") : names[k];
+            bss += "    " + name + std::string(8 - std::min<size_t>(name.size(), 7), ' ') + (conv[k] == "s" ? "resb 100" : "resq 1") + "\r\n";
+            reads += "    lea     " + std::string(regs[k]) + ", [" + name + "]\r\n";
+        }
+        std::string body = bss + "\r\nsection .text\r\nmain:\r\n    sub     rsp, 40\r\n    lea     rcx, [fmt_in]\r\n" + reads +
+                           "    call    scanf\r\n\r\n    ; TODO: вычислите ответ в rdx\r\n    xor     edx, edx\r\n\r\n"
+                           "    lea     rcx, [fmt_out]\r\n    call    printf\r\n    add     rsp, 40\r\n    xor     eax, eax\r\n    ret\r\n";
+        std::string fmt;
+        for (char c : format) fmt += c == '"' ? '\'' : c;
+        cur->starter = Starter(cur->id, cur->description, fmt, body);
+    };
+    while (std::getline(in, line)) {
+        no++;
+        line = RTrim(line);
+        std::string t = LTrim(line);
+        if (t.empty() || t[0] == '#') continue;
+        if (t[0] == '[') {
+            finish();
+            std::string head = t.substr(1, t.find(']') == std::string::npos ? std::string::npos : t.find(']') - 1);
+            std::istringstream words(head);
+            std::string kw, id;
+            std::string extra;
+            words >> kw >> id >> extra;
+            if (kw != "task" || id.empty() || !extra.empty() || id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") != std::string::npos) {
+                errors.push_back(Tr(std::string("строка ")) + std::to_string(no) + Tr(std::string(": ожидалось [task имя] (латиница, цифры, _ -)")));
+                cur = nullptr;
+                continue;
+            }
+            out.push_back(Exercise{});
+            cur = &out.back();
+            cur->id = id;
+            format = "%lld";
+            continue;
+        }
+        size_t eq = t.find('=');
+        if (!cur || eq == std::string::npos) {
+            errors.push_back(Tr(std::string("строка ")) + std::to_string(no) + Tr(std::string(": ожидалось «ключ = значение» внутри [task …]")));
+            continue;
+        }
+        std::string key = RTrim(t.substr(0, eq)), value = LTrim(t.substr(eq + 1));
+        if (key == "title") cur->title = Widen(value);
+        else if (key == "title.en") cur->titleEn = value;
+        else if (key == "description") cur->description += (cur->description.empty() ? "" : "\n") + value;
+        else if (key == "description.en") cur->descriptionEn += (cur->descriptionEn.empty() ? "" : "\n") + value;
+        else if (key == "format") format = value;
+        else if (key == "must") cur->mustUse.push_back(LowerAscii(value));
+        else if (key == "forbid") cur->mustNotUse.push_back(LowerAscii(value));
+        else if (key == "hint") cur->hints.push_back(value);
+        else if (key == "max-instructions") cur->maxInstructions = strtoull(value.c_str(), nullptr, 10);
+        else if (key == "test") {
+            size_t arrow = value.find("=>");
+            if (arrow == std::string::npos) {
+                errors.push_back(Tr(std::string("строка ")) + std::to_string(no) + Tr(std::string(": test = ввод => вывод")));
+                continue;
+            }
+            cur->tests.push_back({RTrim(value.substr(0, arrow)), LTrim(value.substr(arrow + 2))});
+        } else {
+            errors.push_back(Tr(std::string("строка ")) + std::to_string(no) + Tr(std::string(": неизвестный ключ ")) + key);
+        }
+    }
+    finish();
+    return out;
+}
+
 const Exercise* Find(const std::string& id) {
     for (const Exercise& e : All()) {
         if (e.id == id) return &e;
@@ -2423,7 +2539,7 @@ std::string ExportCsv(const std::map<std::string, Entry>& results, const std::st
     for (const Exercises::Exercise& ex : Exercises::All()) {
         auto it = results.find(ex.id);
         Entry e = it == results.end() ? Entry{} : it->second;
-        std::string title = Narrow(english ? std::wstring(Tr(ex.title.c_str())) : ex.title);
+        std::string title = Narrow(Exercises::Title(ex, english));
         out += field(student) + ";" + ex.id + ";" + field(title) + ";" + (e.solved ? (english ? "yes" : "да") : (english ? "no" : "нет")) +
                ";" + std::to_string(e.bestPassed) + "/" + std::to_string(ex.tests.size()) + ";" + std::to_string(e.attempts) +
                ";" + e.firstSolved + ";" + e.last + "\r\n";

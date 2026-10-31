@@ -564,7 +564,7 @@ void MainWindow::CheckSolution() {
     StopProgram();
     ClearPane(Pane::Output);
     ShowPane(Pane::Output);
-    Print(Tr(std::string("Проверка задачи ")) + "«" + Narrow(Tr(ex->title.c_str())) + "»\n", Out::Info);
+    Print(Tr(std::string("Проверка задачи ")) + "«" + Narrow(Exercises::Title(*ex, English())) + "»\n", Out::Info);
     building_ = true;
     InvalidateChrome();
     BuildPlan plan;
@@ -659,7 +659,7 @@ void MainWindow::NewExercise() {
         const std::string& d = English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description;
         std::string first = d.substr(0, d.find('\n'));
         bool solved = results.count(e.id) && results[e.id].solved;
-        items.push_back(std::wstring(solved ? L"✓ " : L"") + Tr(e.title.c_str()) + L"\t" + Widen(first));
+        items.push_back(std::wstring(solved ? L"✓ " : L"") + Exercises::Title(e, English()) + L"\t" + Widen(first));
     }
     auto pick = PickFromList(hwnd_, Tr(L"Учебные задачи"), items, Tr(L"Название задачи…"));
     if (!pick) return;
@@ -696,7 +696,7 @@ void MainWindow::NewExercise() {
         conditions += "  " + Tr(std::string("не больше инструкций на последнем тесте: ")) + std::to_string(e.maxInstructions) + "\n";
     }
     if (!conditions.empty()) conditions = Tr(std::string("Условия:")) + "\n" + conditions;
-    Print(Narrow(Tr(e.title.c_str())) + "\n" + (English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description) +
+    Print(Narrow(Exercises::Title(e, English())) + "\n" + (English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description) +
               "\n" + conditions + "\n" +
               Tr(std::string("Напишите решение и нажмите Ctrl+Shift+T — редактор соберёт программу и проверит её на тестах.")) +
               "\n", Out::Info);
@@ -764,6 +764,39 @@ void MainWindow::GroupSummary() {
     }
     Print(Tr(std::string("Сводка по группе сохранена: ")) + Narrow(out.data()) + " (" + Tr(std::string("файлов: ")) +
               std::to_string(paths.size()) + ")\n", Out::Success);
+}
+
+void MainWindow::LoadTeacherTasks() {
+    std::vector<wchar_t> buf(MAX_PATH * 4, L'\0');
+    OPENFILENAMEW ofn{sizeof(ofn)};
+    ofn.hwndOwner = hwnd_;
+    std::wstring filter = std::wstring(Tr(L"Файл задач (.txt)")) + L"|*.txt|*.*|*.*|";
+    std::replace(filter.begin(), filter.end(), L'|', L'\0');
+    ofn.lpstrFilter = filter.c_str();
+    ofn.lpstrFile = buf.data();
+    ofn.nMaxFile = static_cast<DWORD>(buf.size());
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&ofn)) return;
+    fs::path file = buf.data();
+    std::ifstream in(file, std::ios::binary);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::vector<std::string> errors;
+    auto tasks = Exercises::ParseTasks(ss.str(), errors);
+    ShowPane(Pane::Output);
+    if (!errors.empty()) {
+        std::string text = Tr(std::string("Ошибки в файле задач:")) + "\n";
+        for (const std::string& e : errors) text += "  " + e + "\n";
+        Print(text, Out::Error);
+    }
+    if (tasks.empty()) return;
+    Exercises::AddCustom(tasks);
+    std::error_code ec;
+    fs::create_directories(Settings::Dir() / L"tasks", ec);
+    fs::copy_file(file, Settings::Dir() / L"tasks" / file.filename(), fs::copy_options::overwrite_existing, ec);
+    Print(Tr(std::string("Загружено задач: ")) + std::to_string(tasks.size()) + ". " +
+              Tr(std::string("Задачи появятся в списке «Новая учебная задача» и будут загружаться при каждом запуске.")) + "\n",
+          Out::Success);
 }
 
 fs::path MainWindow::ResultsFile() {

@@ -1714,6 +1714,45 @@ TEST(ExerciseInstructionLimit) {
     if (counter) CHECK_EQ(Debugger::CountInstructions(*counter, "", 30000).value_or(0), 43ull);
 }
 
+// A teacher's task file: parsed, its starter builds, a solution passes its tests.
+TEST(TeacherTaskFile) {
+    std::string file =
+        "# tasks of group 101\n"
+        "[task sum3]\n"
+        "title = Сумма трёх чисел\n"
+        "title.en = Sum of three numbers\n"
+        "description = Прочитайте три числа и напечатайте их сумму.\n"
+        "description.en = Read three numbers and print their sum.\n"
+        "format = %lld %lld %lld\n"
+        "test = 1 2 3 => 6\n"
+        "test = -5 5 10 => 10\n"
+        "must = add\n"
+        "hint = Сложите a, b и c в rdx.\n"
+        "max-instructions = 100\n"
+        "[task bad name]\n"
+        "oops\n";
+    std::vector<std::string> errors;
+    auto tasks = Exercises::ParseTasks(file, errors);
+    CHECK_EQ(tasks.size(), 1u);
+    CHECK_EQ(errors.size(), 2u);  // the bad header and the line without "="
+    if (tasks.empty()) return;
+    const Exercises::Exercise& t = tasks[0];
+    CHECK(t.id == "sum3" && t.tests.size() == 2 && t.mustUse.size() == 1 && t.maxInstructions == 100);
+    CHECK_EQ(Narrow(Exercises::Title(t, true)), std::string("Sum of three numbers"));
+    CHECK_EQ(Exercises::IdFromSource(t.starter), std::string("sum3"));
+    std::string source = Replace(t.starter, "    ; TODO: вычислите ответ в rdx\r\n    xor     edx, edx\r\n",
+                                 Code("mov rdx, [a]\nadd rdx, [b]\nadd rdx, [c]"));
+    CHECK(Exercises::CheckRequirements(t, source).empty());
+    auto exe = BuildProgram("sum3", source);
+    if (!exe) return;
+    for (const Exercises::Test& test : t.tests) {
+        std::string out;
+        CHECK(RunExe(*exe, test.input, out) && Exercises::OutputMatches(out, test.expected));
+    }
+    auto count = Debugger::CountInstructions(*exe, t.tests.back().input, 30000);
+    CHECK(count && *count <= t.maxInstructions);
+}
+
 TEST(LessonsAndResults) {
     CHECK(Lessons::All().size() >= 9u);
     for (const Lessons::Lesson& l : Lessons::All()) {

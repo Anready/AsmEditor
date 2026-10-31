@@ -157,6 +157,7 @@ struct Exercise {
     std::vector<std::string> mustNotUse;  // instructions it may not contain
     std::vector<std::string> hints;       // shown one by one on request (Russian; the UI translates)
     std::string descriptionEn;
+    std::string titleEn;  // a teacher's task (built-in titles go through Tr)
     uint64_t maxInstructions = 0;         // on the last test, counted by the tracing profiler (0: no limit)
 };
 // The starter file in the UI language (the task text in its comments).
@@ -165,6 +166,10 @@ std::string StarterText(const Exercise& e, bool english);
 std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source);
 const std::vector<Exercise>& All();
 const Exercise* Find(const std::string& id);
+// A teacher's task file (UTF-8 text, see ParseTasks in asmtools.cpp): the tasks, and the problems with line numbers.
+std::vector<Exercise> ParseTasks(const std::string& text, std::vector<std::string>& errors);
+void AddCustom(const std::vector<Exercise>& tasks);  // after the built-in ones; a task with the same id is replaced
+std::wstring Title(const Exercise& e, bool english);
 // "; task: sum" in the first lines of a solution names its exercise.
 std::string IdFromSource(const std::string& text);
 // Output matches when both are equal after collapsing whitespace.

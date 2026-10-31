@@ -13,7 +13,8 @@ build.bat package      ещё и AsmEditor-portable.zip
 build.bat installer    ещё и установщик Inno Setup 6 (out\installer)
 build.bat nobuild …    цели без пересборки exe (например, после подписи)
 ```
-Цели можно перечислять: `build.bat test uitest package`. CI — `.github/workflows/build.yml`; релиз —
+Цели можно перечислять: `build.bat test uitest package`. CI —
+[GitHub Actions](https://github.com/Anready/AsmEditor/actions) (`.github/workflows/build.yml`); релиз —
 `.github/workflows/release.yml` по тегу `v<версия из src/version.h>` (сборка, тесты, необязательная подпись
 кода по секретам `SIGNING_CERT`/`SIGNING_PASSWORD`, zip и установщик в GitHub Release).
 

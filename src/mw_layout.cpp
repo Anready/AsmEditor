@@ -4,6 +4,10 @@ namespace {
 
 // Width of the mark bar beside each editor's scrollbar.
 constexpr int kMarkBarWidth = 10;
+// Islands: the gap between the panels, the inset of the windows inside them and the corner radius (96-dpi pixels).
+constexpr int kIslandGap = 6;
+constexpr int kIslandPadding = 4;
+constexpr int kIslandRadius = 10;
 }
 
 // ---- layout & painting ------------------------------------------------------------------------------------------
@@ -13,45 +17,59 @@ void MainWindow::Layout() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     int W = rc.right, H = rc.bottom;
-    int tb = S(38), sb = S(24), header = S(28), split = S(4), tabsH = S(32), inputH = S(32), mark = S(kMarkBarWidth);
+    // The panels are rounded islands on the window background, as in the IntelliJ New UI: g is the gap between
+    // them (it is also the splitter you drag), p keeps the child windows clear of the rounded corners.
+    int tb = S(40), sb = S(26), header = S(32), g = S(kIslandGap), p = S(kIslandPadding), tabsH = S(34),
+        inputH = S(36), mark = S(kMarkBarWidth);
     int treeW = std::clamp(S(settings_->treeWidth), S(120), std::max(S(120), W - S(300)));
     int bodyTop = tb, bodyBottom = H - sb;
     int consoleH = std::clamp(S(settings_->consoleHeight), S(90), std::max(S(90), bodyBottom - bodyTop - S(140)));
+    islands_.clear();
 
     rcToolbar_ = {0, 0, W, tb};
     rcStatus_ = {0, bodyBottom, W, H};
-    rcTreeHeader_ = {0, bodyTop, treeW, bodyTop + header};
-    rcRefresh_ = leftTab_ == LeftTab::Project ? RECT{treeW - S(30), bodyTop + S(2), treeW - S(6), bodyTop + header - S(2)} : RECT{};
-    rcSplitV_ = {treeW, bodyTop, treeW + split, bodyBottom};
-    int x0 = treeW + split;
+    RECT treeIsland{g, bodyTop, g + treeW, bodyBottom};
+    islands_.push_back(treeIsland);
+    rcTreeHeader_ = {treeIsland.left, bodyTop, treeIsland.right, bodyTop + header};
+    rcRefresh_ = leftTab_ == LeftTab::Project
+                     ? RECT{treeIsland.right - S(32), bodyTop + S(4), treeIsland.right - S(8), bodyTop + header - S(4)}
+                     : RECT{};
+    rcSplitV_ = {treeIsland.right, bodyTop, treeIsland.right + g, bodyBottom};
+    int x0 = rcSplitV_.right;
 
     // Debug panel on the right: tabs (registers, call stack, watches, disassembly) above the memory view.
     bool panel = DebugPanelVisible();
     int debugW = panel ? std::clamp(S(settings_->debugWidth), S(220), std::max(S(220), W - x0 - S(300))) : 0;
-    int x1 = panel ? W - debugW - split : W;  // right edge of the editor column
-    rcSplitD_ = panel ? RECT{x1, bodyTop, x1 + split, bodyBottom} : RECT{};
-    rcDebug_ = panel ? RECT{x1 + split, bodyTop, W, bodyBottom} : RECT{};
+    int x1 = panel ? W - g - debugW - g : W - g;  // right edge of the editor column
+    rcSplitD_ = panel ? RECT{x1, bodyTop, x1 + g, bodyBottom} : RECT{};
+    rcDebug_ = panel ? RECT{x1 + g, bodyTop, W - g, bodyBottom} : RECT{};
     int regsBottom = rcDebug_.top + header + (bodyBottom - bodyTop - header) * 58 / 100;
-    rcDebugHeader_ = {rcDebug_.left, bodyTop, W, bodyTop + header};
-    rcWatchRow_ = {rcDebug_.left, rcDebugHeader_.bottom, W, rcDebugHeader_.bottom + inputH};
-    rcMemHeader_ = {rcDebug_.left, regsBottom, W, regsBottom + header};
-    rcMemFormat_ = {W - S(110), rcMemHeader_.top + S(3), W - S(8), rcMemHeader_.bottom - S(3)};
-    rcMemRow_ = {rcDebug_.left, rcMemHeader_.bottom, W, rcMemHeader_.bottom + inputH};
+    rcDebugHeader_ = {rcDebug_.left, bodyTop, rcDebug_.right, bodyTop + header};
+    rcWatchRow_ = {rcDebug_.left, rcDebugHeader_.bottom, rcDebug_.right, rcDebugHeader_.bottom + inputH};
+    rcMemHeader_ = {rcDebug_.left, regsBottom + g, rcDebug_.right, regsBottom + g + header};
+    rcMemFormat_ = {rcDebug_.right - S(110), rcMemHeader_.top + S(4), rcDebug_.right - S(8), rcMemHeader_.bottom - S(4)};
+    rcMemRow_ = {rcDebug_.left, rcMemHeader_.bottom, rcDebug_.right, rcMemHeader_.bottom + inputH};
+    if (panel) {
+        islands_.push_back({rcDebug_.left, bodyTop, rcDebug_.right, regsBottom});
+        islands_.push_back({rcDebug_.left, rcMemHeader_.top, rcDebug_.right, bodyBottom});
+    }
 
-    rcSplitH_ = {x0, bodyBottom - consoleH - split, x1, bodyBottom - consoleH};
-    rcTabs_ = {x0, bodyTop, x1, bodyTop + tabsH};
-    rcEditor_ = {x0, bodyTop + tabsH, x1, rcSplitH_.top};
+    rcSplitH_ = {x0, bodyBottom - consoleH - g, x1, bodyBottom - consoleH};
+    islands_.push_back({x0, bodyTop, x1, rcSplitH_.top});
+    islands_.push_back({x0, rcSplitH_.bottom, x1, bodyBottom});
+    rcTabs_ = {x0 + p, bodyTop, x1 - p, bodyTop + tabsH};
+    rcEditor_ = {x0 + p, bodyTop + tabsH, x1 - p, rcSplitH_.top - p};
     Editor* right = SplitEditor();
     if (right) {  // two editors side by side
-        int mid = (x0 + x1) / 2;
-        rcEditor2_ = {mid + split / 2, rcEditor_.top, x1, rcEditor_.bottom};
+        int split = S(5), mid = (rcEditor_.left + rcEditor_.right) / 2;
+        rcEditor2_ = {mid + split / 2, rcEditor_.top, rcEditor_.right, rcEditor_.bottom};
         rcSplitE_ = {mid - split / 2, rcEditor_.top, mid + split / 2, rcEditor_.bottom};
         rcEditor_.right = rcSplitE_.left;
     } else {
         rcEditor2_ = rcSplitE_ = {};
     }
     rcConsoleHeader_ = {x0, rcSplitH_.bottom, x1, rcSplitH_.bottom + header};
-    rcClear_ = {x1 - S(90), rcConsoleHeader_.top, x1 - S(8), rcConsoleHeader_.bottom};
+    rcClear_ = {x1 - S(90), rcConsoleHeader_.top, x1 - S(12), rcConsoleHeader_.bottom};
 
     bool watchTab = panel && debugTab_ == DebugTab::Watch;
     for (HWND h : {memView_->hwnd(), memExpr_}) ShowWindow(h, panel ? SW_SHOW : SW_HIDE);
@@ -62,27 +80,28 @@ void MainWindow::Layout() {
     }
     if (panel) {
         int top = watchTab ? rcWatchRow_.bottom : rcDebugHeader_.bottom;
-        SetWindowPos(tabViews[static_cast<int>(debugTab_)]->hwnd(), nullptr, rcDebug_.left, top, debugW,
-                     rcMemHeader_.top - top, SWP_NOZORDER);
+        SetWindowPos(tabViews[static_cast<int>(debugTab_)]->hwnd(), nullptr, rcDebug_.left + p, top, debugW - 2 * p,
+                     regsBottom - p - top, SWP_NOZORDER);
+        // The inputs sit inside a rounded frame that Paint draws around them.
         if (watchTab) {
-            SetWindowPos(watchExpr_, nullptr, rcDebug_.left + S(8), rcWatchRow_.top + S(5), debugW - S(16),
-                         inputH - S(10), SWP_NOZORDER);
+            SetWindowPos(watchExpr_, nullptr, rcDebug_.left + S(16), rcWatchRow_.top + S(7), debugW - S(32),
+                         inputH - S(14), SWP_NOZORDER);
         }
-        SetWindowPos(memExpr_, nullptr, rcDebug_.left + S(8), rcMemRow_.top + S(5), debugW - S(16), inputH - S(10),
+        SetWindowPos(memExpr_, nullptr, rcDebug_.left + S(16), rcMemRow_.top + S(7), debugW - S(32), inputH - S(14),
                      SWP_NOZORDER);
-        SetWindowPos(memView_->hwnd(), nullptr, rcDebug_.left, rcMemRow_.bottom, debugW, bodyBottom - rcMemRow_.bottom,
-                     SWP_NOZORDER);
+        SetWindowPos(memView_->hwnd(), nullptr, rcDebug_.left + p, rcMemRow_.bottom, debugW - 2 * p,
+                     bodyBottom - p - rcMemRow_.bottom, SWP_NOZORDER);
     }
 
     // Left panel: project tree or file outline.
     ShowWindow(tree_, leftTab_ == LeftTab::Project ? SW_SHOW : SW_HIDE);
     ShowWindow(outline_, leftTab_ == LeftTab::Outline ? SW_SHOW : SW_HIDE);
     HDWP dwp = BeginDeferWindowPos(8 + (int)editors_.size());
-    dwp = DeferWindowPos(dwp, leftTab_ == LeftTab::Project ? tree_ : outline_, nullptr, 0, rcTreeHeader_.bottom, treeW,
-                         bodyBottom - rcTreeHeader_.bottom, SWP_NOZORDER);
+    dwp = DeferWindowPos(dwp, leftTab_ == LeftTab::Project ? tree_ : outline_, nullptr, treeIsland.left + p,
+                         rcTreeHeader_.bottom, treeW - 2 * p, bodyBottom - p - rcTreeHeader_.bottom, SWP_NOZORDER);
     for (auto& view : views_) {
-        dwp = DeferWindowPos(dwp, view->hwnd(), nullptr, x0, rcConsoleHeader_.bottom, x1 - x0,
-                             bodyBottom - rcConsoleHeader_.bottom, SWP_NOZORDER);
+        dwp = DeferWindowPos(dwp, view->hwnd(), nullptr, x0 + p, rcConsoleHeader_.bottom, x1 - x0 - 2 * p,
+                             bodyBottom - p - rcConsoleHeader_.bottom, SWP_NOZORDER);
     }
     Editor* left = Active();
     for (auto& ed : editors_) {
@@ -115,9 +134,13 @@ void MainWindow::Layout() {
     // In a narrow window the buttons with icons lose their labels, so nothing overlaps.
     auto width = [&](const ToolItem& t, bool compact) {
         if (compact && t.icon && !t.menu) return S(32);
+        if (t.id == ID_PROJECT_WIDGET) return TextWidth(dc, ToolLabel(t)) + S(44);
         return TextWidth(dc, ToolLabel(t)) + S(t.icon || t.id == ID_TARGET ? 36 : 20);
     };
-    auto visible = [&](const ToolItem& t) { return !((t.show == 1 && !debugging_) || (t.show == 2 && debugging_)); };
+    auto visible = [&](const ToolItem& t) {
+        if (t.id == ID_PROJECT_WIDGET && projectRoot_.empty()) return false;
+        return !((t.show == 1 && !debugging_) || (t.show == 2 && debugging_));
+    };
     int needed = S(60);
     for (const ToolItem& t : tools_) {
         if (visible(t)) needed += width(t, false) + S(4);
@@ -132,12 +155,13 @@ void MainWindow::Layout() {
         }
         int w = width(t, compactTools_);
         if (t.right) {
-            t.rc = {rightEdge - w, S(5), rightEdge, tb - S(5)};
+            t.rc = {rightEdge - w, S(6), rightEdge, tb - S(6)};
             rightEdge -= w + S(4);
         } else {
             if (i > 0 && tools_[i - 1].menu && !t.menu) x += S(14);  // gap after the menus
             if (t.id == ID_TARGET) x += S(14);                        // and before the run target
-            t.rc = {x, S(5), x + w, tb - S(5)};
+            if (t.id == ID_BUILD && tools_[i - 1].rc.right > 0) x += S(10);  // and after the project widget
+            t.rc = {x, S(6), x + w, tb - S(6)};
             x += w + S(2);
         }
     }
@@ -168,90 +192,94 @@ std::wstring MainWindow::ToolLabel(const ToolItem& t) const {
         return text + L"  ▾";
     }
     if (t.id == ID_PROFILE) return runConfig_.profile + L"  ▾";
+    if (t.id == ID_PROJECT_WIDGET) return projectRoot_.filename().wstring() + L"  ▾";
     return Tr(t.text);
 }
 
-// Tabs drawn in a panel header ("ПРОЕКТ | СТРУКТУРА" and so on): the active one is bright and underlined.
+// A filled rounded rectangle; outline = CLR_INVALID draws no border.
+static void FillRound(HDC dc, const RECT& r, int radius, COLORREF fill, COLORREF outline = CLR_INVALID) {
+    HPEN pen = outline == CLR_INVALID ? nullptr : CreatePen(PS_SOLID, 1, outline);
+    HGDIOBJ oldPen = SelectObject(dc, pen ? pen : GetStockObject(NULL_PEN));
+    HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(DC_BRUSH));
+    SetDCBrushColor(dc, fill);
+    // Without a pen RoundRect leaves out the right and bottom edge.
+    int extra = pen ? 0 : 1;
+    RoundRect(dc, r.left, r.top, r.right + extra, r.bottom + extra, 2 * radius, 2 * radius);
+    SelectObject(dc, oldPen);
+    SelectObject(dc, oldBrush);
+    if (pen) DeleteObject(pen);
+}
+
+// Tabs drawn in a panel header ("Проект | Структура" and so on): the active one is bright and underlined.
 void MainWindow::PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
                                  std::vector<RECT>& rects, int hover) {
     rects.assign(titles.size(), RECT{});
     // When the titles do not fit, every tab gets an equal share and its title is shortened with "…".
     int total = 0;
-    SelectObject(dc, uiBold_);
-    for (const std::wstring& t : titles) total += TextWidth(dc, t) + S(16);
-    int available = area.right - area.left - S(12);
-    int cap = total > available && !titles.empty() ? std::max(S(24), available / static_cast<int>(titles.size()) - S(16)) : INT_MAX;
-    int x = area.left + S(12);
+    SelectObject(dc, uiFont_);
+    for (const std::wstring& t : titles) total += TextWidth(dc, t) + S(20);
+    int available = area.right - area.left - S(14);
+    int cap = total > available && !titles.empty() ? std::max(S(24), available / static_cast<int>(titles.size()) - S(20)) : INT_MAX;
+    int x = area.left + S(14);
     for (size_t i = 0; i < titles.size(); i++) {
         bool on = static_cast<int>(i) == active;
-        SelectObject(dc, on ? uiBold_ : uiFont_);
         int w = std::min(TextWidth(dc, titles[i]), cap);
-        RECT r{x - S(4), area.top, x + w + S(4), area.bottom};
+        RECT r{x - S(6), area.top + S(4), x + w + S(6), area.bottom - S(4)};
         if (r.right > area.right) break;
         rects[i] = r;
+        if (!on && static_cast<int>(i) == hover) FillRound(dc, r, S(6), Theme::Hover);
         DrawTextColor(dc, titles[i], {x, area.top, x + w + S(2), area.bottom},
                       on ? Theme::Bright : (static_cast<int>(i) == hover ? Theme::Text : Theme::Muted),
                       DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        if (on) FillRectColor(dc, {x, area.bottom - S(2), x + w, area.bottom}, Theme::Accent);
-        x += w + S(16);
+        if (on) FillRound(dc, {x - S(2), area.bottom - S(3), x + w + S(2), area.bottom - S(1)}, S(1), Theme::Accent);
+        x += w + S(20);
     }
-    SelectObject(dc, uiFont_);
 }
 
 void MainWindow::Paint(HDC dc) {
     RECT rc;
     GetClientRect(hwnd_, &rc);
-    FillRectColor(dc, rc, Theme::PanelBg);
+    FillRectColor(dc, rc, Theme::FrameBg);
+    for (const RECT& island : islands_) FillRound(dc, island, S(kIslandRadius), Theme::EditorBg);
     SetBkMode(dc, TRANSPARENT);
     SelectObject(dc, uiFont_);
 
     PaintToolbar(dc);
-    FillRectColor(dc, {0, rcToolbar_.bottom - 1, rc.right, rcToolbar_.bottom}, Theme::Border);
 
     // left panel header
-    PaintHeaderTabs(dc, rcTreeHeader_, {Tr(L"ПРОЕКТ"), Tr(L"СТРУКТУРА")}, static_cast<int>(leftTab_), leftTabRects_,
+    PaintHeaderTabs(dc, rcTreeHeader_, {Tr(L"Проект"), Tr(L"Структура")}, static_cast<int>(leftTab_), leftTabRects_,
                     hoverLeftTab_);
     if (leftTab_ == LeftTab::Project) {
         if (!projectRoot_.empty()) {
-            if (hoverRefresh_) FillRectColor(dc, rcRefresh_, Theme::Hover);
+            if (hoverRefresh_) FillRound(dc, rcRefresh_, S(6), Theme::Hover);
             DrawIcon(dc, 5, rcRefresh_, true);
         } else {
-            RECT hint{S(12), rcTreeHeader_.bottom + S(10), rcTreeHeader_.right - S(8), rcTreeHeader_.bottom + S(90)};
+            RECT hint{rcTreeHeader_.left + S(14), rcTreeHeader_.bottom + S(10), rcTreeHeader_.right - S(8),
+                      rcTreeHeader_.bottom + S(90)};
             DrawTextColor(dc, Tr(L"Проект не открыт.\nCtrl+Shift+O — открыть папку."), hint, Theme::Dim, DT_WORDBREAK);
         }
     }
 
-    // splitters
-    FillRectColor(dc, rcSplitV_, Theme::EditorBg);
-    FillRectColor(dc, {rcSplitV_.left + (rcSplitV_.right - rcSplitV_.left) / 2, rcSplitV_.top,
-                       rcSplitV_.left + (rcSplitV_.right - rcSplitV_.left) / 2 + 1, rcSplitV_.bottom}, Theme::Border);
-    FillRectColor(dc, rcSplitH_, Theme::EditorBg);
-    FillRectColor(dc, {rcSplitH_.left, rcSplitH_.top + 1, rcSplitH_.right, rcSplitH_.top + 2}, Theme::Border);
+    // The splitters are the gaps between the islands; only the split editor has a line of its own.
     if (SplitEditor()) {
-        FillRectColor(dc, rcSplitE_, Theme::EditorBg);
         int mid = (rcSplitE_.left + rcSplitE_.right) / 2;
-        FillRectColor(dc, {mid, rcSplitE_.top, mid + 1, rcSplitE_.bottom}, Theme::Border);
+        FillRectColor(dc, {mid, rcSplitE_.top + S(4), mid + 1, rcSplitE_.bottom - S(4)}, Theme::Border);
     }
 
     PaintTabs(dc);
     if (editors_.empty()) PaintWelcome(dc);
 
     if (DebugPanelVisible()) {
-        FillRectColor(dc, rcSplitD_, Theme::EditorBg);
-        int mid = (rcSplitD_.left + rcSplitD_.right) / 2;
-        FillRectColor(dc, {mid, rcSplitD_.top, mid + 1, rcSplitD_.bottom}, Theme::Border);
         RECT tabs = rcDebugHeader_;
         tabs.right -= S(4);
         PaintHeaderTabs(dc, tabs, {Tr(L"Регистры"), Tr(L"Стек вызовов"), Tr(L"Наблюдение"), Tr(L"Код"), Tr(L"Флаги")},
                         static_cast<int>(debugTab_), debugTabRects_, hoverDebugTab_);
-        SelectObject(dc, uiBold_);
         RECT m = rcMemHeader_;
-        m.left += S(12);
-        DrawTextColor(dc, Tr(L"ПАМЯТЬ"), m, Theme::Muted, DT_SINGLELINE | DT_VCENTER);
-        SelectObject(dc, uiFont_);
+        m.left += S(14);
+        DrawTextColor(dc, Tr(L"Память"), m, Theme::Bright, DT_SINGLELINE | DT_VCENTER);
         static const wchar_t* formats[] = {L"байты", L"word", L"dword", L"qword", L"float", L"double", L"текст"};
         std::wstring format = std::wstring(Tr(formats[static_cast<int>(memFormat_)])) + L"  ▾";
-        if (hoverMemFormat_) FillRectColor(dc, rcMemFormat_, Theme::Hover);
+        if (hoverMemFormat_) FillRound(dc, rcMemFormat_, S(6), Theme::Hover);
         DrawTextColor(dc, format, rcMemFormat_, hoverMemFormat_ ? Theme::Bright : Theme::Text,
                       DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         if (!debugStatus_.empty()) {  // stop reason under the tabs, right-aligned in the memory header
@@ -265,9 +293,8 @@ void MainWindow::Paint(HDC dc) {
             RECT frame;
             GetWindowRect(input, &frame);
             MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&frame), 2);
-            InflateRect(&frame, 1, 1);
-            SetDCBrushColor(dc, GetFocus() == input ? Theme::Accent : Theme::Border);
-            FrameRect(dc, &frame, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            InflateRect(&frame, S(6), S(4));
+            FillRound(dc, frame, S(6), Theme::InputBg, GetFocus() == input ? Theme::Accent : Theme::Border);
         }
     }
 
@@ -306,8 +333,7 @@ void MainWindow::DrawIcon(HDC dc, int icon, const RECT& rc, bool enabled) {
     auto P = [&](double fx, double fy) { return POINT{x + static_cast<int>(fx * s / 16.0), y + static_cast<int>(fy * s / 16.0)}; };
     auto dim = [&](COLORREF c) {
         if (enabled) return c;
-        return RGB((GetRValue(c) + 2 * GetRValue(Theme::PanelBg)) / 3, (GetGValue(c) + 2 * GetGValue(Theme::PanelBg)) / 3,
-                   (GetBValue(c) + 2 * GetBValue(Theme::PanelBg)) / 3);
+        return Theme::Blend(c, Theme::FrameBg, 67);
     };
     HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
     HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(DC_BRUSH));
@@ -339,7 +365,7 @@ void MainWindow::DrawIcon(HDC dc, int icon, const RECT& rc, bool enabled) {
             Ellipse(dc, tx - r, ty - r, tx + r + 1, ty + r + 1);
         }
         Ellipse(dc, cx - s * 3 / 8, cy - s * 3 / 8, cx + s * 3 / 8 + 1, cy + s * 3 / 8 + 1);
-        SetDCBrushColor(dc, Theme::PanelBg);
+        SetDCBrushColor(dc, Theme::FrameBg);
         Ellipse(dc, cx - s / 6, cy - s / 6, cx + s / 6 + 1, cy + s / 6 + 1);
         break;
     }
@@ -425,19 +451,33 @@ void MainWindow::PaintToolbar(HDC dc) {
         case ID_PAUSE: enabled = debugging_ && !stopped; break;
         case ID_STOP: enabled = process_ != nullptr || debugging_; break;
         case ID_TARGET:
-        case ID_PROFILE: enabled = !debugging_ && !building_; break;
+        case ID_PROFILE:
+        case ID_PROJECT_WIDGET: enabled = !debugging_ && !building_; break;
         }
-        if ((int)i == hoverTool_ && enabled) {
-            SetDCBrushColor(dc, Theme::Hover);
-            SelectObject(dc, GetStockObject(DC_BRUSH));
-            SelectObject(dc, GetStockObject(NULL_PEN));
-            RoundRect(dc, t.rc.left, t.rc.top, t.rc.right, t.rc.bottom, S(6), S(6));
-        }
+        if ((int)i == hoverTool_ && enabled) FillRound(dc, t.rc, S(6), Theme::Hover);
         RECT tr = t.rc;
         std::wstring text = ToolLabel(t);
+        if (t.id == ID_PROJECT_WIDGET) {  // a colored square with the project's initials, its name and ▾
+            std::wstring name = projectRoot_.filename().wstring();
+            static const uint32_t colors[] = {0x3574F0, 0x5FB865, 0xE0943A, 0xC77DBB, 0x2AACB8, 0xDB5C5C, 0x8F7EE7};
+            size_t hash = std::hash<std::wstring>{}(name);
+            int cy = (tr.top + tr.bottom) / 2;
+            RECT square{tr.left + S(6), cy - S(10), tr.left + S(26), cy + S(10)};
+            FillRound(dc, square, S(5), Hex(colors[hash % std::size(colors)]));
+            std::wstring initials;
+            for (size_t k = 0; k < name.size() && initials.size() < 2; k++) {
+                bool start = k == 0 || name[k - 1] == L' ' || name[k - 1] == L'-' || name[k - 1] == L'_' || name[k - 1] == L'.';
+                if (start && iswalnum(name[k])) initials += static_cast<wchar_t>(towupper(name[k]));
+            }
+            if (initials.size() < 2 && name.size() > 1) initials = {static_cast<wchar_t>(towupper(name[0])), static_cast<wchar_t>(towupper(name[1]))};
+            SelectObject(dc, uiBold_);
+            DrawTextColor(dc, initials, square, RGB(255, 255, 255), DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+            SelectObject(dc, uiFont_);
+            tr.left = square.right + S(8);
+            DrawTextColor(dc, text, tr, enabled ? Theme::Bright : Theme::Dim, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            continue;
+        }
         if (t.id == ID_TARGET || t.id == ID_PROFILE) {  // drop-downs: what runs and the build profile
-            SetDCBrushColor(dc, Theme::Border);
-            FrameRect(dc, &tr, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
             if (t.id == ID_TARGET) {
                 RECT ir{tr.left + S(6), tr.top, tr.left + S(26), tr.bottom};
                 DrawIcon(dc, 2, ir, enabled);
@@ -464,8 +504,6 @@ void MainWindow::PaintToolbar(HDC dc) {
 }
 
 void MainWindow::PaintTabs(HDC dc) {
-    FillRectColor(dc, rcTabs_, Theme::PanelBg);
-    FillRectColor(dc, {rcTabs_.left, rcTabs_.bottom - 1, rcTabs_.right, rcTabs_.bottom}, Theme::Border);
     tabRects_.assign(editors_.size(), RECT{});
     closeRects_.assign(editors_.size(), RECT{});
     if (editors_.empty()) return;
@@ -475,7 +513,7 @@ void MainWindow::PaintTabs(HDC dc) {
     SelectObject(dc, uiFont_);
     for (auto& ed : editors_) {
         std::wstring title = (ed->Modified() ? L"● " : L"") + ed->Title();
-        int w = TextWidth(dc, title) + S(ed->pinned ? 58 : 48);
+        int w = TextWidth(dc, title) + S(ed->pinned ? 62 : 50);
         widths.push_back(w);
         total += w;
     }
@@ -499,15 +537,16 @@ void MainWindow::PaintTabs(HDC dc) {
         bool active = (int)i == active_;
         bool inRight = (int)i == splitIndex_;
         bool focused = active ? !(focusRight_ && SplitEditor()) : inRight && focusRight_;
-        RECT body = r;
-        if (!active && !inRight) body.bottom -= 1;
-        FillRectColor(dc, body, active || inRight ? Theme::EditorBg : ((int)i == hoverTab_ ? Theme::Hover : Theme::PanelBg));
-        if (active || inRight) FillRectColor(dc, {r.left, r.top, r.right, r.top + S(2)}, focused ? Theme::Accent : Theme::Muted);
-        if ((int)i == dragTab_ && drag_ == Drag::Tab && dragMoved_) {
-            SetDCBrushColor(dc, Theme::Accent);
-            FrameRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        // IntelliJ-style tabs: no boxes, the open tab is underlined (in the accent color while it has the focus),
+        // the one under the mouse gets a rounded highlight.
+        bool open = active || inRight;
+        RECT pill{r.left + S(2), r.top + S(5), r.right - S(2), r.bottom - S(5)};
+        if ((int)i == dragTab_ && drag_ == Drag::Tab && dragMoved_) FillRound(dc, pill, S(6), Theme::Hover, Theme::Accent);
+        else if (!open && (int)i == hoverTab_) FillRound(dc, pill, S(6), Theme::Hover);
+        if (open) {
+            FillRound(dc, {r.left + S(6), r.bottom - S(3), r.right - S(6), r.bottom}, S(1),
+                      focused ? Theme::Accent : Theme::Dim);
         }
-        FillRectColor(dc, {r.right - 1, r.top + S(6), r.right, r.bottom - S(6)}, Theme::Border);
 
         bool errors = ed.Count(Severity::Error) > 0;
         bool isMain = !mainFile_.empty() && SamePath(ed.file(), mainFile_);
@@ -523,12 +562,13 @@ void MainWindow::PaintTabs(HDC dc) {
         }
         RECT tr{textLeft, r.top, r.right - S(28), r.bottom};
         SelectObject(dc, isMain ? uiBold_ : uiFont_);
-        DrawTextColor(dc, title, tr, errors ? Theme::Error : (active || inRight ? Theme::Bright : Theme::Muted),
+        DrawTextColor(dc, title, tr, errors ? Theme::Error : (open ? Theme::Bright : Theme::Text),
                       DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        RECT cr{r.right - S(26), r.top + S(8), r.right - S(8), r.bottom - S(6)};
+        int cy = (r.top + r.bottom) / 2;
+        RECT cr{r.right - S(28), cy - S(9), r.right - S(10), cy + S(9)};
         closeRects_[i] = cr;
-        if ((int)i == hoverClose_) FillRectColor(dc, cr, Theme::Pressed);
-        if (active || inRight || (int)i == hoverTab_) {
+        if ((int)i == hoverClose_) FillRound(dc, cr, S(4), Theme::Pressed);
+        if (open || (int)i == hoverTab_) {
             SelectObject(dc, uiFont_);
             DrawTextColor(dc, L"✕", cr, (int)i == hoverClose_ ? Theme::Bright : Theme::Muted,
                           DT_SINGLELINE | DT_VCENTER | DT_CENTER);
@@ -587,11 +627,10 @@ void MainWindow::PaintWelcome(HDC dc) {
 }
 
 void MainWindow::PaintStatus(HDC dc) {
-    FillRectColor(dc, rcStatus_, Theme::PanelBg);
-    FillRectColor(dc, {rcStatus_.left, rcStatus_.top, rcStatus_.right, rcStatus_.top + 1}, Theme::Border);
+    FillRectColor(dc, rcStatus_, Theme::FrameBg);
     SelectObject(dc, uiFont_);
     RECT left = rcStatus_;
-    left.left += S(12);
+    left.left += S(14);
     DrawTextColor(dc, toolStatus_, left, toolStatusWarn_ ? Theme::Warning : Theme::Muted, DT_SINGLELINE | DT_VCENTER);
 
     std::vector<std::pair<std::wstring, COLORREF>> parts;
@@ -607,7 +646,7 @@ void MainWindow::PaintStatus(HDC dc) {
         parts.push_back({ed->EncodingName(), Theme::Muted});
         parts.push_back({ed->EolName(), Theme::Muted});
     }
-    int x = rcStatus_.right - S(12);
+    int x = rcStatus_.right - S(14);
     for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
         int w = TextWidth(dc, it->first);
         DrawTextColor(dc, it->first, {x - w, rcStatus_.top, x, rcStatus_.bottom}, it->second, DT_SINGLELINE | DT_VCENTER);
@@ -617,7 +656,7 @@ void MainWindow::PaintStatus(HDC dc) {
 
 void MainWindow::OnMouseMove(int x, int y) {
     if (drag_ == Drag::Tree) {
-        settings_->treeWidth = std::max(80, MulDiv(x, 96, dpi_));
+        settings_->treeWidth = std::max(80, MulDiv(x - S(kIslandGap), 96, dpi_));
         Layout();
         return;
     }
@@ -627,7 +666,7 @@ void MainWindow::OnMouseMove(int x, int y) {
         return;
     }
     if (drag_ == Drag::Debug) {
-        settings_->debugWidth = std::max(180, MulDiv(rcStatus_.right - x, 96, dpi_));
+        settings_->debugWidth = std::max(180, MulDiv(rcStatus_.right - S(2 * kIslandGap) - x, 96, dpi_));
         Layout();
         return;
     }
@@ -709,6 +748,8 @@ void MainWindow::OnClick(int x, int y, bool middle) {
             POINT p{t.rc.left, t.rc.bottom};
             ClientToScreen(hwnd_, &p);
             TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
+        } else if (t.id == ID_PROJECT_WIDGET) {
+            ProjectMenu(t.rc);
         } else {
             OnCommand(t.id);
         }
@@ -765,6 +806,21 @@ void MainWindow::OnClick(int x, int y, bool middle) {
             }
         }
     }
+}
+
+// The project widget's menu: the recent projects (the open one checked) and "Open folder".
+void MainWindow::ProjectMenu(const RECT& anchor) {
+    HMENU menu = CreatePopupMenu();
+    for (size_t i = 0; i < settings_->recent.size(); i++) {
+        bool current = SamePath(fs::path(settings_->recent[i]), projectRoot_);
+        AppendMenuW(menu, MF_STRING | (current ? MF_CHECKED : 0), ID_RECENT + i, settings_->recent[i].c_str());
+    }
+    if (!settings_->recent.empty()) AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendCommand(menu, ID_OPEN_FOLDER);
+    POINT p{anchor.left, anchor.bottom};
+    ClientToScreen(hwnd_, &p);
+    TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
+    DestroyMenu(menu);
 }
 
 void MainWindow::OnRightClick(int x, int y) {
@@ -855,7 +911,6 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
         Sci_Position exec = ed->Call(SCI_MARKERNEXT, 0, 1 << Editor::kMarkerExecArrow);
         if (exec >= 0) mark(static_cast<int>(exec), Theme::ExecArrow, 0, w);
     }
-    FillRectColor(mem, {0, 0, 1, rc.bottom}, Theme::Border);
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
     DeleteObject(bmp);

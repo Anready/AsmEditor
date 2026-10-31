@@ -221,7 +221,7 @@ void MainWindow::RestyleAll() {
         SetupPanelView(*v);
     }
     for (HWND t : {tree_, outline_}) {
-        TreeView_SetBkColor(t, Theme::PanelBg);
+        TreeView_SetBkColor(t, Theme::EditorBg);
         TreeView_SetTextColor(t, Theme::Text);
     }
     if (inputBrush_) DeleteObject(inputBrush_);

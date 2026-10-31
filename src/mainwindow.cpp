@@ -58,7 +58,7 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
         // Default size was given in 96-dpi pixels; scale it to the monitor.
         SetWindowPos(hwnd_, nullptr, 0, 0, S(1280), S(820), SWP_NOMOVE | SWP_NOZORDER);
     }
-    ApplyDarkWindow(hwnd_);
+    ApplyDarkWindow(hwnd_, Theme::FrameBg);
     BuildAccelerators();
 
     checkThread_ = std::thread([this] { CheckWorker(); });
@@ -104,7 +104,7 @@ void MainWindow::CreateChildren() {
                                  0, 0, 10, 10, hwnd_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst_, nullptr);
         ApplyDarkControl(t);
         TreeView_SetExtendedStyle(t, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
-        TreeView_SetBkColor(t, Theme::PanelBg);
+        TreeView_SetBkColor(t, Theme::EditorBg);
         TreeView_SetTextColor(t, Theme::Text);
         return t;
     };
@@ -150,6 +150,7 @@ void MainWindow::CreateChildren() {
         {ID_MENU_VIEW, L"Вид", 0, true, false},
         {ID_MENU_RUN, L"Запуск", 0, true, false},
         {ID_MENU_HELP, L"Справка", 0, true, false},
+        {ID_PROJECT_WIDGET, L"", 0, false, false},
         {ID_BUILD, L"Собрать", 1, false, false},
         {ID_RUN, L"Запустить", 2, false, false, 2},
         {ID_DEBUG, L"Отладка", 6, false, false, 2},

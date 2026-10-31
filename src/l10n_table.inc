@@ -400,13 +400,13 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
 
     // layout
     {L"активный файл", L"active file"},
-    {L"ПРОЕКТ", L"PROJECT"},
-    {L"СТРУКТУРА", L"OUTLINE"},
+    {L"Проект", L"Project"},
+    {L"Структура", L"Outline"},
     {L"Проект не открыт.\nCtrl+Shift+O — открыть папку.", L"No project is open.\nCtrl+Shift+O opens a folder."},
     {L"Регистры", L"Registers"},
     {L"Стек вызовов", L"Call stack"},
     {L"Код", L"Code"},
-    {L"ПАМЯТЬ", L"MEMORY"},
+    {L"Память", L"Memory"},
     {L"Проблемы", L"Problems"},
     {L"Вывод", L"Output"},
     {L"Терминал", L"Terminal"},

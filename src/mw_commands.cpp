@@ -278,7 +278,7 @@ void MainWindow::ApplyTheme(const std::wstring& id) {
     settings_->theme = id;
     Theme::Apply(id);
     InitDarkMode();
-    ApplyDarkWindow(hwnd_);
+    ApplyDarkWindow(hwnd_, Theme::FrameBg);
     for (HWND h : {tree_, outline_}) {
         if (h) ApplyDarkControl(h);
     }

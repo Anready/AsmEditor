@@ -100,9 +100,11 @@ void InitDarkMode() {
     if (flush) flush();
 }
 
-void ApplyDarkWindow(HWND hwnd) {
+void ApplyDarkWindow(HWND hwnd, COLORREF caption) {
     BOOL dark = Theme::Dark;
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
+    // Windows 11: the title bar in the color of the toolbar under it (CLR_INVALID = DWMWA_COLOR_DEFAULT).
+    DwmSetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, &caption, sizeof(caption));
 }
 
 void ApplyDarkControl(HWND hwnd) {

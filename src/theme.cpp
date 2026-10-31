@@ -2,7 +2,7 @@
 
 namespace Theme {
 
-COLORREF EditorBg, PanelBg, InputBg, Border, Hover, Pressed, Text, Bright, Muted, Dim, Accent, Selection,
+COLORREF FrameBg, EditorBg, PanelBg, InputBg, Border, Hover, Pressed, Text, Bright, Muted, Dim, Accent, Selection,
     InactiveSelection, CurrentLine, Error, Warning, Success, Link, CallTipBg, LineNumber, Changed;
 COLORREF Comment, String, Number, Register, Instruction, Directive, Preprocessor, Label, Keyword, Macro, Function;
 COLORREF ErrorLine, WarningLine, Breakpoint, ConditionalBreakpoint, ExecArrow, ExecLine, ListSelected, Occurrence;
@@ -118,6 +118,8 @@ void Apply(const std::wstring& id) {
     ListSelected = Hex(p->listSelected);
     Occurrence = Hex(p->occurrence);
     for (int i = 0; i < 16; i++) Ansi[i] = Hex(p->ansi[i]);
+    // The window behind the panels (toolbar, status bar, gaps between the islands): a shade darker than the panels.
+    FrameBg = Dark ? Blend(EditorBg, RGB(0, 0, 0), 28) : Blend(PanelBg, RGB(0, 0, 0), 5);
 }
 
 COLORREF Blend(COLORREF a, COLORREF b, int percentOfB) {

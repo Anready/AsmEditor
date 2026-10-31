@@ -51,7 +51,7 @@ constexpr COLORREF Hex(uint32_t rgb) {
 // Colors of the current theme (see Theme::Apply). Everything paints from these, so switching the theme only needs
 // the styles re-applied and a repaint.
 namespace Theme {
-extern COLORREF EditorBg, PanelBg, InputBg, Border, Hover, Pressed, Text, Bright, Muted, Dim, Accent, Selection,
+extern COLORREF FrameBg, EditorBg, PanelBg, InputBg, Border, Hover, Pressed, Text, Bright, Muted, Dim, Accent, Selection,
     InactiveSelection, CurrentLine, Error, Warning, Success, Link, CallTipBg, LineNumber, Changed;
 // syntax
 extern COLORREF Comment, String, Number, Register, Instruction, Directive, Preprocessor, Label, Keyword, Macro,
@@ -72,7 +72,7 @@ COLORREF Blend(COLORREF a, COLORREF b, int percentOfB);
 }
 
 void InitDarkMode();
-void ApplyDarkWindow(HWND hwnd);       // dark title bar
+void ApplyDarkWindow(HWND hwnd, COLORREF caption = CLR_INVALID);  // dark title bar (caption: its color on Windows 11)
 void ApplyDarkControl(HWND hwnd);      // dark scrollbars etc.
 HFONT CreateUiFont(int dpi, int points = 9, bool bold = false);
 std::wstring MonospaceFontName();

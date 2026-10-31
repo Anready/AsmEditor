@@ -72,6 +72,7 @@ private:
     void Paint(HDC dc);
     void PaintToolbar(HDC dc);
     void PaintTabs(HDC dc);
+    void ProjectMenu(const RECT& anchor);
     void PaintStatus(HDC dc);
     void PaintWelcome(HDC dc);
     void PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
@@ -319,6 +320,7 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
 
     RECT rcToolbar_{}, rcStatus_{}, rcTreeHeader_{}, rcTabs_{}, rcEditor_{}, rcEditor2_{}, rcConsoleHeader_{};
     RECT rcSplitV_{}, rcSplitH_{}, rcSplitE_{}, rcClear_{}, rcRefresh_{};
+    std::vector<RECT> islands_;  // the rounded panels, painted on Theme::FrameBg
     RECT rcDebug_{}, rcSplitD_{}, rcDebugHeader_{}, rcMemHeader_{}, rcMemRow_{}, rcWatchRow_{}, rcMemFormat_{};
 
     std::unique_ptr<Debugger> debugger_;

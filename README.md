@@ -187,12 +187,9 @@ AsmEditor was written by **Claude**, an AI model by [Anthropic](https://www.anth
 [Claude Code](https://claude.com/claude-code). That includes the C++ source, the disassembler, the debugger,
 the lessons and exercises, the tests, the build scripts, the installer, the CI workflows and this README.
 
-[Anready](https://github.com/Anready) led the project: decided what the editor should do and in which order,
-answered design questions, ran the builds on a real machine, reported what broke and published the releases.
-
-We say this openly because presenting AI-written work as one's own would not be honest. It also tells you what to
+I say this openly because presenting AI-written work as my own would not be honest. It also tells you what to
 expect: the code is covered by 568 automated checks and a UI self-test that run in CI, but, like any software, it
-can have bugs — please [open an issue](https://github.com/Anready/AsmEditor/issues) if you find one.
+can have bugs - please [open an issue](https://github.com/Anready/AsmEditor/issues) if you find one.
 
 ## Roadmap
 

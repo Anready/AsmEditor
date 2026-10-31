@@ -19,8 +19,7 @@ Write x86‑64 assembly, build it with one key, and step through it while watchi
 
 > [!NOTE]
 > **This project was written by an AI.** The code, tests, build scripts, installer and documentation were written by
-> Claude, an AI model made by Anthropic, working in Claude Code. A person, [Anready](https://github.com/Anready),
-> directed the work: chose what to build, made the decisions and tested the builds.
+> Claude, an AI model made by Anthropic, working in Claude Code.
 > See [How this project was made](#how-this-project-was-made).
 
 <p align="center">

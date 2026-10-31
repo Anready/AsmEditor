@@ -3,7 +3,7 @@
 [English](README.md) · **Русский**
 
 > Проект написан ИИ: код, тесты, сборка и документация — Claude (модель Anthropic) в Claude Code;
-> Anready ставил задачи, принимал решения и проверял сборки. Подробнее — в [английском README](README.md#how-this-project-was-made).
+> Подробнее — в [английском README](README.md#how-this-project-was-made).
 
 Лёгкий нативный редактор и отладчик NASM для Windows: C++20, чистый Win32 и [Scintilla](https://www.scintilla.org/) 5.6.5
 (статически, одним exe). Интерфейс на русском или английском, тёмная и светлая темы.

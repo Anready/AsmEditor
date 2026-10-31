@@ -162,6 +162,7 @@ private:
     void ContinueStepping(HANDLE thread, CONTEXT& ctx);
     void RunFree(HANDLE thread, CONTEXT& ctx);
     void FillDebugRegisters(CONTEXT& ctx);
+    void PrepareDetach(HANDLE thread, CONTEXT& ctx);
     void ApplyWatchesToOtherThreads(HANDLE current, const CONTEXT& ctx);
     bool ConditionHolds(Breakpoint& bp, const CONTEXT& ctx);
     std::wstring WatchHit(uint64_t dr6);

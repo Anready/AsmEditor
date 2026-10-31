@@ -1480,7 +1480,7 @@ void Debugger::StopAt(HANDLE thread, CONTEXT& ctx, DebugStop::Reason reason, con
         ContinueStepping(thread, ctx);
         break;
     case Command::Stop:
-        if (attached_) RunFree(thread, ctx);  // detached at the top of the debug loop
+        if (attached_) PrepareDetach(thread, ctx);  // detached at the top of the debug loop
         else TerminateProcess(process_, 1);
         break;
     default:
@@ -1564,6 +1564,26 @@ void Debugger::ApplyWatchesToOtherThreads(HANDLE current, const CONTEXT& ctx) {
             CloseHandle(h);
         }
     }).detach();
+}
+
+// Before detaching: no int3 left in the code, no trap flag and no data breakpoints in the stopped thread. (A step
+// pending after the detach would raise a single-step exception that nothing handles, and the program would die.)
+void Debugger::PrepareDetach(HANDLE thread, CONTEXT& ctx) {
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (const auto& [addr, bp] : breakpoints_) {
+            WriteProcessMemory(process_, reinterpret_cast<void*>(addr), &bp.original, 1, nullptr);
+            FlushInstructionCache(process_, reinterpret_cast<void*>(addr), 1);
+        }
+        breakpoints_.clear();
+        reinsertAt_ = 0;
+        watches_.clear();
+    }
+    stepMode_ = StepMode::None;
+    ctx.EFlags &= ~kTrapFlag;
+    ctx.Dr0 = ctx.Dr1 = ctx.Dr2 = ctx.Dr3 = ctx.Dr6 = ctx.Dr7 = 0;
+    SetContext(thread, ctx, contextChanged_);
+    contextChanged_ = false;
 }
 
 void Debugger::ContinueStepping(HANDLE thread, CONTEXT& ctx) {

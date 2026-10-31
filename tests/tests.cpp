@@ -1298,7 +1298,7 @@ TEST(DebuggerAttachAndDetach) {
     d.Stop();  // detach
     CHECK(host.Wait(5000));
     CHECK(host.exited);
-    Sleep(200);
+    Sleep(1000);  // long enough for a pending trap or int3 to kill it if the detach left one
     CHECK_EQ(WaitForSingleObject(pi.hProcess, 0), static_cast<DWORD>(WAIT_TIMEOUT));  // still running
     TerminateProcess(pi.hProcess, 0);
     CloseHandle(pi.hProcess);

@@ -404,6 +404,7 @@ void Settings::Load() {
     treeWidth = getInt(L"layout.treeWidth", 240);
     consoleHeight = getInt(L"layout.consoleHeight", 230);
     debugWidth = getInt(L"layout.debugWidth", 430);
+    debugParts = get(L"layout.debugLayout");
 }
 
 void Settings::Save() const {
@@ -429,6 +430,7 @@ void Settings::Save() const {
         {L"layout.treeWidth", std::to_wstring(treeWidth)},
         {L"layout.consoleHeight", std::to_wstring(consoleHeight)},
         {L"layout.debugWidth", std::to_wstring(debugWidth)},
+        {L"layout.debugLayout", debugParts},
         {L"release.nasmArgs", releaseNasmArgs},
         {L"release.linkerArgs", releaseLinkerArgs},
         {L"editor.stackCheck", stackCheck ? L"1" : L"0"},

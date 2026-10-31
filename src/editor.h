@@ -83,6 +83,7 @@ public:
     bool WordRange(Sci_Position pos, Sci_Position& start, Sci_Position& end) const;
 
     bool pinned = false;  // pinned tabs stay at the front and are not closed by "close others"
+    int group = 0;        // tab group: 0 the main one, 1 the other half of a split, >= 2 a window of its own
 
 private:
     HWND hwnd_;

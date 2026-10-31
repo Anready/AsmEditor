@@ -131,6 +131,7 @@ struct Settings {
     int treeWidth = 240;
     int consoleHeight = 230;
     int debugWidth = 430;
+    std::wstring debugParts;     // where the parts of the debugger are (MainWindow::SaveDebugLayout)
 
     void Load();
     void Save() const;

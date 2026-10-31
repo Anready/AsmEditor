@@ -14,7 +14,7 @@ std::vector<fs::path> MainWindow::IncludeDirs(const fs::path& file) const {
 
 fs::path MainWindow::BuildTarget() {
     if (!mainFile_.empty() && FileExists(mainFile_.wstring())) return mainFile_;
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     if (!ed) {
         ShowMessage(hwnd_, Tr(L"Откройте .asm файл или выберите главный файл проекта "
                               L"(ПКМ по файлу в дереве → «Сделать главным файлом»)."), false);
@@ -546,7 +546,7 @@ std::string OneLine(std::string s) {
 
 // Builds the exercise in the current file and runs it on every test of the exercise.
 void MainWindow::CheckSolution() {
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     if (!ed || building_ || debugging_) return;
     std::string id = Exercises::IdFromSource(ed->Text());
     const Exercises::Exercise* ex = Exercises::Find(id);
@@ -704,7 +704,7 @@ void MainWindow::NewExercise() {
 
 // Ctrl+Shift+H: the next hint of the task in the current file.
 void MainWindow::ExerciseHint() {
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     const Exercises::Exercise* ex = ed ? Exercises::Find(Exercises::IdFromSource(ed->Text())) : nullptr;
     if (!ex) {
         ShowMessage(hwnd_, Tr(L"В начале файла нет строки «; task: …» с названием задачи. Создайте задачу: "

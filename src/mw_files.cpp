@@ -28,33 +28,50 @@ int MainWindow::IndexOf(const Editor* ed) const {
 void MainWindow::AddEditor(std::unique_ptr<Editor> ed) {
     Editor* raw = ed.get();
     SetWindowSubclass(raw->hwnd(), EditorProc, 4, reinterpret_cast<DWORD_PTR>(this));
+    // A new tab opens in the group that has the focus.
+    raw->group = floatFocus_ >= kPanelGroup && GroupInfo(floatFocus_) ? floatFocus_ : (focusRight_ && GroupHasItems(1) ? 1 : 0);
     editors_.push_back(std::move(ed));
     Activate((int)editors_.size() - 1);
     if (settings_->liveCheck) RequestCheck(raw);
 }
 
-// Shows an editor. With a split view the editor goes to the half that has the focus; choosing the editor that
-// is already in the other half swaps the halves.
+// Shows an editor in its tab group (and that group's window) and gives it the focus.
 void MainWindow::Activate(int index) {
+    Editor* ed = nullptr;
     if (editors_.empty()) {
         active_ = -1;
         splitIndex_ = -1;
         focusRight_ = false;
     } else {
         index = std::clamp(index, 0, (int)editors_.size() - 1);
-        if (SplitEditor() && focusRight_) {
-            if (index == active_) std::swap(active_, splitIndex_);
-            else splitIndex_ = index;
-        } else if (SplitEditor() && index == splitIndex_) {
+        ed = editors_[index].get();
+        if (FloatGroup* info = ed->group >= kPanelGroup ? GroupInfo(ed->group) : nullptr) {
+            info->shown = ed->id();
+        } else if (ed->group == 1) {
+            splitIndex_ = index;
             focusRight_ = true;
         } else {
+            ed->group = 0;
             active_ = index;
+            focusRight_ = false;
         }
+        shownPart_[ed->group] = -1;  // the file, not a part of the debugger
+        ensureTabVisible_.insert(ed->group);
     }
     Layout();
-    Editor* target = focusRight_ && SplitEditor() ? SplitEditor() : Active();
-    if (target) SetFocus(target->hwnd());
-    ensureTabVisible_ = true;
+    if (ed && ed->group >= kPanelGroup) {  // in the debug panel or a window of its own: bring that up
+        if (HWND f = FloatOf(ed)) {
+            if (IsIconic(f)) ShowWindow(f, SW_RESTORE);
+            SetForegroundWindow(f);
+        }
+        SetFocus(ed->hwnd());
+        floatFocus_ = ed->group;
+        UpdateFloatTitles();
+    } else if (Editor* target = focusRight_ && SplitEditor() ? SplitEditor() : Active()) {
+        if (GetForegroundWindow() != hwnd_ && IsFloatWindow(GetForegroundWindow())) SetForegroundWindow(hwnd_);
+        SetFocus(target->hwnd());
+        floatFocus_ = 0;
+    }
     UpdateTitle();
     if (leftTab_ == LeftTab::Outline) RefreshOutline();
     InvalidateRect(hwnd_, nullptr, FALSE);
@@ -74,30 +91,27 @@ void MainWindow::CloseEditor(int index) {
     if (index < 0 || index >= (int)editors_.size() || !ConfirmClose(index)) return;
     StashBreakpoints(editors_[index].get());
     RemoveBackup(editors_[index].get());
-    Editor* left = Active();
-    Editor* right = SplitEditor();
     Editor* closing = editors_[index].get();
     if (closing == usageEditor_) usageEditor_ = nullptr;
     if (closing == linkEditor_) linkEditor_ = nullptr;
+    // Its group shows the neighbouring tab instead (an emptied group goes away in Layout).
+    bool wasShown = ShownIndex(closing->group) == index;
+    int next = wasShown ? NeighbourInGroup(index) : -1;
+    Editor* nextEd = next >= 0 ? editors_[next].get() : nullptr;
+    Editor* left = Active();
+    Editor* right = SplitEditor();
     editors_.erase(editors_.begin() + index);
-    if (closing == right) {
-        splitIndex_ = -1;
-        focusRight_ = false;
-        right = nullptr;
-    }
-    if (closing == left) {  // the left half shows the neighbour (or what was on the right)
-        int next = std::min(index, (int)editors_.size() - 1);
-        if (right && next >= 0 && editors_[next].get() == right) next = next > 0 ? next - 1 : (editors_.size() > 1 ? 1 : -1);
-        left = next >= 0 ? editors_[next].get() : nullptr;
-        if (!left && right) {
-            left = right;
-            right = nullptr;
-        }
-    }
     active_ = IndexOf(left);
-    splitIndex_ = right ? IndexOf(right) : -1;
-    if (splitIndex_ < 0) focusRight_ = false;
-    Activate(std::max(0, focusRight_ ? splitIndex_ : active_));
+    splitIndex_ = IndexOf(right);
+    if (nextEd) {
+        Activate(IndexOf(nextEd));
+    } else if (Editor* target = Current(); target && !IsFloating(target)) {
+        Activate(IndexOf(target));
+    } else {
+        Layout();
+        UpdateTitle();
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
 }
 
 bool MainWindow::CloseAll() {
@@ -235,14 +249,19 @@ void MainWindow::TabMenu(int index) {
     if (index < 0 || index >= (int)editors_.size()) return;
     Editor* ed = editors_[index].get();
     HMENU menu = CreatePopupMenu();
-    enum { kClose = 1, kOthers, kAll, kPin, kSplit, kUnsplit, kReveal, kMain, kCopyPath };
+    enum { kClose = 1, kOthers, kAll, kPin, kSplit, kSplitDown, kUnsplit, kDetach, kReveal, kMain, kCopyPath };
     AppendMenuW(menu, MF_STRING, kClose, Tr(L"Закрыть"));
     AppendMenuW(menu, MF_STRING, kOthers, Tr(L"Закрыть другие"));
     AppendMenuW(menu, MF_STRING, kAll, Tr(L"Закрыть все"));
     AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(menu, MF_STRING, kPin, ed->pinned ? Tr(L"Открепить") : Tr(L"Закрепить"));
-    if (index != splitIndex_) AppendMenuW(menu, MF_STRING, kSplit, Tr(L"Открыть справа"));
-    if (SplitEditor()) AppendMenuW(menu, MF_STRING, kUnsplit, Tr(L"Убрать разделение"));
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    if (!IsSecondHalf(ed->group)) {
+        AppendMenuW(menu, MF_STRING, kSplit, Tr(L"Открыть справа"));
+        AppendMenuW(menu, MF_STRING, kSplitDown, Tr(L"Открыть снизу"));
+    }
+    if (SecondHalf(WindowPrimary(ed->group))) AppendMenuW(menu, MF_STRING, kUnsplit, Tr(L"Убрать разделение"));
+    AppendMenuW(menu, MF_STRING, kDetach, IsFloating(ed) ? Tr(L"Вернуть в главное окно") : Tr(L"Открыть в отдельном окне"));
     if (!ed->file().empty()) {
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         if (Project::IsSourceFile(ed->file())) {
@@ -262,7 +281,12 @@ void MainWindow::TabMenu(int index) {
     case kAll: CloseOthers(-1); break;
     case kPin: TogglePin(index); break;
     case kSplit: SplitWith(index); break;
-    case kUnsplit: Unsplit(); break;
+    case kSplitDown: SplitWith(index, true); break;
+    case kUnsplit: Unsplit(WindowPrimary(ed->group)); break;
+    case kDetach:
+        if (IsFloating(ed)) DockEditor(ed);
+        else DetachEditor(index, nullptr);
+        break;
     case kMain: SetMainFile(SamePath(ed->file(), mainFile_) ? fs::path() : ed->file()); break;
     case kCopyPath:
         if (OpenClipboard(hwnd_)) {
@@ -289,7 +313,7 @@ void MainWindow::TogglePin(int index) {
     editors_[index]->pinned = !editors_[index]->pinned;
     SortPinnedTabs();
     SaveProjectSession();
-    InvalidateRect(hwnd_, &rcTabs_, FALSE);
+    InvalidateTabs();
 }
 
 // Moves a tab, keeping which editors are shown (indices are recomputed from the editors themselves).
@@ -312,27 +336,37 @@ void MainWindow::SortPinnedTabs() {
     splitIndex_ = right ? IndexOf(right) : -1;
 }
 
-// Shows the editor in the right half; the left half keeps (or gets) another one.
-void MainWindow::SplitWith(int index) {
+// Moves the tab to the second half of its window (right of or below the first one), which has a tab row of its
+// own; a tab already there only changes the direction of the split.
+void MainWindow::SplitWith(int index, bool down) {
     if (index < 0 || index >= (int)editors_.size()) return;
-    if (editors_.size() < 2) {
-        ShowMessage(hwnd_, Tr(L"Для разделения нужны хотя бы две вкладки: откройте второй файл."), false);
+    Editor* ed = editors_[index].get();
+    int primary = WindowPrimary(ed->group);
+    if (IsSecondHalf(ed->group)) {  // already in the second half: only the direction changes
+        EnsureSecondHalf(primary, down);
+        Activate(index);
         return;
     }
-    if (index == active_) {  // the left half shows the previous tab instead
-        active_ = index > 0 ? index - 1 : index + 1;
-    }
-    splitIndex_ = index;
-    focusRight_ = true;
-    Activate(index);
+    SplitItem({index, -1}, primary, down);
 }
 
-void MainWindow::Unsplit() {
-    if (!SplitEditor()) return;
-    int keep = focusRight_ ? splitIndex_ : active_;
-    splitIndex_ = -1;
-    focusRight_ = false;
-    Activate(keep);
+// The tabs (files and parts) of the second half of a window join the first one.
+void MainWindow::Unsplit(int primary) {
+    int second = SecondHalf(primary);
+    if (!second) return;
+    Editor* keep = Current();
+    for (auto& e : editors_) {
+        if (e->group == second) e->group = primary;
+    }
+    for (int& group : partGroup_) {
+        if (group == second) group = primary;
+    }
+    if (primary == 0) {
+        splitIndex_ = -1;
+        focusRight_ = false;
+    }
+    if (keep) Activate(IndexOf(keep));
+    else Layout();
 }
 
 // ---- project ----------------------------------------------------------------------------------------------------
@@ -698,7 +732,7 @@ void MainWindow::ShowLeftTab(LeftTab tab) {
 // Sections, labels (local ones under their global label), macros / constants and external names of the file
 // in the focused editor. Clicking an item shows its line.
 void MainWindow::RefreshOutline() {
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     SendMessageW(outline_, WM_SETREDRAW, FALSE, 0);
     TreeView_DeleteAllItems(outline_);
     outlineLines_.clear();

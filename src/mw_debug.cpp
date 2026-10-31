@@ -256,7 +256,7 @@ Debugger::Breakpoints MainWindow::CollectBreakpoints() const {
 
 // Ctrl+F10: continue to the caret line (or start debugging and stop there).
 void MainWindow::RunToCursor() {
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     if (!ed) return;
     if (ed->file().empty() && !SaveAs(ed)) return;
     SourceLocation where{ed->file(), ed->CaretLine()};
@@ -279,7 +279,7 @@ void MainWindow::RunToCursor() {
 
 // Ctrl+Shift+F10: the next instruction to run is the first one of the caret line (rip changes).
 void MainWindow::SetNextStatement() {
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     if (!ed || !DebugStopped()) return;
     std::wstring error;
     SourceLocation where{ed->file(), ed->CaretLine()};
@@ -505,19 +505,15 @@ void MainWindow::RenderDebugPanel() {
     RenderRegisters();
     RenderCallStack();
     RenderWatches();
-    if (debugTab_ == DebugTab::Disasm) RenderDisassembly();
+    const int disasm = static_cast<int>(DebugTab::Disasm);
+    if (ShownPart(partGroup_[disasm]) == disasm) RenderDisassembly();  // only while it shows
     RenderFlags();
     RenderMemory();
 }
 
+// Shows a tab of the debugger, in whichever group or window it is.
 void MainWindow::ShowDebugTab(DebugTab tab) {
-    debugTab_ = tab;
-    Layout();
-    if (tab == DebugTab::Disasm) RenderDisassembly();
-    if (tab == DebugTab::Watch) {
-        RenderWatches();
-        SetFocus(watchExpr_);
-    }
+    ActivatePart(static_cast<int>(tab));
 }
 
 void MainWindow::RenderRegisters() {
@@ -1140,13 +1136,7 @@ void MainWindow::EditMemory(uint64_t address) {
 void MainWindow::AddWatch(const std::string& expression) {
     watches_.push_back(expression);
     SaveProjectSession();
-    if (!DebugPanelVisible()) {
-        showDebugPanel_ = true;
-        CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, MF_CHECKED);
-    }
-    debugTab_ = DebugTab::Watch;
-    Layout();
-    RenderWatches();
+    ActivatePart(static_cast<int>(DebugTab::Watch), false);
 }
 
 // "counter" or "counter, 4": stop when the program writes to those bytes.
@@ -1179,9 +1169,7 @@ void MainWindow::AddDataBreakpoint(const std::string& text) {
         return;
     }
     PrintTo(Pane::DebugOutput, Tr(std::string("точка останова на данные: ")) + expr + " @ 0x" + Hex16(*address) + "\n", Out::Info);
-    debugTab_ = DebugTab::Watch;
-    Layout();
-    RenderWatches();
+    ActivatePart(static_cast<int>(DebugTab::Watch), false);
 }
 
 std::string MainWindow::DebugTipText(Editor* ed, Sci_Position pos) {

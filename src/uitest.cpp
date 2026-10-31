@@ -124,16 +124,17 @@ private:
     }
     bool Waited(ULONGLONG ms) const { return GetTickCount64() - stepStart_ >= ms; }
 
-    void Screenshot(const std::string& name) {
-        RedrawWindow(w_.hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
+    void Screenshot(const std::string& name, HWND window = nullptr) {
+        HWND target = window ? window : w_.hwnd_;
+        RedrawWindow(target, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         RECT rc;
-        GetWindowRect(w_.hwnd_, &rc);
+        GetWindowRect(target, &rc);
         int width = rc.right - rc.left, height = rc.bottom - rc.top;
         HDC screen = GetDC(nullptr);
         HDC dc = CreateCompatibleDC(screen);
         HBITMAP bmp = CreateCompatibleBitmap(screen, width, height);
         HGDIOBJ old = SelectObject(dc, bmp);
-        PrintWindow(w_.hwnd_, dc, PW_RENDERFULLCONTENT);
+        PrintWindow(target, dc, PW_RENDERFULLCONTENT);
         SelectObject(dc, old);
         {
             Gdiplus::Bitmap image(bmp, nullptr);
@@ -263,7 +264,122 @@ public:
              Screenshot("04-profile");
              return true;
          }},
-    };
+        {"split into two tab groups",
+         [this] {
+             for (const wchar_t* name : {L"a.asm", L"b.asm", L"c.asm"}) {
+                 std::ofstream(project_ / name, std::ios::binary) << "; " << Narrow(name) << "\r\n";
+                 w_.OpenFile(project_ / name);
+             }
+             Editor* a = w_.editors_[w_.FindByPath(project_ / L"a.asm")].get();
+             w_.SplitWith(w_.IndexOf(a), false);
+             w_.OpenFile(project_ / L"b.asm");  // already open: stays in the first group
+             Check(a->group == 1 && w_.SplitEditor() == a, "a.asm moved to the right half");
+             // A file opened while the right half has the focus opens there.
+             w_.Activate(w_.IndexOf(a));
+             std::ofstream(project_ / L"d.asm", std::ios::binary) << "; d\r\n";
+             Editor* d = w_.OpenFile(project_ / L"d.asm");
+             Check(d && d->group == 1 && w_.GroupTabs(1).size() == 2, "the right half has its own tabs (a.asm, d.asm)");
+             Check(w_.GroupTabs(0).size() == 3, "the left half keeps main.asm, b.asm, c.asm");
+             return true;
+         }},
+        {"split screenshot",
+         [this] {
+             if (!Waited(300)) return false;
+             Screenshot("06-split");
+             Editor* c = w_.editors_[w_.FindByPath(project_ / L"c.asm")].get();
+             w_.DetachEditor(w_.IndexOf(c), nullptr);
+             Editor* b = w_.editors_[w_.FindByPath(project_ / L"b.asm")].get();
+             Check(w_.floatGroups_.size() == 1 && w_.IsFloating(c), "c.asm has a window of its own");
+             w_.MoveToGroup(w_.IndexOf(b), c->group);
+             Check(w_.GroupTabs(c->group).size() == 2, "a second tab joins that window");
+             return true;
+         }},
+        {"separate window screenshot",
+         [this] {
+             if (!Waited(300)) return false;
+             if (w_.floatGroups_.empty()) {
+                 Fail("no window of its own");
+                 return true;
+             }
+             HWND f = w_.floatGroups_.begin()->second.hwnd;
+             Screenshot("07-window", f);
+             // Dropped on the main window's editor (as when dragged there by its title), its tabs come back.
+             RECT area = w_.GroupArea(0);
+             POINT at{(area.left + area.right) / 2, (area.top + area.bottom) / 2};
+             ClientToScreen(w_.hwnd_, &at);
+             PostMessageW(f, WM_APP + 1 /* WM_FLOAT_DOCK */, at.x, at.y);
+             return true;
+         }},
+        {"window docked back",
+         [this] {
+             if (!w_.floatGroups_.empty() && !Waited(3000)) return false;
+             Check(w_.floatGroups_.empty(), "the window closed after docking");
+             Check(w_.GroupTabs(0).size() == 3 && w_.GroupTabs(1).size() == 2, "its tabs joined the left half");
+             // A window of its own split in two, like the main editor.
+             Editor* c = w_.editors_[w_.FindByPath(project_ / L"c.asm")].get();
+             Editor* b = w_.editors_[w_.FindByPath(project_ / L"b.asm")].get();
+             w_.DetachEditor(w_.IndexOf(c), nullptr);
+             w_.MoveToGroup(w_.IndexOf(b), c->group);
+             w_.SplitWith(w_.IndexOf(b), false);
+             int second = w_.SecondHalf(c->group);
+             Check(second && b->group == second && w_.WindowPrimary(second) == c->group, "the separate window is split");
+             return true;
+         }},
+        {"split window screenshot",
+         [this] {
+             if (!Waited(300)) return false;
+             if (w_.floatGroups_.empty()) {
+                 Fail("no window of its own");
+                 return true;
+             }
+             HWND f = w_.floatGroups_.begin()->second.hwnd;
+             Screenshot("08-window-split", f);
+             SendMessageW(f, WM_CLOSE, 0, 0);
+             Check(w_.floatGroups_.empty() && w_.GroupTabs(0).size() == 3, "closing it brings both halves back");
+             // Any window takes files and parts of the debugger alike: the registers get a window of their own,
+             // the call stack and a file join them, the memory view goes into its second half.
+             using P = MainWindow::TabItem;
+             const int regs = static_cast<int>(MainWindow::DebugTab::Registers), stack = static_cast<int>(MainWindow::DebugTab::Stack);
+             w_.DetachItem(P{-1, regs}, nullptr);
+             int window = w_.partGroup_[regs];
+             w_.MoveItem(P{-1, stack}, window);
+             w_.MoveItem(P{w_.FindByPath(project_ / L"b.asm"), -1}, window);
+             w_.SplitItem(P{-1, MainWindow::kMemoryPart}, window, true);
+             int memoryGroup = w_.partGroup_[MainWindow::kMemoryPart];
+             Check(window >= MainWindow::kFirstFloatGroup && w_.partGroup_[stack] == window &&
+                       w_.GroupTabs(window).size() == 1, "a window of its own holds two parts and a file");
+             Check(memoryGroup == w_.SecondHalf(window) && IsChild(w_.GroupHost(window), w_.memExpr_),
+                   "the memory view is in its second half");
+             Check(w_.PanelShown() && w_.GroupParts(MainWindow::kPanelGroup).size() == 3,
+                   "the debug panel keeps the other three tabs");
+             return true;
+         }},
+        {"mixed window screenshot",
+         [this] {
+             if (!Waited(300)) return false;
+             HWND f = w_.GroupHost(w_.partGroup_[static_cast<int>(MainWindow::DebugTab::Registers)]);
+             Screenshot("09-mixed-window", f);
+             Screenshot("10-panel-without-parts");
+             SendMessageW(f, WM_CLOSE, 0, 0);
+             bool parts = true;
+             for (int g : w_.partGroup_) parts &= g == MainWindow::kPanelGroup;
+             Check(w_.floatGroups_.empty() && parts && IsChild(w_.hwnd_, w_.memExpr_),
+                   "closing it: the file to the editor, the parts to the debug panel");
+             w_.ResetDebugParts();
+             Check(w_.partGroup_[MainWindow::kMemoryPart] == MainWindow::kPanelGroup2, "the panel is as at first again");
+             // The whole debug panel in a window of its own, and back.
+             w_.OnCommand(ID_DETACH_DEBUG);
+             Check(!w_.PanelShown() && w_.floatGroups_.size() == 2, "the debug panel has a window of its own (split)");
+             return true;
+         }},
+        {"debug window",
+         [this] {
+             if (!Waited(300)) return false;
+             Screenshot("11-debug-window", w_.GroupHost(w_.partGroup_[0]));
+             w_.OnCommand(ID_DETACH_DEBUG);
+             Check(w_.floatGroups_.empty() && w_.PanelShown(), "and back into the main window");
+             return true;
+         }},    };
 };
 
 void MainWindow::StartUiTest(const fs::path& out) {

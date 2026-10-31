@@ -12,8 +12,34 @@ constexpr int kIslandRadius = 10;
 
 // ---- layout & painting ------------------------------------------------------------------------------------------
 
+// An editor area with one tab group, or two (right of or below each other), each with a tab row above its editor.
+void MainWindow::SplitGeometry(const RECT& area, bool split, bool down, RECT& tabs1, RECT& editor1, RECT& gap,
+                               RECT& tabs2, RECT& editor2) const {
+    int tabsH = S(34), w = S(5);
+    if (split && down) {
+        int mid = (area.top + area.bottom) / 2;
+        tabs1 = {area.left, area.top, area.right, area.top + tabsH};
+        editor1 = {area.left, tabs1.bottom, area.right, std::max<LONG>(tabs1.bottom, mid - w / 2)};
+        gap = {area.left, editor1.bottom, area.right, editor1.bottom + w};
+        tabs2 = {area.left, gap.bottom, area.right, gap.bottom + tabsH};
+        editor2 = {area.left, tabs2.bottom, area.right, std::max(tabs2.bottom, area.bottom)};
+    } else if (split) {
+        int mid = (area.left + area.right) / 2;
+        gap = {mid - w / 2, area.top, mid + w / 2, area.bottom};
+        tabs1 = {area.left, area.top, gap.left, area.top + tabsH};
+        editor1 = {area.left, tabs1.bottom, gap.left, std::max(tabs1.bottom, area.bottom)};
+        tabs2 = {gap.right, area.top, area.right, area.top + tabsH};
+        editor2 = {gap.right, tabs2.bottom, area.right, std::max(tabs2.bottom, area.bottom)};
+    } else {
+        tabs1 = {area.left, area.top, area.right, area.top + tabsH};
+        editor1 = {area.left, tabs1.bottom, area.right, std::max(tabs1.bottom, area.bottom)};
+        tabs2 = editor2 = gap = {};
+    }
+}
+
 void MainWindow::Layout() {
     if (!tree_) return;
+    FixGroups();
     RECT rc;
     GetClientRect(hwnd_, &rc);
     int W = rc.right, H = rc.bottom;
@@ -37,86 +63,88 @@ void MainWindow::Layout() {
     rcSplitV_ = {treeIsland.right, bodyTop, treeIsland.right + g, bodyBottom};
     int x0 = rcSplitV_.right;
 
-    // Debug panel on the right: tabs (registers, call stack, watches, disassembly) above the memory view.
-    bool panel = DebugPanelVisible();
+    // The debug panel on the right: one tab group, or two (the second below or right of the first) like the
+    // editor's; at first the debugger's tabs above the memory view.
+    bool panel = PanelShown();
     int debugW = panel ? std::clamp(S(settings_->debugWidth), S(220), std::max(S(220), W - x0 - S(300))) : 0;
     int x1 = panel ? W - g - debugW - g : W - g;  // right edge of the editor column
     rcSplitD_ = panel ? RECT{x1, bodyTop, x1 + g, bodyBottom} : RECT{};
     rcDebug_ = panel ? RECT{x1 + g, bodyTop, W - g, bodyBottom} : RECT{};
-    int regsBottom = rcDebug_.top + header + (bodyBottom - bodyTop - header) * 58 / 100;
-    rcDebugHeader_ = {rcDebug_.left, bodyTop, rcDebug_.right, bodyTop + header};
-    rcWatchRow_ = {rcDebug_.left, rcDebugHeader_.bottom, rcDebug_.right, rcDebugHeader_.bottom + inputH};
-    rcMemHeader_ = {rcDebug_.left, regsBottom + g, rcDebug_.right, regsBottom + g + header};
-    rcMemFormat_ = {rcDebug_.right - S(110), rcMemHeader_.top + S(4), rcDebug_.right - S(8), rcMemHeader_.bottom - S(4)};
-    rcMemRow_ = {rcDebug_.left, rcMemHeader_.bottom, rcDebug_.right, rcMemHeader_.bottom + inputH};
+    for (FloatGroup& half : panel_) half.rcTabs = half.rcEditor = half.rcSplit = half.island = {};
     if (panel) {
-        islands_.push_back({rcDebug_.left, bodyTop, rcDebug_.right, regsBottom});
-        islands_.push_back({rcDebug_.left, rcMemHeader_.top, rcDebug_.right, bodyBottom});
+        islands_.push_back(rcDebug_);
+        panel_[0].island = panel_[1].island = rcDebug_;
+        SplitGeometry({rcDebug_.left + p, rcDebug_.top, rcDebug_.right - p, rcDebug_.bottom - p},
+                      GroupHasItems(kPanelGroup2), panelDown_, panel_[0].rcTabs, panel_[0].rcEditor, panel_[0].rcSplit,
+                      panel_[1].rcTabs, panel_[1].rcEditor);
     }
 
     rcSplitH_ = {x0, bodyBottom - consoleH - g, x1, bodyBottom - consoleH};
     islands_.push_back({x0, bodyTop, x1, rcSplitH_.top});
     islands_.push_back({x0, rcSplitH_.bottom, x1, bodyBottom});
-    rcTabs_ = {x0 + p, bodyTop, x1 - p, bodyTop + tabsH};
-    rcEditor_ = {x0 + p, bodyTop + tabsH, x1 - p, rcSplitH_.top - p};
-    Editor* right = SplitEditor();
-    if (right) {  // two editors side by side
-        int split = S(5), mid = (rcEditor_.left + rcEditor_.right) / 2;
-        rcEditor2_ = {mid + split / 2, rcEditor_.top, rcEditor_.right, rcEditor_.bottom};
-        rcSplitE_ = {mid - split / 2, rcEditor_.top, mid + split / 2, rcEditor_.bottom};
-        rcEditor_.right = rcSplitE_.left;
-    } else {
-        rcEditor2_ = rcSplitE_ = {};
-    }
+    // The editor; split, each half has a tab row of its own.
+    SplitGeometry({x0 + p, bodyTop, x1 - p, rcSplitH_.top - p}, GroupHasItems(1), splitDown_, rcTabs_, rcEditor_,
+                  rcSplitE_, rcTabs2_, rcEditor2_);
     rcConsoleHeader_ = {x0, rcSplitH_.bottom, x1, rcSplitH_.bottom + header};
     rcClear_ = {x1 - S(90), rcConsoleHeader_.top, x1 - S(12), rcConsoleHeader_.bottom};
-
-    bool watchTab = panel && debugTab_ == DebugTab::Watch;
-    for (HWND h : {memView_->hwnd(), memExpr_}) ShowWindow(h, panel ? SW_SHOW : SW_HIDE);
-    ShowWindow(watchExpr_, watchTab ? SW_SHOW : SW_HIDE);
-    Editor* tabViews[] = {regsView_.get(), stackView_.get(), watchView_.get(), disasmView_.get(), flagsView_.get()};
-    for (int i = 0; i < static_cast<int>(DebugTab::Count); i++) {
-        ShowWindow(tabViews[i]->hwnd(), panel && i == static_cast<int>(debugTab_) ? SW_SHOW : SW_HIDE);
-    }
-    if (panel) {
-        int top = watchTab ? rcWatchRow_.bottom : rcDebugHeader_.bottom;
-        SetWindowPos(tabViews[static_cast<int>(debugTab_)]->hwnd(), nullptr, rcDebug_.left + p, top, debugW - 2 * p,
-                     regsBottom - p - top, SWP_NOZORDER);
-        // The inputs sit inside a rounded frame that Paint draws around them.
-        if (watchTab) {
-            SetWindowPos(watchExpr_, nullptr, rcDebug_.left + S(16), rcWatchRow_.top + S(7), debugW - S(32),
-                         inputH - S(14), SWP_NOZORDER);
-        }
-        SetWindowPos(memExpr_, nullptr, rcDebug_.left + S(16), rcMemRow_.top + S(7), debugW - S(32), inputH - S(14),
-                     SWP_NOZORDER);
-        SetWindowPos(memView_->hwnd(), nullptr, rcDebug_.left + p, rcMemRow_.bottom, debugW - 2 * p,
-                     bodyBottom - p - rcMemRow_.bottom, SWP_NOZORDER);
-    }
 
     // Left panel: project tree or file outline.
     ShowWindow(tree_, leftTab_ == LeftTab::Project ? SW_SHOW : SW_HIDE);
     ShowWindow(outline_, leftTab_ == LeftTab::Outline ? SW_SHOW : SW_HIDE);
     HDWP dwp = BeginDeferWindowPos(8 + (int)editors_.size());
     dwp = DeferWindowPos(dwp, leftTab_ == LeftTab::Project ? tree_ : outline_, nullptr, treeIsland.left + p,
-                         rcTreeHeader_.bottom, treeW - 2 * p, bodyBottom - p - rcTreeHeader_.bottom, SWP_NOZORDER);
+                         rcTreeHeader_.bottom, treeW - 2 * p, bodyBottom - p - rcTreeHeader_.bottom, SWP_NOZORDER | SWP_NOCOPYBITS);
     for (auto& view : views_) {
         dwp = DeferWindowPos(dwp, view->hwnd(), nullptr, x0 + p, rcConsoleHeader_.bottom, x1 - x0 - 2 * p,
-                             bodyBottom - p - rcConsoleHeader_.bottom, SWP_NOZORDER);
+                             bodyBottom - p - rcConsoleHeader_.bottom, SWP_NOZORDER | SWP_NOCOPYBITS);
     }
-    Editor* left = Active();
-    for (auto& ed : editors_) {
-        const RECT& r = ed.get() == right ? rcEditor2_ : rcEditor_;
-        dwp = DeferWindowPos(dwp, ed->hwnd(), nullptr, r.left, r.top, r.right - r.left - mark, r.bottom - r.top,
-                             SWP_NOZORDER);
-    }
-    dwp = DeferWindowPos(dwp, markBar_, nullptr, rcEditor_.right - mark, rcEditor_.top, mark,
-                         rcEditor_.bottom - rcEditor_.top, SWP_NOZORDER | (left ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
-    dwp = DeferWindowPos(dwp, markBar2_, nullptr, rcEditor2_.right - mark, rcEditor2_.top, mark,
-                         rcEditor2_.bottom - rcEditor2_.top, SWP_NOZORDER | (right ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
     EndDeferWindowPos(dwp);
+    // Windows of their own: one island with one group, or two like the main editor.
+    for (auto& [group, fg] : floatGroups_) {
+        if (fg.second) continue;  // laid out with its first half
+        RECT fc;
+        GetClientRect(fg.hwnd, &fc);
+        fg.island = {g, g, std::max<LONG>(g, fc.right - g), std::max<LONG>(g, fc.bottom - g)};
+        FloatGroup* half = fg.partner ? &floatGroups_[fg.partner] : nullptr;
+        RECT tabs2{}, editor2{};
+        SplitGeometry({fg.island.left + p, fg.island.top, fg.island.right - p, fg.island.bottom - p}, half != nullptr,
+                      fg.down, fg.rcTabs, fg.rcEditor, fg.rcSplit, tabs2, editor2);
+        if (half) {
+            half->island = fg.island;
+            half->rcTabs = tabs2;
+            half->rcEditor = editor2;
+        }
+        ShowWindow(fg.hwnd, WindowShown(group) ? SW_SHOWNA : SW_HIDE);
+        InvalidateRect(fg.hwnd, nullptr, FALSE);
+    }
+    // Every file and part: the tab a group shows fills the group's area below its tab row.
+    auto onScreen = [&](int group) {
+        int primary = WindowPrimary(group);
+        return primary == 0 || (primary == kPanelGroup ? panel : WindowShown(primary));
+    };
+    Editor *left = nullptr, *right = nullptr;  // in the main editor, with the mark bars
     for (size_t i = 0; i < editors_.size(); i++) {
         Editor* e = editors_[i].get();
-        ShowWindow(e->hwnd(), e == left || e == right ? SW_SHOW : SW_HIDE);
+        int group = e->group;
+        bool shown = static_cast<int>(i) == ShownIndex(group) && ShownPart(group) < 0 && onScreen(group);
+        if (shown) {
+            RECT r = GroupContent(group);
+            int m = group < kPanelGroup ? mark : 0;
+            SetWindowPos(e->hwnd(), nullptr, r.left, r.top, std::max<LONG>(0, r.right - r.left - m),
+                         std::max<LONG>(0, r.bottom - r.top), SWP_NOZORDER | SWP_NOCOPYBITS | SWP_NOACTIVATE);
+            if (group == 0) left = e;
+            if (group == 1) right = e;
+        }
+        ShowWindow(e->hwnd(), shown ? SW_SHOW : SW_HIDE);
+    }
+    SetWindowPos(markBar_, nullptr, rcEditor_.right - mark, rcEditor_.top, mark, rcEditor_.bottom - rcEditor_.top,
+                 SWP_NOZORDER | SWP_NOCOPYBITS | SWP_NOACTIVATE | (left ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    SetWindowPos(markBar2_, nullptr, rcEditor2_.right - mark, rcEditor2_.top, mark, rcEditor2_.bottom - rcEditor2_.top,
+                 SWP_NOZORDER | SWP_NOCOPYBITS | SWP_NOACTIVATE | (right ? SWP_SHOWWINDOW : SWP_HIDEWINDOW));
+    for (int part = 0; part < kDebugParts; part++) {
+        int group = partGroup_[part];
+        if (ShownPart(group) == part && onScreen(group)) PlacePart(part, GroupContent(group));
+        else HidePart(part);
     }
 
     if (termActive_ && pty_) {  // keep the pseudoconsole the size of the terminal view
@@ -172,15 +200,51 @@ void MainWindow::Layout() {
     InvalidateRect(markBar2_, nullptr, FALSE);
 }
 
+// A part of the debugger shown in `content` of its group's window: the memory view below a row with the address
+// and the format, the watches below the row to add one.
+void MainWindow::PlacePart(int part, const RECT& content) {
+    int inputH = S(36), w = content.right - content.left, top = content.top;
+    HWND input = nullptr;
+    int inputRight = content.right - S(16);
+    if (part == kMemoryPart) {
+        rcMemRow_ = {content.left, top, content.right, top + inputH};
+        rcMemFormat_ = {content.right - S(110), top + S(6), content.right - S(8), top + inputH - S(6)};
+        inputRight = rcMemFormat_.left - S(12);
+        input = memExpr_;
+    } else if (part == static_cast<int>(DebugTab::Watch)) {
+        rcWatchRow_ = {content.left, top, content.right, top + inputH};
+        input = watchExpr_;
+    }
+    if (input) {
+        // The input sits inside a rounded frame that PaintPartChrome draws around it.
+        SetWindowPos(input, nullptr, content.left + S(16), top + S(7), std::max(0, inputRight - (int)content.left - S(16)),
+                     inputH - S(14), SWP_NOZORDER | SWP_NOCOPYBITS | SWP_NOACTIVATE);
+        ShowWindow(input, SW_SHOW);
+        top += inputH;
+    }
+    SetWindowPos(PartView(part)->hwnd(), nullptr, content.left, top, std::max(0, w),
+                 std::max<LONG>(0, content.bottom - top), SWP_NOZORDER | SWP_NOCOPYBITS | SWP_NOACTIVATE);
+    ShowWindow(PartView(part)->hwnd(), SW_SHOW);
+}
+
+void MainWindow::HidePart(int part) {
+    ShowWindow(PartView(part)->hwnd(), SW_HIDE);
+    if (part == kMemoryPart) {
+        ShowWindow(memExpr_, SW_HIDE);
+        rcMemRow_ = rcMemFormat_ = {};
+    } else if (part == static_cast<int>(DebugTab::Watch)) {
+        ShowWindow(watchExpr_, SW_HIDE);
+        rcWatchRow_ = {};
+    }
+}
 void MainWindow::InvalidateChrome() {
     InvalidateRect(hwnd_, &rcToolbar_, FALSE);
-    InvalidateRect(hwnd_, &rcTabs_, FALSE);
+    InvalidateTabs();
     InvalidateRect(hwnd_, &rcStatus_, FALSE);
     InvalidateRect(hwnd_, &rcTreeHeader_, FALSE);
     InvalidateRect(hwnd_, &rcConsoleHeader_, FALSE);
-    InvalidateRect(hwnd_, &rcDebugHeader_, FALSE);
-    InvalidateRect(hwnd_, &rcMemHeader_, FALSE);
-    if (editors_.empty()) InvalidateRect(hwnd_, &rcEditor_, FALSE);
+    InvalidateRect(PartHost(kMemoryPart), &rcMemFormat_, FALSE);
+    if (NoDockedEditors()) InvalidateRect(hwnd_, &rcEditor_, FALSE);
 }
 
 std::wstring MainWindow::ToolLabel(const ToolItem& t) const {
@@ -260,43 +324,28 @@ void MainWindow::Paint(HDC dc) {
         }
     }
 
-    // The splitters are the gaps between the islands; only the split editor has a line of its own.
-    if (SplitEditor()) {
-        int mid = (rcSplitE_.left + rcSplitE_.right) / 2;
-        FillRectColor(dc, {mid, rcSplitE_.top + S(4), mid + 1, rcSplitE_.bottom - S(4)}, Theme::Border);
-    }
-
-    PaintTabs(dc);
-    if (editors_.empty()) PaintWelcome(dc);
-
-    if (DebugPanelVisible()) {
-        RECT tabs = rcDebugHeader_;
-        tabs.right -= S(4);
-        PaintHeaderTabs(dc, tabs, {Tr(L"Регистры"), Tr(L"Стек вызовов"), Tr(L"Наблюдение"), Tr(L"Код"), Tr(L"Флаги")},
-                        static_cast<int>(debugTab_), debugTabRects_, hoverDebugTab_);
-        RECT m = rcMemHeader_;
-        m.left += S(14);
-        DrawTextColor(dc, Tr(L"Память"), m, Theme::Bright, DT_SINGLELINE | DT_VCENTER);
-        static const wchar_t* formats[] = {L"байты", L"word", L"dword", L"qword", L"float", L"double", L"текст"};
-        std::wstring format = std::wstring(Tr(formats[static_cast<int>(memFormat_)])) + L"  ▾";
-        if (hoverMemFormat_) FillRound(dc, rcMemFormat_, S(6), Theme::Hover);
-        DrawTextColor(dc, format, rcMemFormat_, hoverMemFormat_ ? Theme::Bright : Theme::Text,
-                      DT_SINGLELINE | DT_VCENTER | DT_CENTER);
-        if (!debugStatus_.empty()) {  // stop reason under the tabs, right-aligned in the memory header
-            RECT st = rcMemHeader_;
-            st.left += S(80);
-            st.right = rcMemFormat_.left - S(8);
-            DrawTextColor(dc, debugStatus_, st, debugStatusColor_, DT_SINGLELINE | DT_VCENTER | DT_RIGHT | DT_END_ELLIPSIS);
+    // The splitters are the gaps between the islands; only split groups have a line of their own.
+    auto splitLine = [&](const RECT& s, bool down) {
+        if (down) {
+            int mid = (s.top + s.bottom) / 2;
+            FillRectColor(dc, {s.left + S(4), mid, s.right - S(4), mid + 1}, Theme::Border);
+        } else {
+            int mid = (s.left + s.right) / 2;
+            FillRectColor(dc, {mid, s.top + S(4), mid + 1, s.bottom - S(4)}, Theme::Border);
         }
-        for (HWND input : {memExpr_, debugTab_ == DebugTab::Watch ? watchExpr_ : nullptr}) {
-            if (!input) continue;
-            RECT frame;
-            GetWindowRect(input, &frame);
-            MapWindowPoints(nullptr, hwnd_, reinterpret_cast<POINT*>(&frame), 2);
-            InflateRect(&frame, S(6), S(4));
-            FillRound(dc, frame, S(6), Theme::InputBg, GetFocus() == input ? Theme::Accent : Theme::Border);
+    };
+    if (GroupHasItems(1)) splitLine(rcSplitE_, splitDown_);
+    PaintTabs(dc, 0);
+    if (GroupHasItems(1)) PaintTabs(dc, 1);
+    if (NoDockedEditors()) PaintWelcome(dc);
+    if (PanelShown()) {  // the debug panel: its groups, like the editor's
+        PaintTabs(dc, kPanelGroup);
+        if (GroupHasItems(kPanelGroup2)) {
+            splitLine(panel_[0].rcSplit, panelDown_);
+            PaintTabs(dc, kPanelGroup2);
         }
     }
+    PaintPartChrome(dc, hwnd_);
 
     // bottom panel: tabs and the state of the program
     int problems = problemCount_;
@@ -312,8 +361,10 @@ void MainWindow::Paint(HDC dc) {
         // no room for the state text
     } else if (debugging_) {
         bool stopped = DebugStopped();
-        DrawTextColor(dc, stopped ? Tr(L"● отладка: остановлено") : Tr(L"● отладка: выполняется"), state,
-                      stopped ? Theme::Warning : Theme::Success, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        std::wstring text = stopped ? Tr(L"● отладка: остановлено") : Tr(L"● отладка: выполняется");
+        if (stopped && !debugStatus_.empty()) text += L" — " + debugStatus_;  // the stop reason
+        DrawTextColor(dc, text, state, stopped ? Theme::Warning : Theme::Success,
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
     } else if (process_) {
         DrawTextColor(dc, Tr(L"● программа выполняется — ввод во вкладке «Терминал»"), state, Theme::Success,
                       DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
@@ -326,6 +377,26 @@ void MainWindow::Paint(HDC dc) {
     PaintStatus(dc);
 }
 
+// What a part shows besides its view, in `host`: the memory format beside the address row and the rounded frames
+// around the inputs.
+void MainWindow::PaintPartChrome(HDC dc, HWND host) {
+    if (PartHost(kMemoryPart) == host && rcMemFormat_.right > rcMemFormat_.left) {
+        static const wchar_t* formats[] = {L"байты", L"word", L"dword", L"qword", L"float", L"double", L"текст"};
+        std::wstring format = std::wstring(Tr(formats[static_cast<int>(memFormat_)])) + L"  ▾";
+        if (hoverMemFormat_) FillRound(dc, rcMemFormat_, S(6), Theme::Hover);
+        SelectObject(dc, uiFont_);
+        DrawTextColor(dc, format, rcMemFormat_, hoverMemFormat_ ? Theme::Bright : Theme::Text,
+                      DT_SINGLELINE | DT_VCENTER | DT_CENTER);
+    }
+    for (HWND input : {memExpr_, watchExpr_}) {
+        if (GetParent(input) != host || !IsWindowVisible(input)) continue;
+        RECT frame;
+        GetWindowRect(input, &frame);
+        MapWindowPoints(nullptr, host, reinterpret_cast<POINT*>(&frame), 2);
+        InflateRect(&frame, S(6), S(4));
+        FillRound(dc, frame, S(6), Theme::InputBg, GetFocus() == input ? Theme::Accent : Theme::Border);
+    }
+}
 void MainWindow::DrawIcon(HDC dc, int icon, const RECT& rc, bool enabled) {
     int s = S(16);
     int cx = (rc.left + rc.right) / 2, cy = (rc.top + rc.bottom) / 2;
@@ -454,7 +525,7 @@ void MainWindow::PaintToolbar(HDC dc) {
         case ID_PROFILE:
         case ID_PROJECT_WIDGET: enabled = !debugging_ && !building_; break;
         }
-        if ((int)i == hoverTool_ && enabled) FillRound(dc, t.rc, S(6), Theme::Hover);
+        if (((int)i == hoverTool_ || (int)i == openMenuTool_) && enabled) FillRound(dc, t.rc, S(6), Theme::Hover);
         RECT tr = t.rc;
         std::wstring text = ToolLabel(t);
         if (t.id == ID_PROJECT_WIDGET) {  // a colored square with the project's initials, its name and ▾
@@ -503,51 +574,82 @@ void MainWindow::PaintToolbar(HDC dc) {
     }
 }
 
-void MainWindow::PaintTabs(HDC dc) {
-    tabRects_.assign(editors_.size(), RECT{});
-    closeRects_.assign(editors_.size(), RECT{});
-    if (editors_.empty()) return;
+// The tab row of a group (in the window that holds it): its files, then the parts of the debugger in it.
+void MainWindow::PaintTabs(HDC dc, int group) {
+    if (tabRects_.size() != editors_.size()) {
+        tabRects_.assign(editors_.size(), RECT{});
+        closeRects_.assign(editors_.size(), RECT{});
+    }
+    std::vector<int> files = GroupTabs(group), parts = GroupParts(group);
+    for (int i : files) tabRects_[i] = closeRects_[i] = RECT{};
+    for (int part : parts) partTabRects_[part] = RECT{};
+    RECT strip = StripRect(group);
+    if ((files.empty() && parts.empty()) || strip.right <= strip.left) return;
 
-    std::vector<int> widths;
-    int total = 0;
+    struct Tab {
+        int file;  // editor index, or -1 for a part
+        int part;
+        int width;
+    };
+    std::vector<Tab> tabs;
     SelectObject(dc, uiFont_);
-    for (auto& ed : editors_) {
-        std::wstring title = (ed->Modified() ? L"● " : L"") + ed->Title();
-        int w = TextWidth(dc, title) + S(ed->pinned ? 62 : 50);
-        widths.push_back(w);
-        total += w;
-    }
-    int avail = rcTabs_.right - rcTabs_.left;
-    if (ensureTabVisible_ && active_ >= 0) {
-        int start = 0;
-        for (int i = 0; i < active_; i++) start += widths[i];
-        if (start < tabScroll_) tabScroll_ = start;
-        if (start + widths[active_] > tabScroll_ + avail) tabScroll_ = start + widths[active_] - avail;
-        ensureTabVisible_ = false;
-    }
-    tabScroll_ = std::clamp(tabScroll_, 0, std::max(0, total - avail));
-
-    HRGN clip = CreateRectRgn(rcTabs_.left, rcTabs_.top, rcTabs_.right, rcTabs_.bottom);
-    SelectClipRgn(dc, clip);
-    int x = rcTabs_.left - tabScroll_;
-    for (size_t i = 0; i < editors_.size(); i++) {
+    for (int i : files) {
         Editor& ed = *editors_[i];
-        RECT r{x, rcTabs_.top, x + widths[i], rcTabs_.bottom};
-        tabRects_[i] = r;
-        bool active = (int)i == active_;
-        bool inRight = (int)i == splitIndex_;
-        bool focused = active ? !(focusRight_ && SplitEditor()) : inRight && focusRight_;
+        std::wstring title = (ed.Modified() ? L"● " : L"") + ed.Title();
+        tabs.push_back({i, -1, TextWidth(dc, title) + S(ed.pinned ? 62 : 50)});
+    }
+    for (int part : parts) tabs.push_back({-1, part, TextWidth(dc, PartTitle(part)) + S(30)});
+    int shownPart = ShownPart(group), shownFile = shownPart < 0 ? ShownIndex(group) : -1;
+    auto isShown = [&](const Tab& t) { return t.part >= 0 ? t.part == shownPart : t.file == shownFile; };
+    int total = 0;
+    for (const Tab& t : tabs) total += t.width;
+    int avail = strip.right - strip.left;
+    int& scroll = tabScroll_[group];
+    if (ensureTabVisible_.count(group)) {
+        int start = 0;
+        for (const Tab& t : tabs) {
+            if (isShown(t)) {
+                if (start < scroll) scroll = start;
+                if (start + t.width > scroll + avail) scroll = start + t.width - avail;
+                break;
+            }
+            start += t.width;
+        }
+        ensureTabVisible_.erase(group);
+    }
+    scroll = std::clamp(scroll, 0, std::max(0, total - avail));
+    // The group with the focus underlines its tab in the accent color.
+    bool groupFocused = group >= kPanelGroup ? floatFocus_ == group
+                                             : floatFocus_ == 0 && (group == 1) == (focusRight_ && GroupHasItems(1));
+
+    HRGN clip = CreateRectRgn(strip.left, strip.top, strip.right, strip.bottom);
+    SelectClipRgn(dc, clip);
+    int x = strip.left - scroll;
+    for (const Tab& t : tabs) {
+        RECT r{x, strip.top, x + t.width, strip.bottom};
+        x += t.width;
         // IntelliJ-style tabs: no boxes, the open tab is underlined (in the accent color while it has the focus),
         // the one under the mouse gets a rounded highlight.
-        bool open = active || inRight;
+        bool open = isShown(t);
+        bool dragged = drag_ == Drag::Tab && dragMoved_ && (t.part >= 0 ? t.part == dragPart_ : t.file == dragTab_);
+        bool hover = t.part >= 0 ? t.part == hoverPart_ : t.file == hoverTab_;
         RECT pill{r.left + S(2), r.top + S(5), r.right - S(2), r.bottom - S(5)};
-        if ((int)i == dragTab_ && drag_ == Drag::Tab && dragMoved_) FillRound(dc, pill, S(6), Theme::Hover, Theme::Accent);
-        else if (!open && (int)i == hoverTab_) FillRound(dc, pill, S(6), Theme::Hover);
+        if (dragged) FillRound(dc, pill, S(6), Theme::Hover, Theme::Accent);
+        else if (!open && hover) FillRound(dc, pill, S(6), Theme::Hover);
         if (open) {
             FillRound(dc, {r.left + S(6), r.bottom - S(3), r.right - S(6), r.bottom}, S(1),
-                      focused ? Theme::Accent : Theme::Dim);
+                      open && groupFocused ? Theme::Accent : Theme::Dim);
         }
-
+        if (t.part >= 0) {  // a part of the debugger: its name, no close button
+            partTabRects_[t.part] = r;
+            SelectObject(dc, uiFont_);
+            DrawTextColor(dc, PartTitle(t.part), {r.left + S(15), r.top, r.right - S(8), r.bottom},
+                          open ? Theme::Bright : (hover ? Theme::Text : Theme::Muted), DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            continue;
+        }
+        int i = t.file;
+        Editor& ed = *editors_[i];
+        tabRects_[i] = r;
         bool errors = ed.Count(Severity::Error) > 0;
         bool isMain = !mainFile_.empty() && SamePath(ed.file(), mainFile_);
         std::wstring title = (ed.Modified() ? L"● " : L"") + ed.Title();
@@ -567,19 +669,42 @@ void MainWindow::PaintTabs(HDC dc) {
         int cy = (r.top + r.bottom) / 2;
         RECT cr{r.right - S(28), cy - S(9), r.right - S(10), cy + S(9)};
         closeRects_[i] = cr;
-        if ((int)i == hoverClose_) FillRound(dc, cr, S(4), Theme::Pressed);
-        if (open || (int)i == hoverTab_) {
+        if (i == hoverClose_) FillRound(dc, cr, S(4), Theme::Pressed);
+        if (open || hover) {
             SelectObject(dc, uiFont_);
-            DrawTextColor(dc, L"✕", cr, (int)i == hoverClose_ ? Theme::Bright : Theme::Muted,
+            DrawTextColor(dc, L"✕", cr, i == hoverClose_ ? Theme::Bright : Theme::Muted,
                           DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
-        x += widths[i];
     }
     SelectClipRgn(dc, nullptr);
     DeleteObject(clip);
     SelectObject(dc, uiFont_);
 }
 
+// A window of its own: the island with its tab rows (the views cover the rest).
+void MainWindow::PaintFloat(HDC dc, int group) {
+    auto it = floatGroups_.find(group);
+    if (it == floatGroups_.end()) return;
+    const FloatGroup& fg = it->second;
+    RECT rc;
+    GetClientRect(fg.hwnd, &rc);
+    FillRectColor(dc, rc, Theme::FrameBg);
+    FillRound(dc, fg.island, S(kIslandRadius), Theme::EditorBg);
+    SetBkMode(dc, TRANSPARENT);
+    PaintTabs(dc, group);
+    if (fg.partner) {  // split: the second tab row and the line between the halves
+        PaintTabs(dc, fg.partner);
+        const RECT& s = fg.rcSplit;
+        if (fg.down) {
+            int mid = (s.top + s.bottom) / 2;
+            FillRectColor(dc, {s.left + S(4), mid, s.right - S(4), mid + 1}, Theme::Border);
+        } else {
+            int mid = (s.left + s.right) / 2;
+            FillRectColor(dc, {mid, s.top + S(4), mid + 1, s.bottom - S(4)}, Theme::Border);
+        }
+    }
+    PaintPartChrome(dc, fg.hwnd);
+}
 void MainWindow::PaintWelcome(HDC dc) {
     FillRectColor(dc, rcEditor_, Theme::EditorBg);
     welcomeLinks_.clear();
@@ -634,7 +759,7 @@ void MainWindow::PaintStatus(HDC dc) {
     DrawTextColor(dc, toolStatus_, left, toolStatusWarn_ ? Theme::Warning : Theme::Muted, DT_SINGLELINE | DT_VCENTER);
 
     std::vector<std::pair<std::wstring, COLORREF>> parts;
-    Editor* ed = focusRight_ && SplitEditor() ? SplitEditor() : Active();
+    Editor* ed = Current();
     if (ed) {
         int errors = ed->Count(Severity::Error), warnings = ed->Count(Severity::Warning);
         if (errors) parts.push_back({std::wstring(Tr(L"Ошибок: ")) + std::to_wstring(errors), Theme::Error});
@@ -655,54 +780,44 @@ void MainWindow::PaintStatus(HDC dc) {
 }
 
 void MainWindow::OnMouseMove(int x, int y) {
-    if (drag_ == Drag::Tree) {
-        settings_->treeWidth = std::max(80, MulDiv(x - S(kIslandGap), 96, dpi_));
-        Layout();
-        return;
-    }
-    if (drag_ == Drag::Console) {
-        settings_->consoleHeight = std::max(60, MulDiv(rcStatus_.top - y, 96, dpi_));
-        Layout();
-        return;
-    }
-    if (drag_ == Drag::Debug) {
-        settings_->debugWidth = std::max(180, MulDiv(rcStatus_.right - S(2 * kIslandGap) - x, 96, dpi_));
-        Layout();
-        return;
-    }
-    if (drag_ == Drag::Tab) {  // reorder: the dragged tab takes the place of the tab under the mouse
-        if (!dragMoved_ && std::abs(x - dragStartX_) < S(8)) return;
-        dragMoved_ = true;
-        for (size_t i = 0; i < tabRects_.size(); i++) {
-            if (static_cast<int>(i) == dragTab_ || x < tabRects_[i].left || x >= tabRects_[i].right) continue;
-            if (editors_[i]->pinned != editors_[dragTab_]->pinned) break;  // pinned tabs stay in front
-            MoveTab(dragTab_, static_cast<int>(i));
-            dragTab_ = static_cast<int>(i);
-            break;
+    if (drag_ == Drag::Tree || drag_ == Drag::Console || drag_ == Drag::Debug) {
+        if (drag_ == Drag::Tree) settings_->treeWidth = std::max(80, MulDiv(x - S(kIslandGap), 96, dpi_));
+        if (drag_ == Drag::Console) settings_->consoleHeight = std::max(60, MulDiv(rcStatus_.top - y, 96, dpi_));
+        if (drag_ == Drag::Debug) {
+            settings_->debugWidth = std::max(180, MulDiv(rcStatus_.right - S(2 * kIslandGap) - x, 96, dpi_));
         }
-        InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        Layout();
+        // Repaint at once, children included: with fast moves the uncovered strips would otherwise show what was
+        // there before until the mouse stops.
+        RedrawWindow(hwnd_, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN);
         return;
     }
-    int tool = -1, tab = -1, close = -1, link = -1, pane = -1, leftTab = -1, debugTab = -1;
-    for (size_t i = 0; i < tools_.size(); i++) if (Contains(tools_[i].rc, x, y)) tool = (int)i;
-    for (size_t i = 0; i < tabRects_.size(); i++) {
-        if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y)) tab = (int)i;
-        if (Contains(closeRects_[i], x, y) && Contains(rcTabs_, x, y)) close = (int)i;
+    if (drag_ == Drag::Tab) {
+        TabDragMove(hwnd_, x, y);
+        return;
     }
-    if (editors_.empty()) {
+    int tool = -1, close = -1, link = -1, pane = -1, leftTab = -1;
+    for (size_t i = 0; i < tools_.size(); i++) if (Contains(tools_[i].rc, x, y)) tool = (int)i;
+    bool onClose;
+    int tab = TabAt(hwnd_, x, y, &onClose);
+    if (onClose) close = tab;
+    int part = PartTabAt(hwnd_, x, y);
+    if (NoDockedEditors()) {
         for (size_t i = 0; i < welcomeLinks_.size(); i++) if (Contains(welcomeLinks_[i].first, x, y)) link = (int)i;
     }
     for (size_t i = 0; i < paneRects_.size(); i++) if (Contains(paneRects_[i], x, y)) pane = (int)i;
     for (size_t i = 0; i < leftTabRects_.size(); i++) if (Contains(leftTabRects_[i], x, y)) leftTab = (int)i;
-    if (DebugPanelVisible()) {
-        for (size_t i = 0; i < debugTabRects_.size(); i++) if (Contains(debugTabRects_[i], x, y)) debugTab = (int)i;
-    }
     bool clear = Contains(rcClear_, x, y);
     bool refresh = !projectRoot_.empty() && Contains(rcRefresh_, x, y);
-    bool memFormat = DebugPanelVisible() && Contains(rcMemFormat_, x, y);
+    // The memory format in a window of its own tracks its hover itself.
+    bool memFormat = PartHost(kMemoryPart) == hwnd_ ? Contains(rcMemFormat_, x, y) : hoverMemFormat_;
     if (tool != hoverTool_ || tab != hoverTab_ || close != hoverClose_ || link != hoverLink_ || clear != hoverClear_ ||
-        refresh != hoverRefresh_ || pane != hoverPane_ || leftTab != hoverLeftTab_ || debugTab != hoverDebugTab_ ||
+        refresh != hoverRefresh_ || pane != hoverPane_ || leftTab != hoverLeftTab_ || part != hoverPart_ ||
         memFormat != hoverMemFormat_) {
+        if (tool != hoverTool_) {  // a menu title opens after a short pause under the mouse
+            KillTimer(hwnd_, kMenuHoverTimer);
+            if (tool >= 0 && tools_[tool].menu) SetTimer(hwnd_, kMenuHoverTimer, 250, nullptr);
+        }
         hoverTool_ = tool;
         hoverTab_ = tab;
         hoverClose_ = close;
@@ -711,7 +826,7 @@ void MainWindow::OnMouseMove(int x, int y) {
         hoverRefresh_ = refresh;
         hoverPane_ = pane;
         hoverLeftTab_ = leftTab;
-        hoverDebugTab_ = debugTab;
+        hoverPart_ = part;
         hoverMemFormat_ = memFormat;
         InvalidateChrome();
     }
@@ -720,34 +835,18 @@ void MainWindow::OnMouseMove(int x, int y) {
 }
 
 void MainWindow::OnClick(int x, int y, bool middle) {
-    for (size_t i = 0; i < tabRects_.size(); i++) {
-        if (!Contains(tabRects_[i], x, y) || !Contains(rcTabs_, x, y)) continue;
-        if ((middle && !editors_[i]->pinned) || Contains(closeRects_[i], x, y)) CloseEditor((int)i);
-        else if (!middle) Activate((int)i);
+    bool onClose;
+    if (int tab = TabAt(hwnd_, x, y, &onClose); tab >= 0) {
+        if ((middle && !editors_[tab]->pinned) || onClose) CloseEditor(tab);
+        else if (!middle) Activate(tab);
         return;
     }
     if (middle) return;
-    for (const ToolItem& t : tools_) {
+    for (size_t i = 0; i < tools_.size(); i++) {
+        const ToolItem& t = tools_[i];
         if (!Contains(t.rc, x, y)) continue;
         if (t.menu) {
-            HMENU menu = t.id == ID_MENU_FILE ? fileMenu_ : t.id == ID_MENU_EDIT ? editMenu_
-                       : t.id == ID_MENU_VIEW ? viewMenu_ : t.id == ID_MENU_HELP ? helpMenu_ : runMenu_;
-            if (menu == fileMenu_) {
-                while (GetMenuItemCount(recentMenu_) > 0) DeleteMenu(recentMenu_, 0, MF_BYPOSITION);
-                for (size_t i = 0; i < settings_->recent.size(); i++) {
-                    AppendMenuW(recentMenu_, MF_STRING, ID_RECENT + i, settings_->recent[i].c_str());
-                }
-                if (settings_->recent.empty()) AppendMenuW(recentMenu_, MF_STRING | MF_GRAYED, 0, Tr(L"(пусто)"));
-            }
-            EnableMenuItem(runMenu_, ID_STOP, process_ || debugging_ ? MF_ENABLED : MF_GRAYED);
-            CheckMenuItem(runMenu_, ID_PROFILE_DEBUG, !runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
-            CheckMenuItem(runMenu_, ID_PROFILE_RELEASE, runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
-            for (int id : {ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT, ID_SET_NEXT}) {
-                EnableMenuItem(runMenu_, id, !debugging_ || DebugStopped() ? MF_ENABLED : MF_GRAYED);
-            }
-            POINT p{t.rc.left, t.rc.bottom};
-            ClientToScreen(hwnd_, &p);
-            TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
+            OpenToolMenu(static_cast<int>(i));
         } else if (t.id == ID_PROJECT_WIDGET) {
             ProjectMenu(t.rc);
         } else {
@@ -769,36 +868,10 @@ void MainWindow::OnClick(int x, int y, bool middle) {
             return;
         }
     }
-    if (DebugPanelVisible()) {
-        for (size_t i = 0; i < debugTabRects_.size(); i++) {
-            if (Contains(debugTabRects_[i], x, y)) {
-                ShowDebugTab(static_cast<DebugTab>(i));
-                return;
-            }
-        }
-        if (Contains(rcMemFormat_, x, y)) {
-            HMENU menu = CreatePopupMenu();
-            static const wchar_t* formats[] = {L"байты", L"word (2 байта)", L"dword (4 байта)", L"qword (8 байт)",
-                                               L"float", L"double", L"текст"};
-            for (int i = 0; i < static_cast<int>(MemFormat::Count); i++) {
-                AppendMenuW(menu, MF_STRING | (i == static_cast<int>(memFormat_) ? MF_CHECKED : 0), i + 1, Tr(formats[i]));
-            }
-            POINT p{rcMemFormat_.left, rcMemFormat_.bottom};
-            ClientToScreen(hwnd_, &p);
-            int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
-            DestroyMenu(menu);
-            if (cmd > 0) {
-                memFormat_ = static_cast<MemFormat>(cmd - 1);
-                prevMem_.clear();
-                RenderMemory();
-                InvalidateRect(hwnd_, &rcMemHeader_, FALSE);
-            }
-            return;
-        }
-    }
+    if (MemFormatClick(hwnd_, x, y)) return;
     if (Contains(rcClear_, x, y)) OnCommand(ID_CLEAR_CONSOLE);
     else if (!projectRoot_.empty() && Contains(rcRefresh_, x, y)) RefreshTree();
-    else if (editors_.empty()) {
+    else if (NoDockedEditors()) {
         for (auto& [r, path] : welcomeLinks_) {
             if (Contains(r, x, y)) {
                 OpenPath(path);
@@ -809,6 +882,87 @@ void MainWindow::OnClick(int x, int y, bool middle) {
 }
 
 // The project widget's menu: the recent projects (the open one checked) and "Open folder".
+namespace {
+
+MainWindow* g_menuOwner = nullptr;  // the window whose title menu is open (the hook below has no context)
+
+}  // namespace
+
+// While a title menu is open, the mouse over another title closes it and opens that one, as in a menu bar.
+LRESULT CALLBACK MainWindow::MenuFilter(int code, WPARAM wp, LPARAM lp) {
+    auto* msg = reinterpret_cast<MSG*>(lp);
+    if (code == MSGF_MENU && msg->message == WM_MOUSEMOVE && g_menuOwner) {
+        MainWindow& w = *g_menuOwner;
+        POINT p = msg->pt;
+        ScreenToClient(w.hwnd_, &p);
+        for (size_t i = 0; i < w.tools_.size(); i++) {
+            if (!w.tools_[i].menu || !Contains(w.tools_[i].rc, p.x, p.y) || (int)i == w.openMenuTool_) continue;
+            w.nextMenuTool_ = static_cast<int>(i);
+            EndMenu();
+            break;
+        }
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+// True while the mouse is over the open title or over the menu (its submenus included).
+bool MainWindow::MouseInToolMenu() const {
+    POINT c;
+    GetCursorPos(&c);
+    wchar_t cls[16] = {};
+    if (HWND h = WindowFromPoint(c); h && GetClassNameW(h, cls, 16) && wcscmp(cls, L"#32768") == 0) return true;
+    ScreenToClient(hwnd_, &c);
+    return openMenuTool_ >= 0 && Contains(tools_[openMenuTool_].rc, c.x, c.y);
+}
+
+void MainWindow::OpenToolMenu(int index, bool byHover) {
+    KillTimer(hwnd_, kMenuHoverTimer);
+    while (index >= 0) {
+        const ToolItem& t = tools_[index];
+        HMENU menu = t.id == ID_MENU_FILE ? fileMenu_ : t.id == ID_MENU_EDIT ? editMenu_
+                   : t.id == ID_MENU_VIEW ? viewMenu_ : t.id == ID_MENU_HELP ? helpMenu_ : runMenu_;
+        if (menu == fileMenu_) {
+            while (GetMenuItemCount(recentMenu_) > 0) DeleteMenu(recentMenu_, 0, MF_BYPOSITION);
+            for (size_t i = 0; i < settings_->recent.size(); i++) {
+                AppendMenuW(recentMenu_, MF_STRING, ID_RECENT + i, settings_->recent[i].c_str());
+            }
+            if (settings_->recent.empty()) AppendMenuW(recentMenu_, MF_STRING | MF_GRAYED, 0, Tr(L"(пусто)"));
+        }
+        EnableMenuItem(runMenu_, ID_STOP, process_ || debugging_ ? MF_ENABLED : MF_GRAYED);
+        CheckMenuItem(runMenu_, ID_PROFILE_DEBUG, !runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
+        CheckMenuItem(runMenu_, ID_PROFILE_RELEASE, runConfig_.Release() ? MF_CHECKED : MF_UNCHECKED);
+        for (int id : {ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT, ID_SET_NEXT}) {
+            EnableMenuItem(runMenu_, id, !debugging_ || DebugStopped() ? MF_ENABLED : MF_GRAYED);
+        }
+        // The open title stays highlighted (see the toolbar painting) until its menu closes.
+        openMenuTool_ = index;
+        nextMenuTool_ = -1;
+        hoverTool_ = index;
+        InvalidateChrome();
+        UpdateWindow(hwnd_);
+        POINT p{t.rc.left, t.rc.bottom};
+        ClientToScreen(hwnd_, &p);
+        g_menuOwner = this;
+        HHOOK hook = SetWindowsHookExW(WH_MSGFILTER, MenuFilter, nullptr, GetCurrentThreadId());
+        // A menu opened by hovering closes once the mouse has been away from it for a moment.
+        menuAwayTicks_ = 0;
+        if (byHover) SetTimer(hwnd_, kMenuLeaveTimer, 100, nullptr);
+        TrackPopupMenuEx(menu, TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, hwnd_, nullptr);
+        KillTimer(hwnd_, kMenuLeaveTimer);
+        if (hook) UnhookWindowsHookEx(hook);
+        g_menuOwner = nullptr;
+        openMenuTool_ = -1;
+        index = nextMenuTool_;
+    }
+    // The title still under the mouse counts as hovered already, so it does not open again by itself.
+    POINT c;
+    GetCursorPos(&c);
+    ScreenToClient(hwnd_, &c);
+    hoverTool_ = -1;
+    for (size_t i = 0; i < tools_.size(); i++) if (Contains(tools_[i].rc, c.x, c.y)) hoverTool_ = (int)i;
+    InvalidateChrome();
+}
+
 void MainWindow::ProjectMenu(const RECT& anchor) {
     HMENU menu = CreatePopupMenu();
     for (size_t i = 0; i < settings_->recent.size(); i++) {
@@ -824,20 +978,47 @@ void MainWindow::ProjectMenu(const RECT& anchor) {
 }
 
 void MainWindow::OnRightClick(int x, int y) {
-    for (size_t i = 0; i < tabRects_.size(); i++) {
-        if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y)) {
-            TabMenu(static_cast<int>(i));
-            return;
-        }
-    }
+    if (int tab = TabAt(hwnd_, x, y); tab >= 0) TabMenu(tab);
+    else if (int part = PartTabAt(hwnd_, x, y); part >= 0) PartMenu(part);
 }
 
+// A click on the memory format, in whichever window shows the memory view; true when it was handled.
+bool MainWindow::MemFormatClick(HWND host, int x, int y) {
+    if (host != PartHost(kMemoryPart) || !Contains(rcMemFormat_, x, y)) return false;
+    HMENU menu = CreatePopupMenu();
+    static const wchar_t* formats[] = {L"байты", L"word (2 байта)", L"dword (4 байта)", L"qword (8 байт)",
+                                       L"float", L"double", L"текст"};
+    for (int i = 0; i < static_cast<int>(MemFormat::Count); i++) {
+        AppendMenuW(menu, MF_STRING | (i == static_cast<int>(memFormat_) ? MF_CHECKED : 0), i + 1, Tr(formats[i]));
+    }
+    POINT p{rcMemFormat_.left, rcMemFormat_.bottom};
+    ClientToScreen(host, &p);
+    int cmd = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, p.x, p.y, host, nullptr);
+    DestroyMenu(menu);
+    if (cmd > 0) {
+        memFormat_ = static_cast<MemFormat>(cmd - 1);
+        prevMem_.clear();
+        RenderMemory();
+        InvalidateRect(host, &rcMemFormat_, FALSE);
+    }
+    return true;
+}
+
+// Hover over the memory format in a window of its own.
+void MainWindow::MemFormatHover(HWND host, int x, int y) {
+    if (host != PartHost(kMemoryPart)) return;
+    bool format = x >= 0 && Contains(rcMemFormat_, x, y);
+    if (format == hoverMemFormat_) return;
+    hoverMemFormat_ = format;
+    InvalidateRect(host, &rcMemFormat_, FALSE);
+}
 void MainWindow::UpdateTitle() {
     std::wstring title;
     if (!projectRoot_.empty()) title += projectRoot_.filename().wstring() + L" – ";
     if (Editor* ed = Active()) title += ed->Title() + L" – ";
     title += L"AsmEditor";
     SetWindowTextW(hwnd_, title.c_str());
+    UpdateFloatTitles();
 }
 
 // ---- mark bar ---------------------------------------------------------------------------------------------------

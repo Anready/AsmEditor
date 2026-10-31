@@ -69,6 +69,7 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
 
     ShowWindow(hwnd_, settings->maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
     UpdateWindow(hwnd_);
+    RestoreDebugLayout();  // the parts of the debugger where they were left (they show up while debugging)
     // A teacher's task files loaded earlier (Run → Load a teacher's tasks).
     std::error_code ec;
     for (fs::directory_iterator it(Settings::Dir() / L"tasks", ec), end; !ec && it != end; it.increment(ec)) {
@@ -255,13 +256,14 @@ void MainWindow::BuildMenus() {
     AppendCommand(fileMenu_, ID_EXIT);
 
     editMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_UNDO, ID_REDO, 0, ID_FIND, ID_REPLACE, ID_FIND_NEXT, ID_FIND_PREV, ID_FIND_IN_FILES, ID_GOTO, 0,
-                   ID_COMPLETE, ID_SNIPPET, ID_SHOW_HINT, ID_GOTO_DEF, ID_FIND_USAGES, ID_RENAME, ID_NAV_BACK,
-                   ID_NAV_FORWARD, 0, ID_COMMENT, ID_DUPLICATE, ID_FORMAT, ID_QUICK_FIX, 0, ID_ADD_CARET_UP, ID_ADD_CARET_DOWN,
-                   ID_SELECT_NEXT, ID_SELECT_ALL_OCCURRENCES, 0, ID_TOGGLE_FOLD, ID_FOLD_ALL, ID_UNFOLD_ALL}) {
-        if (id) AppendCommand(editMenu_, id);
-        else AppendMenuW(editMenu_, MF_SEPARATOR, 0, nullptr);
-    }
+    AppendCommands(editMenu_, {ID_UNDO, ID_REDO, 0});
+    AppendSubmenu(editMenu_, L"Поиск", {ID_FIND, ID_REPLACE, 0, ID_FIND_NEXT, ID_FIND_PREV, 0, ID_FIND_IN_FILES});
+    AppendSubmenu(editMenu_, L"Навигация", {ID_GOTO, ID_GOTO_DEF, ID_FIND_USAGES, 0, ID_NAV_BACK, ID_NAV_FORWARD});
+    AppendSubmenu(editMenu_, L"Код", {ID_COMPLETE, ID_SNIPPET, ID_SHOW_HINT, ID_QUICK_FIX, 0, ID_RENAME, ID_FORMAT,
+                                      ID_COMMENT, ID_DUPLICATE});
+    AppendSubmenu(editMenu_, L"Несколько курсоров", {ID_ADD_CARET_UP, ID_ADD_CARET_DOWN, 0, ID_SELECT_NEXT,
+                                                     ID_SELECT_ALL_OCCURRENCES});
+    AppendSubmenu(editMenu_, L"Сворачивание", {ID_TOGGLE_FOLD, ID_FOLD_ALL, ID_UNFOLD_ALL});
 
     viewMenu_ = CreatePopupMenu();
     themeMenu_ = CreatePopupMenu();
@@ -269,35 +271,38 @@ void MainWindow::BuildMenus() {
         const Theme::Info& t = Theme::All()[i];
         AppendMenuW(themeMenu_, MF_STRING | (settings_->theme == t.id ? MF_CHECKED : 0), ID_THEME + i, Tr(t.title));
     }
-    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, 0, ID_ZOOM_IN, ID_ZOOM_OUT, ID_ZOOM_RESET, 0, ID_NEXT_TAB, ID_PREV_TAB, ID_SPLIT,
-                   ID_UNSPLIT, ID_PIN_TAB, 0, ID_OUTLINE, ID_DEBUG_PANEL, ID_SHOW_OUTPUT, ID_SHOW_TERMINAL,
-                   ID_SHOW_PROBLEMS, 0}) {
-        if (id) AppendCommand(viewMenu_, id);
-        else AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
-    }
+    AppendCommands(viewMenu_, {ID_COMMAND_PALETTE, 0});
+    AppendSubmenu(viewMenu_, L"Окна инструментов", {ID_OUTLINE, ID_DEBUG_PANEL, ID_DETACH_DEBUG, 0, ID_SHOW_OUTPUT,
+                                                    ID_SHOW_TERMINAL, ID_SHOW_PROBLEMS});
+    AppendSubmenu(viewMenu_, L"Вкладки", {ID_NEXT_TAB, ID_PREV_TAB, 0, ID_SPLIT, ID_SPLIT_DOWN, ID_UNSPLIT, 0,
+                                          ID_DETACH_TAB, ID_PIN_TAB});
+    AppendSubmenu(viewMenu_, L"Масштаб", {ID_ZOOM_IN, ID_ZOOM_OUT, ID_ZOOM_RESET});
+    AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(viewMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu_), Tr(L"Тема"));
     AppendCommand(viewMenu_, ID_LANGUAGE);
     CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
 
     runMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_BUILD, ID_REBUILD, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_PROFILE_RUN, ID_PROFILE_SAMPLE, ID_PROFILE_CLEAR, 0, ID_STEP_OVER, ID_STEP_INTO,
-                   ID_STEP_OUT, ID_STEP_BACK, ID_SET_NEXT, ID_PAUSE, ID_STOP, ID_ATTACH, 0, ID_TOGGLE_BP, ID_BP_CONDITION, ID_CLEAR_BPS, ID_ADD_WATCH, ID_DATA_BP,
-                   0, ID_CHOOSE_TARGET, ID_RUN_CONFIG, ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_RESET_MAIN, 0,
-                   ID_CHECK_SOLUTION, ID_EXERCISE_HINT, ID_NEW_EXERCISE, ID_LESSONS, ID_EXPORT_RESULTS, ID_GROUP_SUMMARY, 0, ID_CLEAR_CONSOLE, 0, ID_SETTINGS}) {
-        if (id) AppendCommand(runMenu_, id);
-        else AppendMenuW(runMenu_, MF_SEPARATOR, 0, nullptr);
-    }
+    AppendCommands(runMenu_, {ID_BUILD, ID_REBUILD, 0, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_STOP, 0});
+    AppendSubmenu(runMenu_, L"Пошаговое выполнение", {ID_STEP_OVER, ID_STEP_INTO, ID_STEP_OUT, ID_STEP_BACK, 0,
+                                                      ID_SET_NEXT, ID_PAUSE, 0, ID_ATTACH});
+    AppendSubmenu(runMenu_, L"Точки останова", {ID_TOGGLE_BP, ID_BP_CONDITION, ID_DATA_BP, ID_ADD_WATCH, 0,
+                                                ID_CLEAR_BPS});
+    AppendSubmenu(runMenu_, L"Профилирование", {ID_PROFILE_RUN, ID_PROFILE_SAMPLE, 0, ID_PROFILE_CLEAR});
+    AppendSubmenu(runMenu_, L"Конфигурация", {ID_CHOOSE_TARGET, ID_RUN_CONFIG, 0, ID_PROFILE_DEBUG,
+                                              ID_PROFILE_RELEASE, 0, ID_RESET_MAIN});
+    AppendSubmenu(runMenu_, L"Упражнения", {ID_LESSONS, ID_NEW_EXERCISE, ID_EXERCISE_HINT, ID_CHECK_SOLUTION, 0,
+                                            ID_EXPORT_RESULTS, ID_GROUP_SUMMARY});
+    AppendCommands(runMenu_, {0, ID_CLEAR_CONSOLE, ID_SETTINGS});
 
     helpMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_HELP_PAGE, ID_COMMAND_PALETTE, ID_KEYS, 0, ID_UPDATE_APP, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
-        if (id) AppendCommand(helpMenu_, id);
-        else AppendMenuW(helpMenu_, MF_SEPARATOR, 0, nullptr);
-    }
+    AppendCommands(helpMenu_, {ID_HELP_PAGE, ID_COMMAND_PALETTE, ID_KEYS, 0, ID_UPDATE_APP, ID_ASSOCIATE,
+                               ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT});
 }
 
 bool MainWindow::PreTranslate(MSG& msg) {
     if (findDialog_ && IsDialogMessageW(findDialog_, &msg)) return true;
-    if (msg.hwnd == hwnd_ || IsChild(hwnd_, msg.hwnd)) {
+    if (msg.hwnd == hwnd_ || IsChild(hwnd_, msg.hwnd) || IsFloatWindow(GetAncestor(msg.hwnd, GA_ROOT))) {
         if (TranslateAcceleratorW(hwnd_, accel_, &msg)) return true;
     }
     return false;
@@ -391,7 +396,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 return TRUE;
             }
             if (hoverLink_ >= 0 || hoverClear_ || hoverRefresh_ || hoverPane_ >= 0 || hoverLeftTab_ >= 0 ||
-                hoverDebugTab_ >= 0 || hoverMemFormat_) {
+                (hoverMemFormat_ && PartHost(kMemoryPart) == hwnd_)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -401,7 +406,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         OnMouseMove(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
     case WM_MOUSELEAVE:
-        hoverTool_ = hoverTab_ = hoverClose_ = hoverLink_ = hoverPane_ = hoverLeftTab_ = hoverDebugTab_ = -1;
+        hoverTool_ = hoverTab_ = hoverClose_ = hoverLink_ = hoverPane_ = hoverLeftTab_ = hoverPart_ = -1;
         hoverClear_ = hoverRefresh_ = hoverMemFormat_ = false;
         InvalidateChrome();
         return 0;
@@ -414,28 +419,30 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             SetCapture(hwnd_);
             return 0;
         }
-        for (size_t i = 0; i < tabRects_.size(); i++) {  // a tab: activate now, drag to reorder
-            if (Contains(tabRects_[i], x, y) && Contains(rcTabs_, x, y) && !Contains(closeRects_[i], x, y)) {
-                Activate(static_cast<int>(i));
-                drag_ = Drag::Tab;
-                dragTab_ = static_cast<int>(i);
-                dragStartX_ = x;
-                dragMoved_ = false;
-                SetCapture(hwnd_);
-                return 0;
-            }
-        }
+        if (TabMouseDown(hwnd_, x, y)) return 0;  // a tab (file or part): show it now, drag to move it
         OnClick(x, y, false);
         return 0;
     }
     case WM_LBUTTONUP:
-        if (drag_ != Drag::None) {
+        if (drag_ == Drag::Tab) {
+            TabDrop(hwnd_, GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
+        } else if (drag_ != Drag::None) {
             drag_ = Drag::None;
-            dragTab_ = -1;
             ReleaseCapture();
-            InvalidateRect(hwnd_, &rcTabs_, FALSE);
         }
         return 0;
+    case WM_CAPTURECHANGED:
+        if (drag_ == Drag::Tab && reinterpret_cast<HWND>(lp) != hwnd_) {  // the drag was cancelled
+            drag_ = Drag::None;
+            dragTab_ = dragPart_ = -1;
+            ShowDropHint(nullptr);
+            InvalidateTabs();
+        }
+        break;
+    case WM_ACTIVATE:
+        // Back in the main window: commands act on its editors again.
+        if (LOWORD(wp) != WA_INACTIVE) floatFocus_ = 0;
+        break;
     case WM_MBUTTONUP:
         OnClick(GET_X_LPARAM(lp), GET_Y_LPARAM(lp), true);
         return 0;
@@ -445,16 +452,21 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEWHEEL: {
         POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd_, &p);
-        if (Contains(rcTabs_, p.x, p.y)) {
-            tabScroll_ = std::max(0, tabScroll_ - GET_WHEEL_DELTA_WPARAM(wp) / 2);
-            InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        for (int group : {0, 1}) {
+            if (!Contains(StripRect(group), p.x, p.y)) continue;
+            int& scroll = tabScroll_[group];
+            scroll = std::max(0, scroll - GET_WHEEL_DELTA_WPARAM(wp) / 2);
+            InvalidateTabs();
             return 0;
         }
         break;
     }
     case WM_COMMAND:
         if (LOWORD(wp) == ID_MEM_EXPR || LOWORD(wp) == ID_WATCH_EXPR) {
-            if (HIWORD(wp) == EN_SETFOCUS || HIWORD(wp) == EN_KILLFOCUS) InvalidateRect(hwnd_, &rcDebug_, FALSE);
+            // The frame around the input shows the focus (in whichever window holds it).
+            if (HIWORD(wp) == EN_SETFOCUS || HIWORD(wp) == EN_KILLFOCUS) {
+                InvalidateRect(GetParent(reinterpret_cast<HWND>(lp)), nullptr, FALSE);
+            }
             return 0;
         }
         if (HIWORD(wp) == 0 || HIWORD(wp) == 1) OnCommand(LOWORD(wp));
@@ -486,6 +498,19 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kUpdateTimer) {
             KillTimer(hwnd_, wp);
             MaybeCheckForUpdate();
+            return 0;
+        }
+        if (wp == kMenuHoverTimer) {
+            KillTimer(hwnd_, wp);
+            if (hoverTool_ >= 0 && tools_[hoverTool_].menu && drag_ == Drag::None && GetForegroundWindow() == hwnd_ &&
+                !(GetKeyState(VK_LBUTTON) & 0x8000)) {
+                OpenToolMenu(hoverTool_, true);
+            }
+            return 0;
+        }
+        if (wp == kMenuLeaveTimer) {
+            menuAwayTicks_ = MouseInToolMenu() ? 0 : menuAwayTicks_ + 1;
+            if (menuAwayTicks_ >= 3) EndMenu();
             return 0;
         }
         if (wp == kUiTestTimer) {
@@ -654,7 +679,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         checkCv_.notify_all();
         if (checkThread_.joinable()) checkThread_.join();
+        SaveDebugLayout();  // the parts of the debugger open where they are next time
         editors_.clear();
+        // The parts' views belong to the main window: back into it before the windows of their own close.
+        for (int& group : partGroup_) group = kPanelGroup;
+        FixGroups();
         if (g_cbtHook) UnhookWindowsHookEx(g_cbtHook);
         g_cbtHook = nullptr;
         Log::Write("AsmEditor closed");
@@ -671,7 +700,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
 // ---- commands ---------------------------------------------------------------------------------------------------
 
 void MainWindow::OnCommand(int id) {
-    Editor* ed = Active();
+    Editor* ed = Current();
     if (id >= ID_RECENT && id < ID_RECENT + 100) {
         size_t i = id - ID_RECENT;
         if (i < settings_->recent.size()) OpenPath(settings_->recent[i]);
@@ -714,8 +743,8 @@ void MainWindow::OnCommand(int id) {
     case ID_SAVE: Save(ed); break;
     case ID_SAVE_AS: SaveAs(ed); break;
     case ID_SAVE_ALL: SaveAll(); break;
-    case ID_CLOSE_TAB: if (ed) CloseEditor(active_); break;
-    case ID_CLOSE_OTHERS: if (ed) CloseOthers(active_); break;
+    case ID_CLOSE_TAB: if (ed) CloseEditor(IndexOf(ed)); break;
+    case ID_CLOSE_OTHERS: if (ed) CloseOthers(IndexOf(ed)); break;
     case ID_CLOSE_ALL: CloseOthers(-1); break;
     case ID_CLOSE_PROJECT: CloseProject(); break;
     case ID_EXIT: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
@@ -779,11 +808,26 @@ void MainWindow::OnCommand(int id) {
     case ID_ZOOM_IN: ApplyFontSize(settings_->fontSize + 1); break;
     case ID_ZOOM_OUT: ApplyFontSize(settings_->fontSize - 1); break;
     case ID_ZOOM_RESET: ApplyFontSize(11); break;
-    case ID_NEXT_TAB: if (!editors_.empty()) Activate((active_ + 1) % (int)editors_.size()); break;
-    case ID_PREV_TAB: if (!editors_.empty()) Activate((active_ + (int)editors_.size() - 1) % (int)editors_.size()); break;
-    case ID_SPLIT: if (ed) SplitWith(active_); break;
-    case ID_UNSPLIT: Unsplit(); break;
-    case ID_PIN_TAB: if (ed) TogglePin(active_); break;
+    case ID_NEXT_TAB:
+    case ID_PREV_TAB:  // within the tab row of the focused group
+        if (ed) {
+            std::vector<int> tabs = GroupTabs(ed->group);
+            int n = (int)tabs.size();
+            int at = (int)(std::find(tabs.begin(), tabs.end(), IndexOf(ed)) - tabs.begin());
+            if (n > 1) Activate(tabs[(at + (id == ID_NEXT_TAB ? 1 : n - 1)) % n]);
+        }
+        break;
+    case ID_SPLIT:
+    case ID_SPLIT_DOWN:
+        if (ed) SplitWith(IndexOf(ed), id == ID_SPLIT_DOWN);
+        break;
+    case ID_UNSPLIT: Unsplit(ed ? WindowPrimary(ed->group) : 0); break;
+    case ID_DETACH_TAB:
+        if (ed && IsFloating(ed)) DockEditor(ed);
+        else if (ed) DetachEditor(IndexOf(ed), nullptr);
+        break;
+    case ID_DETACH_DEBUG: ToggleDebugWindow(); break;
+    case ID_PIN_TAB: if (ed) TogglePin(IndexOf(ed)); break;
     case ID_OUTLINE: ShowLeftTab(leftTab_ == LeftTab::Outline ? LeftTab::Project : LeftTab::Outline); break;
     case ID_SHOW_OUTPUT: ShowPane(Pane::Output); break;
     case ID_SHOW_TERMINAL:
@@ -1008,13 +1052,14 @@ void MainWindow::OnCommand(int id) {
             if (SamePath(f, target) || IsUnder(f, target)) {
                 if (i == splitIndex_) splitIndex_ = -1;
                 else if (i < splitIndex_) splitIndex_--;
+                if (i < active_) active_--;  // a closed shown tab is replaced by Layout (FixGroups)
                 editors_.erase(editors_.begin() + i);
                 if (active_ >= (int)editors_.size()) active_ = (int)editors_.size() - 1;
             }
         }
         if (SamePath(mainFile_, target) || IsUnder(mainFile_, target)) SetMainFile({});
         Layout();
-        Activate(active_);
+        if (active_ >= 0) Activate(active_);
         RefreshTree();
         break;
     }
@@ -1107,7 +1152,8 @@ void MainWindow::OnNotify(NMHDR* nm) {
         break;
     case SCN_SAVEPOINTREACHED:
     case SCN_SAVEPOINTLEFT:
-        InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        InvalidateTabs();
+        if (IsFloating(ed)) UpdateFloatTitles();
         break;
     case SCN_UPDATEUI:
         InvalidateRect(hwnd_, &rcStatus_, FALSE);
@@ -1118,8 +1164,11 @@ void MainWindow::OnNotify(NMHDR* nm) {
         if (scn->updated & SC_UPDATE_V_SCROLL) InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
         break;
     case SCN_FOCUSIN:
-        focusRight_ = ed == SplitEditor();
-        if (focusRight_ || ed == Active()) InvalidateRect(hwnd_, &rcTabs_, FALSE);
+        // The group of the focused editor is where commands act and new tabs open.
+        floatFocus_ = ed->group >= kPanelGroup ? ed->group : 0;
+        if (ed->group < kPanelGroup) focusRight_ = ed->group == 1;
+        InvalidateTabs();
+        InvalidateRect(hwnd_, &rcStatus_, FALSE);
         if (leftTab_ == LeftTab::Outline && ed->id() != outlineEditor_) RefreshOutline();
         break;
     case SCN_CHARADDED: {

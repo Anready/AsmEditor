@@ -69,10 +69,15 @@ private:
     void CreateFonts();
     void BuildMenus();
     void Layout();
+    void SplitGeometry(const RECT& area, bool split, bool down, RECT& tabs1, RECT& editor1, RECT& gap, RECT& tabs2,
+                       RECT& editor2) const;
     void Paint(HDC dc);
     void PaintToolbar(HDC dc);
-    void PaintTabs(HDC dc);
+    void PaintTabs(HDC dc, int group);
     void ProjectMenu(const RECT& anchor);
+    void OpenToolMenu(int index, bool byHover = false);
+    bool MouseInToolMenu() const;
+    static LRESULT CALLBACK MenuFilter(int code, WPARAM wp, LPARAM lp);
     void PaintStatus(HDC dc);
     void PaintWelcome(HDC dc);
     void PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
@@ -98,6 +103,8 @@ private:
     std::wstring KeysFor(int id) const;
     std::wstring MenuText(int id) const;
     void AppendCommand(HMENU menu, int id);
+    void AppendCommands(HMENU menu, std::initializer_list<int> ids);
+    void AppendSubmenu(HMENU menu, const wchar_t* title, std::initializer_list<int> ids);
     void BuildAccelerators();
     void CommandPalette();
     void QuickOpen();
@@ -140,10 +147,98 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
     void TogglePin(int index);
     void MoveTab(int from, int to);
     void SortPinnedTabs();
-    void SplitWith(int index);
-    void Unsplit();
+    void SplitWith(int index, bool down = false);
+    void Unsplit(int primary = 0);
     Editor* SplitEditor() const { return splitIndex_ >= 0 && splitIndex_ < (int)editors_.size() ? editors_[splitIndex_].get() : nullptr; }
+    Editor* Current() const;  // the editor commands act on: the focused one, also in a detached window
     std::vector<Editor*> PanelViews() const;
+
+    // Tab groups (mw_float.cpp). Every window is made of one or two tab groups (the second right of or below the
+    // first), and any group holds files and parts of the debugger alike: the main editor (groups 0 and 1), the
+    // debug panel on its right (2 and 3) and windows of their own, e.g. on a second monitor (>= 4). Each group has
+    // a tab row and shows one tab: a part (shownPart_) or else a file (active_ for group 0, splitIndex_ for group
+    // 1, FloatGroup::shown for the others).
+    static constexpr int kPanelGroup = 2, kPanelGroup2 = 3, kFirstFloatGroup = 4;
+    // Parts of the debugger: the views of DebugTab and the memory view.
+    static constexpr int kMemoryPart = static_cast<int>(DebugTab::Count);
+    static constexpr int kDebugParts = kMemoryPart + 1;
+    struct FloatGroup {  // a group of the debug panel or of a window of its own
+        HWND hwnd = nullptr;
+        int shown = 0;        // id of the file shown
+        int partner = 0;      // (first half) the second half (0: not split)
+        bool second = false;  // this group is the second half
+        bool down = false;    // (first half) the second half is below, not to the right
+        RECT island{}, rcTabs{}, rcEditor{}, rcSplit{};
+    };
+    struct TabItem {  // what a tab shows: a file (editor index) or a part of the debugger
+        int editor = -1;
+        int part = -1;
+    };
+    FloatGroup* GroupInfo(int group);
+    const FloatGroup* GroupInfo(int group) const;
+    int WindowPrimary(int group) const;  // the first group of the window that holds `group` (main: 0, panel: 2)
+    int SecondHalf(int primary) const;   // its second group (0: not split)
+    bool IsSecondHalf(int group) const;
+    int EnsureSecondHalf(int primary, bool down);
+    static LRESULT CALLBACK FloatProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    HWND CreateFloat(const std::wstring& title, RECT screen);
+    void DetachEditor(int index, const POINT* at);  // at: the cursor (screen) when a tab is dragged out
+    RECT DetachedRect(const POINT* at) const;       // where a new window goes (screen)
+    void DockEditor(Editor* ed);
+    HWND FloatOf(const Editor* ed) const;
+    bool IsFloating(const Editor* ed) const { return ed && ed->group >= kFirstFloatGroup; }
+    bool IsFloatWindow(HWND root) const;
+    int FloatGroupOf(HWND f) const;  // the first group of a window of its own (0: not one)
+    bool WindowShown(int primary) const;
+    bool PanelShown() const;
+    void UpdateFloatTitles();
+    std::vector<int> GroupTabs(int group) const;  // file indices in tab order
+    std::vector<int> GroupParts(int group) const;
+    bool GroupHasItems(int group) const;
+    int GroupItemCount(int group) const;
+    int ItemGroup(TabItem item) const { return item.part >= 0 ? partGroup_[item.part] : editors_[item.editor]->group; }
+    HWND GroupHost(int group) const;
+    RECT StripRect(int group) const;     // the tab row (client of GroupHost)
+    RECT GroupContent(int group) const;  // below the tab row
+    RECT GroupArea(int group) const;     // both
+    int ShownIndex(int group) const;
+    int ShownPart(int group) const;      // -1: the group shows a file
+    int NeighbourInGroup(int index) const;  // the nearest other file of the same group (-1: none)
+    void MoveToGroup(int index, int group);
+    void MoveItem(TabItem item, int group);
+    void SplitItem(TabItem item, int primary, bool down);
+    void DetachItem(TabItem item, const POINT* at);
+    void MoveWindowItems(int primary, int target);  // every tab of a window (both halves) into `target`
+    void FixGroups();  // after changes: shown tabs, emptied halves and windows, parents
+    bool NoDockedEditors() const;  // the main editor has no tabs (the welcome page shows)
+    void PaintFloat(HDC dc, int group);
+    int TabAt(HWND host, int x, int y, bool* close = nullptr) const;
+    int PartTabAt(HWND host, int x, int y) const;
+    void InvalidateTabs();
+    bool TabMouseDown(HWND host, int x, int y);
+    void TabDragMove(HWND host, int x, int y);
+    void TabDrop(HWND host, int x, int y);
+    void FloatMoving(HWND f, bool done);  // a detached window dragged by its title: over the main one it docks
+    bool DockTargetAt(HWND f, POINT screen, RECT& hint, int& group) const;
+    RECT PanelDropStrip() const;  // where the hidden debug panel would be (client): parts can be dropped there
+    void ActivatePart(int part, bool focus = true);
+    HWND PartHost(int part) const { return GroupHost(partGroup_[part]); }
+    Editor* PartView(int part) const;
+    std::wstring PartTitle(int part) const;
+    void PlacePart(int part, const RECT& content);
+    void HidePart(int part);
+    void PaintPartChrome(HDC dc, HWND host);  // the memory format and the input frames shown in `host`
+    bool MemFormatClick(HWND host, int x, int y);
+    void MemFormatHover(HWND host, int x, int y);
+    void PartMenu(int part);
+    void ResetDebugParts();  // the panel's tabs above the memory view, as at first
+    void ToggleDebugWindow();
+    void SaveDebugLayout();
+    void RestoreDebugLayout();
+    enum class Drop { None, Right, Down, Window, Group };
+    Drop TabDropZone(POINT screen, RECT& hint, int& group) const;
+    Drop ZoneIn(int primary, POINT client, int from, RECT& hint, int& group) const;
+    void ShowDropHint(const RECT* screen);
 
     // project
     bool OpenProject(const fs::path& dir);
@@ -290,8 +385,8 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
     HWND markBar_ = nullptr, markBar2_ = nullptr;
     std::unique_ptr<Editor> views_[static_cast<int>(Pane::Count)];  // bottom panel
     Pane pane_ = Pane::Output;
-    std::vector<RECT> paneRects_, leftTabRects_, debugTabRects_;
-    int hoverPane_ = -1, hoverLeftTab_ = -1, hoverDebugTab_ = -1;
+    std::vector<RECT> paneRects_, leftTabRects_;
+    int hoverPane_ = -1, hoverLeftTab_ = -1;
     LeftTab leftTab_ = LeftTab::Project;
     std::vector<int> outlineLines_;  // outline item lParam -> line
     int outlineEditor_ = 0;          // editor id the outline shows
@@ -307,26 +402,41 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
     int active_ = -1;
     int splitIndex_ = -1;     // editor shown in the right half (-1: not split)
     bool focusRight_ = false; // the right half has the focus: tabs open there
+    bool splitDown_ = false;  // the second editor is below the first one, not to the right
+    std::map<int, FloatGroup> floatGroups_;  // group (>= kFirstFloatGroup) -> its window
+    FloatGroup panel_[2];                    // the debug panel's groups (kPanelGroup, kPanelGroup2)
+    bool panelDown_ = true;                  // its second group is below the first one
+    int nextGroup_ = kFirstFloatGroup;
+    int floatFocus_ = 0;              // a group other than the main editor's that has the focus (0: none)
+    HWND dragHost_ = nullptr;         // window a tab is dragged from
+    bool floatMoved_ = false;         // a detached window is being moved (not resized) by its title
+    HWND dropHint_ = nullptr;         // translucent rectangle showing where a dragged tab goes
+    // The group of each part (at first the panel: its tabs above the memory view) and the part a group shows.
+    int partGroup_[kDebugParts] = {kPanelGroup, kPanelGroup, kPanelGroup, kPanelGroup, kPanelGroup, kPanelGroup2};
+    std::map<int, int> shownPart_;
+    RECT partTabRects_[kDebugParts]{};
+    int hoverPart_ = -1, dragPart_ = -1;
     std::vector<ToolItem> tools_;
     std::vector<RECT> tabRects_, closeRects_;
     std::vector<std::pair<RECT, std::wstring>> welcomeLinks_;
-    int tabScroll_ = 0;
-    bool ensureTabVisible_ = false;
+    std::map<int, int> tabScroll_;     // group -> scroll of its tab row
+    std::set<int> ensureTabVisible_;   // groups whose shown tab is scrolled into view at the next paint
     int hoverTool_ = -1, hoverTab_ = -1, hoverClose_ = -1, hoverLink_ = -1;
+    int openMenuTool_ = -1, nextMenuTool_ = -1;  // the open title menu, the one to open after it
+    int menuAwayTicks_ = 0;                       // 100 ms ticks the mouse has spent away from a hover-opened menu
     bool hoverClear_ = false, hoverRefresh_ = false, hoverMemFormat_ = false;
     Drag drag_ = Drag::None;
-    int dragTab_ = -1, dragStartX_ = 0;
+    int dragTab_ = -1, dragStartX_ = 0, dragStartY_ = 0;
     bool dragMoved_ = false;
 
-    RECT rcToolbar_{}, rcStatus_{}, rcTreeHeader_{}, rcTabs_{}, rcEditor_{}, rcEditor2_{}, rcConsoleHeader_{};
+    RECT rcToolbar_{}, rcStatus_{}, rcTreeHeader_{}, rcTabs_{}, rcTabs2_{}, rcEditor_{}, rcEditor2_{}, rcConsoleHeader_{};
     RECT rcSplitV_{}, rcSplitH_{}, rcSplitE_{}, rcClear_{}, rcRefresh_{};
     std::vector<RECT> islands_;  // the rounded panels, painted on Theme::FrameBg
-    RECT rcDebug_{}, rcSplitD_{}, rcDebugHeader_{}, rcMemHeader_{}, rcMemRow_{}, rcWatchRow_{}, rcMemFormat_{};
+    RECT rcDebug_{}, rcSplitD_{}, rcMemRow_{}, rcWatchRow_{}, rcMemFormat_{};  // the inputs: in their part's window
 
     std::unique_ptr<Debugger> debugger_;
     bool debugging_ = false;
     bool showDebugPanel_ = false;
-    DebugTab debugTab_ = DebugTab::Registers;
     std::unique_ptr<Editor> regsView_, memView_, stackView_, watchView_, disasmView_, flagsView_;
     HWND memExpr_ = nullptr, watchExpr_ = nullptr;
     MemFormat memFormat_ = MemFormat::Bytes;

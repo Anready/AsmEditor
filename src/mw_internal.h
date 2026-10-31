@@ -36,6 +36,7 @@ enum : int {
     ID_TREE_REVEAL, ID_TREE_EXCLUDE,
     ID_TREE_CTRL = 601, ID_MEM_EXPR = 603, ID_WATCH_EXPR = 604, ID_OUTLINE_CTRL = 605,
     ID_THEME = 700,  // + index of Theme::All()
+    ID_SPLIT_DOWN = 800, ID_DETACH_TAB, ID_DETACH_DEBUG,
 };
 
 // Styles of the debug panel views.
@@ -68,6 +69,8 @@ constexpr UINT_PTR kRepaintTimer = 6;
 constexpr UINT_PTR kStackFlashTimer = 7;  // fades the highlight of stack slots that changed
 constexpr UINT_PTR kUiTestTimer = 8;
 constexpr UINT_PTR kUpdateTimer = 9;      // the update check a few seconds after start
+constexpr UINT_PTR kMenuHoverTimer = 10;  // opens the menu title under the mouse
+constexpr UINT_PTR kMenuLeaveTimer = 11;  // closes a hover-opened menu once the mouse leaves it
 
 struct BuildDone {
     BuildResult result;

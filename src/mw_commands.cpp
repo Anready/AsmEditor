@@ -56,10 +56,13 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_NEXT_TAB, L"Следующая вкладка", L"Ctrl+Tab"},
         {ID_PREV_TAB, L"Предыдущая вкладка", L"Ctrl+Shift+Tab"},
         {ID_SPLIT, L"Открыть справа (разделить)", L"Ctrl+\\"},
+        {ID_SPLIT_DOWN, L"Открыть снизу (разделить)", L""},
         {ID_UNSPLIT, L"Убрать разделение", L""},
+        {ID_DETACH_TAB, L"Вынести вкладку в отдельное окно / вернуть", L"Ctrl+Shift+\\"},
         {ID_PIN_TAB, L"Закрепить / открепить вкладку", L""},
         {ID_OUTLINE, L"Структура файла", L"Ctrl+F12"},
         {ID_DEBUG_PANEL, L"Панель отладки", L""},
+        {ID_DETACH_DEBUG, L"Панель отладки в отдельном окне / вернуть", L""},
         {ID_SHOW_OUTPUT, L"Вкладка «Вывод»", L"Ctrl+Shift+U"},
         {ID_SHOW_TERMINAL, L"Вкладка «Терминал»", L"Ctrl+`"},
         {ID_SHOW_PROBLEMS, L"Вкладка «Проблемы»", L"Ctrl+Shift+M"},
@@ -132,6 +135,21 @@ std::wstring MainWindow::MenuText(int id) const {
 
 void MainWindow::AppendCommand(HMENU menu, int id) {
     AppendMenuW(menu, MF_STRING, id, MenuText(id).c_str());
+}
+
+// Commands in order; 0 is a separator.
+void MainWindow::AppendCommands(HMENU menu, std::initializer_list<int> ids) {
+    for (int id : ids) {
+        if (id) AppendCommand(menu, id);
+        else AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+}
+
+// A group of commands behind one item that opens on hover; destroyed together with its parent menu.
+void MainWindow::AppendSubmenu(HMENU menu, const wchar_t* title, std::initializer_list<int> ids) {
+    HMENU sub = CreatePopupMenu();
+    AppendCommands(sub, ids);
+    AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(sub), Tr(title));
 }
 
 namespace {
@@ -279,6 +297,11 @@ void MainWindow::ApplyTheme(const std::wstring& id) {
     Theme::Apply(id);
     InitDarkMode();
     ApplyDarkWindow(hwnd_, Theme::FrameBg);
+    for (auto& [group, fg] : floatGroups_) {
+        if (fg.second) continue;
+        ApplyDarkWindow(fg.hwnd, Theme::FrameBg);
+        RedrawWindow(fg.hwnd, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+    }
     for (HWND h : {tree_, outline_}) {
         if (h) ApplyDarkControl(h);
     }

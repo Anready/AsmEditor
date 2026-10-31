@@ -384,7 +384,7 @@ void MainWindow::GoToDefinition(Editor* ed, Sci_Position pos) {
         }
         if (decl) {
             JumpTo(*decl);
-            Editor* now = Active();
+            Editor* now = Current();
             if (now && decl->symbol.kind == Completion::Kind::Function) {
                 std::string tip = word + Tr(std::string(": внешний символ, определён вне проекта (библиотека или DLL)"));
                 now->Call(SCI_CALLTIPSHOW, now->Call(SCI_GETCURRENTPOS), reinterpret_cast<sptr_t>(tip.c_str()));
@@ -418,13 +418,13 @@ void MainWindow::JumpTo(const SymbolHit& hit) {
 }
 
 MainWindow::NavLocation MainWindow::CurrentLocation() {
-    Editor* ed = Active();
+    Editor* ed = Current();
     if (!ed) return {{}, 0, 0};
     return {ed->file(), ed->id(), ed->Call(SCI_GETCURRENTPOS)};
 }
 
 void MainWindow::PushNavigation() {
-    if (!Active()) return;
+    if (!Current()) return;
     navBack_.push_back(CurrentLocation());
     if (navBack_.size() > 100) navBack_.erase(navBack_.begin());
     navForward_.clear();
@@ -447,7 +447,7 @@ void MainWindow::Navigate(bool back) {
             ed = e;
         }
         if (!ed) continue;  // the tab was closed: try the next entry
-        if (Active()) to.push_back(CurrentLocation());
+        if (Current()) to.push_back(CurrentLocation());
         ed->Call(SCI_GOTOPOS, std::min<Sci_Position>(loc.pos, ed->Call(SCI_GETLENGTH)));
         ed->Call(SCI_SCROLLCARET);
         SetFocus(ed->hwnd());
@@ -877,7 +877,7 @@ void MainWindow::FoldAll(Editor* ed, bool fold) {
 // tabs (unsaved, so it can be reviewed and undone).
 void MainWindow::FindInFiles() {
     FindInFilesRequest initial = lastFindInFiles_;
-    if (Editor* ed = Active()) {
+    if (Editor* ed = Current()) {
         Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
         if (e > s && e - s < 200) {
             std::string sel(reinterpret_cast<const char*>(ed->Call(SCI_GETRANGEPOINTER, s, e - s)), e - s);
@@ -1006,7 +1006,7 @@ void MainWindow::FindInFiles() {
 // ---- find & replace ---------------------------------------------------------------------------------------------
 
 void MainWindow::ShowFind(bool replace) {
-    Editor* ed = Active();
+    Editor* ed = Current();
     if (ed) {
         Sci_Position s = ed->Call(SCI_GETSELECTIONSTART), e = ed->Call(SCI_GETSELECTIONEND);
         if (e > s && e - s < 200) {
@@ -1026,7 +1026,7 @@ void MainWindow::ShowFind(bool replace) {
 }
 
 bool MainWindow::FindNext(bool forward) {
-    Editor* ed = Active();
+    Editor* ed = Current();
     if (!ed || lastFind_.empty()) return false;
     std::string q = Narrow(lastFind_);
     int flags = (lastFindFlags_ & FR_MATCHCASE ? SCFIND_MATCHCASE : 0) | (lastFindFlags_ & FR_WHOLEWORD ? SCFIND_WHOLEWORD : 0);
@@ -1054,7 +1054,7 @@ void MainWindow::OnFindMessage(FINDREPLACEW* fr) {
     }
     lastFind_ = fr->lpstrFindWhat;
     lastFindFlags_ = fr->Flags;
-    Editor* ed = Active();
+    Editor* ed = Current();
     if (!ed) return;
     if (fr->Flags & FR_FINDNEXT) {
         FindNext((fr->Flags & FR_DOWN) != 0);

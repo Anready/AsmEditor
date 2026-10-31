@@ -1,8 +1,8 @@
 name: build
 
+# Not on every push: run it by hand (Actions → build → Run workflow); pull requests are still checked.
+# Releases are built by release.yml when a v* tag is pushed.
 on:
-  push:
-    branches: ['**']
   pull_request:
   workflow_dispatch:
 

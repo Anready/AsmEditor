@@ -146,7 +146,7 @@ build.bat
 | `build.bat installer` | also makes the Inno Setup 6 installer (`out\installer`) |
 | `build.bat nobuild …` | runs the targets without rebuilding the exe |
 
-CI runs `build.bat test uitest` on every push ([GitHub Actions](https://github.com/Anready/AsmEditor/actions)).
+CI (`build.bat test uitest`) runs on pull requests and on demand ([GitHub Actions](https://github.com/Anready/AsmEditor/actions) → build → Run workflow), not on every push.
 Pushing a tag `v<version>` (matching `src/version.h`) builds, tests and publishes a release.
 
 **Tech:** C++20, plain Win32, [Scintilla](https://www.scintilla.org/) 5.6.5 linked statically, Win32 Debug API and

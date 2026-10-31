@@ -1,192 +1,204 @@
+<div align="center">
+
+<img src="assets/app.ico" width="72" alt="">
+
 # AsmEditor
 
-Лёгкий нативный редактор и отладчик NASM для Windows: C++20, чистый Win32 и [Scintilla](https://www.scintilla.org/) 5.6.5
-(статически, одним exe). Интерфейс на русском или английском, тёмная и светлая темы.
+**A lightweight NASM editor and debugger for Windows, built for learning assembly.**
 
-## Сборка
+Write x86‑64 assembly, build it with one key, and step through it while watching registers, flags, the stack and memory change.
 
-```
-build.bat              AsmEditor.exe
-build.bat test         ещё и юнит-тесты и сквозные тесты отладчика (tests\tests.cpp)
-build.bat uitest       ещё и автотест интерфейса: AsmEditor.exe --ui-test out\uitest (снимки и отчёт)
-build.bat package      ещё и AsmEditor-portable.zip
-build.bat installer    ещё и установщик Inno Setup 6 (out\installer)
-build.bat nobuild …    цели без пересборки exe (например, после подписи)
-```
-Цели можно перечислять: `build.bat test uitest package`. CI —
-[GitHub Actions](https://github.com/Anready/AsmEditor/actions) (`.github/workflows/build.yml`); релиз —
-`.github/workflows/release.yml` по тегу `v<версия из src/version.h>` (сборка, тесты, необязательная подпись
-кода по секретам `SIGNING_CERT`/`SIGNING_PASSWORD`, zip и установщик в GitHub Release).
+[![build](https://github.com/Anready/AsmEditor/actions/workflows/build.yml/badge.svg)](https://github.com/Anready/AsmEditor/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/Anready/AsmEditor)](https://github.com/Anready/AsmEditor/releases/latest)
+![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
+![made by AI](https://img.shields.io/badge/written%20by-Claude%20(AI)-8A63D2)
 
-Нужна Visual Studio 2022 с компонентом «Разработка классических приложений на C++». Скрипт сам находит
-её через vswhere, один раз собирает `third_party\scintilla` в статическую библиотеку и затем собирает
-`AsmEditor.exe`. Запуск: `AsmEditor.exe [папка проекта] [файлы…]`. Для тестов отладчика нужны NASM и MSVC link
-(они собирают и отлаживают маленькие программы). CI — `.github/workflows/build.yml` (GitHub Actions, артефакт `AsmEditor.exe`).
+**English** · [Русский](README.ru.md)
 
-## Что умеет
+</div>
 
-### Редактор
-- Файлы и папки-проекты: дерево файлов, недавние проекты, drag & drop, восстановление вкладок проекта.
-- Подсветка NASM, автодополнение с учётом контекста (инструкции, регистры, метки и макросы всего проекта,
-  `section`, `extern`…), подсказки по инструкциям, регистрам и директивам на русском — при наведении или
-  Ctrl+Shift+Space; справочник покрывает весь набор инструкций подсветки (x87, SSE–SSE4.2, AVX/AVX2, FMA, BMI,
-  системные), у частых — примеры. При наведении на `printf`, `WriteFile` и другие функции C/WinAPI — прототип и в
-  каких регистрах передавать аргументы; на свой `%macro` — его тело, на `equ`/`%define` — значение.
-- Переход к определению (F12, Ctrl+клик), использования (Shift+F12, во вкладке «Поиск»), переименование (F2),
-  Alt+← / Alt+→ — назад и вперёд.
-- **Структура файла** — вкладка «Структура» слева (Ctrl+F12): секции, метки с локальными, макросы, extern.
-- **Сворачивание** `%macro`, `%if`, `%rep` и тел функций (поле слева, Ctrl+M, свернуть / развернуть всё).
-- **Подсветка** парных скобок и директив (`%if`/`%else`/`%endif`, `%macro`/`%endmacro`) и всех вхождений слова
-  под курсором.
-- **Форматирование** (Ctrl+Alt+L): столбцы мнемоник, операндов и комментариев (настраиваются).
-- **Шаблоны кода** (Ctrl+J, или в списке автодополнения в начале строки): функция с прологом, цикл, ветвление,
-  printf, scanf, WriteFile, программа, секция данных.
-- **Несколько курсоров**: Alt+клик, Ctrl+Alt+↑/↓, Alt+J — следующее вхождение, Ctrl+Alt+Shift+J — все.
-- **Поиск в файлах** (Ctrl+Shift+F) с заменой и регулярными выражениями, **палитра команд** (Ctrl+Shift+P),
-  **переход к файлу** (Ctrl+P).
-- Проверка ошибок во время набора (NASM в фоне) и предупреждение, если перед `call` внешней функции стек, вероятно,
-  не выровнен на 16 или нет теневого места (Win64).
-- **Анализатор кода**: сохраняемый регистр (rbx, rbp, rsi, rdi, r12–r15) изменён и не сохранён; `div`/`idiv` без
-  подготовки `rdx`; недостижимый код после `ret`/`jmp`.
-- **Быстрые исправления** (Alt+Enter): добавить `extern printf`, выровнять стек (`sub rsp, 40`), выделить теневое
-  место, сохранить регистр (`push`/`pop`), вставить `xor edx, edx` / `cqo` перед делением.
-- **Аргументы `call`**: при наборе `call printf` (и при наведении) — прототип и какие из rcx, rdx, r8, r9 и слотов
-  `[rsp+32]…` уже заданы выше, а какие забыты. Для своих функций — по комментарию над меткой (`; rcx = a, rdx = b`).
-- Предупреждение, если после `call` внешней функции читается rcx, rdx или r8–r11 — она могла их испортить.
-- Форматирование при сохранении (настройка).
-- **Полоса отметок** у прокрутки: ошибки, предупреждения, точки останова, строка выполнения, найденное; клик — переход.
-- **Разделение экрана** (Ctrl+\\), перетаскивание и закрепление вкладок, меню вкладки (ПКМ).
-- Файл изменён другой программой — вкладка перечитывается (или вопрос, если есть несохранённые правки).
-  Несохранённые тексты каждые 30 секунд копируются, после сбоя редактор предлагает их восстановить;
-  по желанию — автосохранение при переключении в другое окно.
+> [!NOTE]
+> **This project was written by an AI.** The code, tests, build scripts, installer and documentation were written by
+> Claude, an AI model made by Anthropic, working in Claude Code. A person, [Anready](https://github.com/Anready),
+> directed the work: chose what to build, made the decisions and tested the builds.
+> See [How this project was made](#how-this-project-was-made).
 
-### Сборка и запуск
-- Сборка (Ctrl+F9), пересборка (Ctrl+Shift+F9), запуск (Ctrl+F5): `nasm` → `link.exe` (или gcc), многофайловые
-  проекты с инкрементальной и параллельной сборкой, `%include`-зависимости, файлы со своим `main` пропускаются,
-  «Не собирать этот файл» в дереве.
-- На панели инструментов — **что запускать** (главный файл или активная вкладка) и **профиль Debug / Release**
-  (Release — без `-g -F` и `/debug`, свои аргументы можно задать в настройках; результат в `build\release`).
-- **Конфигурация запуска** (проект): аргументы, рабочая папка, переменные окружения, файл для stdin, тип результата
-  (exe, dll, lib), команды до и после сборки, платформа **Linux через WSL** (`-f elf64`, линковка `ld`/`gcc` в WSL,
-  запуск в терминале, отладка в `gdb` с точками останова редактора).
-- Нижняя панель: **Вывод** (сборка и сообщения), **Терминал** (только консоль программы — ConPTY, ввод, цвета ANSI),
-  **Проблемы** (все ошибки и предупреждения, двойной клик — переход), **Поиск**, **Отладочный вывод**
-  (`OutputDebugString` и сообщения отладчика).
-- После завершения — код возврата с расшифровкой, время работы и пиковая память.
+<p align="center">
+  <img src="docs/screenshots/debugger.png" width="820" alt="Stopped at a breakpoint: registers, memory and the source line">
+</p>
 
-### Отладчик (Win32 Debug API + DbgHelp, x64 и 32-битные программы)
-- Точки останова (F9, клик слева), **с условием** (Alt+F9 или ПКМ слева: `rcx == 5`, `[counter] > 3`, `#10` —
-  на 10-й раз), F5, F10/F11/Shift+F11, «Пауза», **выполнить до курсора** (Ctrl+F10), **перенести выполнение сюда**
-  (Ctrl+Shift+F10).
-- Панель справа: **Регистры** (двойной клик — изменить, по флагу — переключить; стек с адресами возврата и кадрами),
-  **Стек вызовов**, **Наблюдение** (выражения, обновляются на каждой остановке) и **точки останова на данные**
-  (DR0–DR3: остановка после записи в переменную), **Код** (встроенный дизассемблер с исходной строкой над группой
-  инструкций — видно, во что развернулись макросы).
-- Память по выражению в виде байтов, word, dword, qword, float, double или текста, изменённые байты подсвечены,
-  двойной клик — записать.
-- Выражения: регистры, метки, числа, `+ - * / %`, `& | ^ << >>`, сравнения, `&& ||`, `[адрес]`, `dword [адрес]`.
-  Во время отладки наведение на выделенный текст (`[rsp+8]`, `rax*2`) показывает его значение. В наблюдении:
-  `msg, 32` — 32 байта памяти, `p as Point` — поля структуры `Point` из `struc … endstruc`.
-- **Точки останова с выводом** (logpoints, ПКМ слева): `log: rbx = {rbx}, {[counter]:x}` печатает в «Отладочный
-  вывод» без остановки; перед `log:` можно условие.
-- **Шаг назад** (Ctrl+Shift+F11): к предыдущей остановке — регистры, глобальные переменные, стек и куча (malloc)
-  восстанавливаются (вывод и файлы — нет).
-- **Подключение к запущенной программе** (Запуск → «Подключиться к процессу…»); «Стоп» отключает отладчик, программа
-  продолжает работу.
-- **Пояснение строки**: при остановке у текущей строки серым — что сделает инструкция с текущими значениями
-  (`rax = 5 + 3 → 8`, `jl: SF ≠ OF (SF=1 OF=0) → переход на .loop`).
-- **Профилировщик по таймеру** (Запуск → «Профилировать по таймеру»): быстро, раз в 1 мс — сколько времени у
-  каждой строки (время printf и WinAPI — у строки вызова).
-- **Профилировщик** (Запуск → «Профилировать»): сколько раз выполнилась каждая строка, сколько инструкций и времени —
-  числа прямо у строк; вызовы printf и других функций без исходников идут на полной скорости.
-- **Вкладка «Флаги»**: значения флагов с пояснением и все 16 условий; на условном переходе, `cmovcc`, `setcc`,
-  `loop` — сработает ли он и почему (`jl: SF ≠ OF`).
-- **Анимация стека**: изменившиеся ячейки стека подсвечиваются и гаснут, строка поясняет `push`, `pop`, `call`, `ret`.
-- Стек вызовов: кадры DLL и C runtime — по таблицам раскрутки `.pdata`, кадры NASM-кода — по адресам возврата.
-  Точки останова на данные срабатывают во всех потоках программы.
-- 32-битные программы (`-f win32`, шаблон линковки «MSVC link x86») отлаживаются через WOW64 (есть сквозной тест).
-- Linux-программы (WSL) отлаживаются через gdb/MI в тех же панелях: регистры, флаги, память, стек вызовов, условия,
-  logpoints (`dprintf`), точки останова на данные; ввод-вывод программы — во вкладке «Терминал».
+## Download
 
-### Обучение
-- **Новый проект из шаблона**: Hello world, scanf/printf, чистый WinAPI, файлы, SSE.
-- **Уроки** (Запуск → «Уроки…»): 9 уроков — регистры, переходы, циклы, деление, биты, массивы, строки, стек и
-  рекурсия, файлы; объяснение в начале файла и задача с автопроверкой в конце.
-- **Учебные задачи** (Запуск → «Новая учебная задача»): 13 задач (числа, строки, массивы, сортировка, рекурсия,
-  файлы), условие и заготовка, Ctrl+Shift+T — сборка и проверка на тестах (и условий: нужная инструкция,
-  рекурсия); решённые отмечены ✓; Ctrl+Shift+H — подсказка, следующая по уровню.
-- **Сводка по группе**: несколько CSV учеников → одна таблица «ученик × задача».
-- У некоторых задач есть **предел числа инструкций** (быстрое решение, а не перебор) — проверка запускает решение
-  под профилировщиком.
-- **Задачи преподавателя** (Запуск → «Загрузить задачи преподавателя…»): текстовый файл, задачи запоминаются и
-  загружаются при каждом запуске.
+Get the latest version from [**Releases**](https://github.com/Anready/AsmEditor/releases/latest):
 
-  ```
+| File | What it is |
+|---|---|
+| `AsmEditor-setup-<version>.exe` | Installer (Start menu shortcut, `.asm` file association) |
+| `AsmEditor-portable.zip` | Portable copy — unzip and run; settings stay next to the exe |
+| `AsmEditor.exe` | The editor alone |
+
+You also need **[NASM](https://www.nasm.us/)** and a linker: **Visual Studio** (or Build Tools) with the C++
+workload, or MinGW `gcc`. AsmEditor finds them on first start; you can change the paths in Settings (Ctrl+Alt+S).
+
+AsmEditor checks for a new release once a day and can update itself (Help → Update AsmEditor). Downloads are
+verified against the SHA‑256 digest GitHub publishes.
+
+## Features
+
+### Editor
+- NASM syntax highlighting, code folding, multiple cursors, split view, themes (Dark, Light, Monokai, Solarized).
+- Context-aware autocompletion: instructions, registers, and the labels and macros of the whole project.
+- Hover help for every instruction, register and directive (x87, SSE–SSE4.2, AVX/AVX2, FMA, BMI…), with examples
+  for the common ones. Hover over `printf` or `WriteFile` to see the prototype and which registers take the arguments.
+- Go to definition, find usages, rename, file outline, find in files, command palette, go to file.
+- Code formatting into columns (mnemonics, operands, comments), optional format on save.
+- Code snippets: a function with a prologue, loops, `printf`/`scanf`, `WriteFile`, a whole program.
+
+### Catches beginner mistakes
+- Errors as you type (NASM runs in the background).
+- Warns when the stack is probably not aligned to 16 bytes or has no shadow space before a Win64 `call`.
+- Static checks: a callee-saved register (rbx, rbp, rsi, rdi, r12–r15) changed and not restored, `div` without
+  preparing `rdx`, unreachable code, reading rcx/rdx/r8–r11 after a call that may have clobbered them.
+- **Quick fixes** (Alt+Enter): add `extern printf`, align the stack, save a register, insert `cqo` before `idiv`.
+- Typing `call printf` shows which of rcx, rdx, r8, r9 are already set above and which you forgot.
+
+### Build and run
+- Build (Ctrl+F9) and run (Ctrl+F5) with NASM + MSVC `link` or `gcc`; multi-file projects with incremental,
+  parallel builds and `%include` dependencies.
+- Debug and Release profiles, a run configuration (arguments, working folder, environment, stdin file),
+  exe / dll / lib output, pre- and post-build commands.
+- A real terminal for the program (ConPTY, input, ANSI colors), plus Output, Problems and Debug output panels.
+- After the program exits: the exit code explained, run time and peak memory.
+- **Linux through WSL**: `elf64`/`elf32` builds, run in a terminal and debug with gdb in the same panels.
+
+### Debugger
+Built on the Win32 Debug API; works with 64‑bit and 32‑bit (WOW64) programs.
+
+- Breakpoints with conditions (`rcx == 5`, `[counter] > 3`, `#10` for the 10th hit) and **logpoints**
+  (`log: rbx = {rbx}`) that print without stopping.
+- Step over / into / out, run to cursor, set next statement, pause, **attach to a running process**.
+- **Step back** (Ctrl+Shift+F11): returns to the previous stop and restores registers, globals, the stack and the heap.
+- Registers (double-click to edit), call stack (unwinds through DLLs with `.pdata`), watch expressions, memory as
+  bytes / words / floats / text with changed bytes highlighted, structs from `struc … endstruc`.
+- **Data breakpoints** (DR0–DR3): stop right after something writes to a variable.
+- **Flags tab**: every flag explained, all 16 conditions, and on a `jcc`/`cmovcc`/`setcc` whether it will be taken and why.
+- **Explains the current line** with real values: `rax = 5 + 3 → 8`, `jl: SF ≠ OF (SF=1 OF=0) → jumps to .loop`.
+- Stack animation: changed stack cells light up and fade; `push`, `pop`, `call` and `ret` are explained.
+- **Built-in disassembler** (the Code tab): integer, SSE/SSE2, x87, AVX/AVX2/FMA — with source lines above
+  each group, so you see what your macros expanded into.
+
+<p align="center">
+  <img src="docs/screenshots/disassembly.png" width="49%" alt="The Code tab: disassembly under each source line">
+  <img src="docs/screenshots/profiler.png" width="49%" alt="Profiler: run counts, instructions and time next to each line">
+</p>
+
+### Profilers
+- **Tracing profiler**: how many times each line ran, how many instructions and how much time, shown right next to
+  the lines. Calls into `printf` and other code without sources run at full speed.
+- **Sampling profiler**: samples every 1 ms; fast, good for longer programs.
+
+### Learning
+- **9 lessons**: registers, jumps, loops, division, bit operations, arrays, strings, the stack and recursion, files.
+  Each starts with an explanation and ends with a task that checks itself.
+- **13 exercises** with tests (Ctrl+Shift+T), requirements (must use an instruction, must be recursive),
+  limits on the number of executed instructions, and hints that get more specific (Ctrl+Shift+H).
+- **For teachers**: load your own tasks from a text file, collect students' results as CSV and merge a class into
+  one student × task table.
+
+  ```ini
   [task sum3]
-  title = Сумма трёх чисел
-  title.en = Sum of three numbers
-  description = Прочитайте три числа и напечатайте их сумму.
+  title = Sum of three numbers
+  description = Read three numbers and print their sum.
   format = %lld %lld %lld
   test = 1 2 3 => 6
   test = -5 5 10 => 10
   must = add
-  forbid = imul
   max-instructions = 100
-  hint = Сложите a, b и c в rdx.
+  hint = Add a, b and c in rdx.
   ```
-- **Экспорт результатов** для преподавателя (Запуск → «Экспорт результатов задач…»): CSV с именем ученика, решённые
-  задачи, лучший результат, число попыток и даты.
+- New project from a template: Hello world, scanf/printf, pure WinAPI, files, SSE.
 
-### Интерфейс
-- Темы: тёмная, светлая, Monokai, Solarized (Вид → Тема), язык: русский / English (включая справочник по
-  инструкциям).
-- Свои горячие клавиши (Справка → «Горячие клавиши»), проверка обновлений NASM и Scintilla, журнал работы.
-- Справка → «Открывать файлы .asm в AsmEditor» — ассоциация для текущего пользователя; установщик делает то же.
-- **Обновления**: раз в день при запуске редактор спрашивает GitHub о новом релизе (выключается в настройках);
-  Справка → «Обновить AsmEditor…» скачивает его. Портативная копия заменяет свой exe (после проверки SHA-256, который
-  публикует GitHub) и перезапускается после закрытия окна; установленная запускает новый установщик.
-- F1 — справка: быстрый старт, пример, выражения отладчика, все команды с текущими клавишами.
-- Портативный режим: файл `portable.txt` (или папка `settings`) рядом с exe — настройки хранятся там.
-- Платформы запуска: Windows, Linux через WSL (64 и 32 бит).
+### Everything else
+- English and Russian interface (including the instruction reference).
+- Custom keyboard shortcuts, F1 help with all commands and their current keys.
+- Crash recovery for unsaved text, reload on external change, optional autosave.
+- Portable mode: put `portable.txt` next to the exe.
 
-## Тулчейн
+## Building from source
 
-При первом запуске редактор сам находит `nasm.exe` (PATH, `%LOCALAPPDATA%\bin\NASM`, Program Files)
-и MSVC `link.exe` с Windows SDK. Всё это меняется в настройках (Ctrl+Alt+S).
+Requirements: **Visual Studio 2022** with “Desktop development with C++”, and **NASM** for the tests.
 
-Настройки хранятся в `%APPDATA%\AsmEditor\settings.ini`, состояние проекта (вкладки, точки останова с условиями,
-наблюдения, конфигурация запуска) — в `<проект>\.asmeditor\project.ini`, копии несохранённых текстов — в
-`%APPDATA%\AsmEditor\backup`, журнал — `%APPDATA%\AsmEditor\asmeditor.log` (или `ASMEDITOR_LOG=1`; трассировка
-отладчика — `ASMEDITOR_TRACE=1`).
+```bat
+git clone https://github.com/Anready/AsmEditor.git
+cd AsmEditor
+build.bat
+```
 
-## Структура
+`build.bat` finds Visual Studio through vswhere, builds Scintilla once as a static library and then builds
+`AsmEditor.exe` — one self-contained executable. Targets can be combined:
 
-| Файл | Что внутри |
+| Command | What it does |
 |---|---|
-| `src/main.cpp` | точка входа, цикл сообщений |
-| `src/mainwindow.*` | окно: создание, меню, обработка сообщений и команд |
-| `src/mw_layout.cpp` | раскладка и отрисовка: панель инструментов, вкладки, заголовки панелей, полоса отметок |
-| `src/mw_commands.cpp` | таблица команд и горячих клавиш, палитра, переход к файлу, тема, язык, обновления |
-| `src/mw_files.cpp` | вкладки, разделение, проект, дерево, структура, изменения на диске, восстановление после сбоя |
-| `src/mw_build.cpp` | сборка и запуск, конфигурация запуска, WSL, терминал, «Проблемы», учебные задачи |
-| `src/mw_debug.cpp` | панель отладчика, условия, наблюдение, память, подсказки при наведении |
-| `src/mw_navigation.cpp` | определения, использования, переименование, автодополнение, шаблоны, форматирование, поиск |
-| `src/editor.*` | обёртка над Scintilla: стили, лексер со сворачиванием, маркеры, точки останова с условиями |
-| `src/debugger.*` | отладчик: цикл Debug API, WOW64, точки останова, шаги, DR0–DR3, стек вызовов (`.pdata`), выражения, шаг назад, профилировщик |
-| `src/gdbmi.*` | gdb/MI: разбор записей и сессия gdb в WSL для Linux-программ |
-| `src/uitest.cpp` | автотест интерфейса (`--ui-test`) |
-| `src/version.h` | номер версии (exe, установщик, релиз) |
-| `src/update.*`, `src/mw_update.cpp` | обновление AsmEditor из релизов GitHub |
-| `src/terminal.*` | эмулятор VT-терминала для вывода псевдоконсоли |
-| `src/project.*` | состав сборки проекта: файлы, `%include`-зависимости, отдельные программы |
-| `src/completion.*` | автодополнение, символы, поиск вхождений |
-| `src/asmtools.*` | форматирование, проверка стека, анализатор и быстрые исправления, условия переходов, шаблоны, задачи, уроки, результаты |
-| `src/disasm.cpp` | встроенный дизассемблер x86 / x86-64 (синтаксис NASM): целые, SSE/SSE2, x87, AVX/AVX2/FMA |
-| `src/hints.cpp`, `hints_ext.inc`, `hints_en.inc` | справочник по инструкциям, регистрам, директивам и функциям C/WinAPI (русский и английский) |
-| `src/syntax.cpp` | токенизатор NASM |
-| `src/toolchain.cpp` | поиск NASM/MSVC, процессы, разбор ошибок, сборка (профили, dll/lib, WSL) |
-| `src/dialogs.cpp` | настройки, списки с фильтром, поиск в файлах, конфигурация запуска, горячие клавиши |
-| `src/theme.cpp`, `l10n.cpp`, `log.cpp`, `util.cpp` | темы, перевод интерфейса, журнал, строки и settings.ini |
-| `tests/tests.cpp` | юнит-тесты и сквозные тесты отладчика (`build.bat test`) |
-| `tools/make-icon.ps1` | рисует `assets/app.ico` |
-| `installer/AsmEditor.iss` | установщик Inno Setup 6 |
+| `build.bat` | builds `AsmEditor.exe` |
+| `build.bat test` | also runs the unit tests and the end-to-end debugger tests (`tests\tests.cpp`, 568 checks) |
+| `build.bat uitest` | also runs the UI self-test and saves screenshots (`AsmEditor.exe --ui-test out\uitest`) |
+| `build.bat package` | also makes `AsmEditor-portable.zip` |
+| `build.bat installer` | also makes the Inno Setup 6 installer (`out\installer`) |
+| `build.bat nobuild …` | runs the targets without rebuilding the exe |
+
+CI runs `build.bat test uitest` on every push ([GitHub Actions](https://github.com/Anready/AsmEditor/actions)).
+Pushing a tag `v<version>` (matching `src/version.h`) builds, tests and publishes a release.
+
+**Tech:** C++20, plain Win32, [Scintilla](https://www.scintilla.org/) 5.6.5 linked statically, Win32 Debug API and
+DbgHelp, gdb/MI for WSL, WinHTTP and BCrypt for updates. No other dependencies.
+
+<details>
+<summary><b>Source layout</b></summary>
+
+| Path | Contents |
+|---|---|
+| `src/main.cpp` | entry point, message loop |
+| `src/mainwindow.*`, `src/mw_*.cpp` | the main window: layout, commands, files, build, debugging, navigation, updates |
+| `src/editor.*` | Scintilla wrapper: styles, lexer with folding, markers, breakpoints |
+| `src/debugger.*` | the debugger: Debug API loop, WOW64, breakpoints, stepping, DR0–DR3, unwinding, expressions, step back, profilers |
+| `src/gdbmi.*` | gdb/MI parser and the gdb session in WSL |
+| `src/disasm.cpp` | x86 / x86‑64 disassembler (NASM syntax) |
+| `src/asmtools.*` | formatter, analyzer and quick fixes, jump conditions, snippets, exercises, lessons, results |
+| `src/completion.*`, `src/syntax.cpp` | autocompletion, symbols, NASM tokenizer |
+| `src/hints*.{cpp,inc}` | instruction, register, directive and C/WinAPI reference (English and Russian) |
+| `src/toolchain.cpp`, `src/project.*` | finding NASM/MSVC, running processes, parsing errors, project builds |
+| `src/terminal.*` | VT terminal emulator for the pseudo console |
+| `src/update.*` | self-update from GitHub releases |
+| `src/uitest.cpp` | the UI self-test |
+| `tests/tests.cpp` | unit tests and end-to-end debugger tests |
+| `installer/AsmEditor.iss` | Inno Setup script |
+
+</details>
+
+## Settings and files
+
+- Settings: `%APPDATA%\AsmEditor\settings.ini` (or next to the exe in portable mode).
+- Project state (open tabs, breakpoints, watches, run configuration): `<project>\.asmeditor\project.ini`.
+- Log: `%APPDATA%\AsmEditor\asmeditor.log` (`ASMEDITOR_LOG=1`; debugger trace: `ASMEDITOR_TRACE=1`).
+
+## How this project was made
+
+AsmEditor was written by **Claude**, an AI model by [Anthropic](https://www.anthropic.com/), in
+[Claude Code](https://claude.com/claude-code). That includes the C++ source, the disassembler, the debugger,
+the lessons and exercises, the tests, the build scripts, the installer, the CI workflows and this README.
+
+[Anready](https://github.com/Anready) led the project: decided what the editor should do and in which order,
+answered design questions, ran the builds on a real machine, reported what broke and published the releases.
+
+We say this openly because presenting AI-written work as one's own would not be honest. It also tells you what to
+expect: the code is covered by 568 automated checks and a UI self-test that run in CI, but, like any software, it
+can have bugs — please [open an issue](https://github.com/Anready/AsmEditor/issues) if you find one.
+
+## Roadmap
+
+Plans and the list of what is verified and what is not are in [ROADMAP.md](ROADMAP.md) (in Russian).
+
+## Third-party
+
+[Scintilla](https://www.scintilla.org/) © Neil Hodgson, under its own license
+([`third_party/scintilla/License.txt`](third_party/scintilla/License.txt)).

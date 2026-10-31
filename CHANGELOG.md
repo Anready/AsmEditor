@@ -2,6 +2,13 @@
 
 The release workflow publishes the section of the tagged version as the release notes.
 
+## 1.3.1
+
+- Scrolling stops 5 empty lines past the end of the code instead of a whole page, in the editor and every panel.
+- One scrollbar in the editor, as in IntelliJ: a rounded thumb over the marks of the whole file (problems,
+  breakpoints, the execution line, search hits). Drag the thumb, click a mark to go to its line, click elsewhere to
+  jump there.
+
 ## 1.3.0
 
 Windows and tabs as in IntelliJ IDEA, for one monitor or two.

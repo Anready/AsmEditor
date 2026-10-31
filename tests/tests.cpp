@@ -549,6 +549,23 @@ TEST(ExplainLine) {
     CHECK_EQ(Analyzer::ExplainLine("    mov rax, [unknown]", eval, 0), std::string());
 }
 
+TEST(StructsAndWatchForms) {
+    auto s = Structs::Parse("struc Point\n    .x resd 1\n    .y: resd 1\n    .name resb 16\nendstruc\n"
+                            "struc Pair\n.a dq 0\n.b dw 1, 2\nendstruc\n");
+    CHECK_EQ(s.size(), 2u);
+    CHECK_EQ(s["Point"].size, 24);
+    CHECK(s["Point"].fields.size() == 3 && s["Point"].fields[1].name == "y" && s["Point"].fields[1].offset == 4);
+    CHECK(s["Point"].fields[2].size == 1 && s["Point"].fields[2].count == 16);
+    CHECK_EQ(s["Pair"].size, 12);
+    auto as = Structs::SplitAs("[rbx + 8] as Point");
+    CHECK(as && as->first == "[rbx + 8]" && as->second == "Point");
+    CHECK(!Structs::SplitAs("rax"));
+    auto dump = Structs::SplitDump("msg, 32");
+    CHECK(dump && dump->first == "msg" && dump->second == 32);
+    CHECK(!Structs::SplitDump("[a, 3]"));
+    CHECK(!Structs::SplitDump("x, 1000"));
+}
+
 TEST(LinuxPlatformsNasmArgs) {
     Settings s;
     s.nasmArgs = L"-f win64 -g -F cv8";
@@ -1015,6 +1032,61 @@ TEST(DebuggerStepBack) {
     CHECK(host.Wait(10000));
     CHECK(host.exited);
     CHECK_EQ(host.exitCode, 0ul);
+}
+
+const char* kHeapProgram =
+    "default rel\n"                // 1
+    "extern malloc\n"              // 2
+    "global main\n"                // 3
+    "section .bss\n"               // 4
+    "    p resq 1\n"               // 5
+    "section .text\n"              // 6
+    "main:\n"                      // 7
+    "    sub rsp, 40\n"            // 8
+    "    mov ecx, 64\n"            // 9
+    "    call malloc\n"            // 10
+    "    mov [p], rax\n"           // 11
+    "    mov qword [rax], 1\n"     // 12
+    "    mov qword [rax], 2\n"     // 13
+    "    mov qword [rax], 3\n"     // 14
+    "    add rsp, 40\n"            // 15
+    "    xor eax, eax\n"           // 16
+    "    ret\n";                   // 17
+
+// Step back also rolls back memory from malloc.
+TEST(DebuggerStepBackHeap) {
+    auto exe = BuildProgram("heap", kHeapProgram);
+    if (!exe) return;
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    std::wstring error;
+    LaunchOptions launch;
+    launch.exe = *exe;
+    launch.cwd = exe->parent_path();
+    CHECK(d.Start(launch, host.pty, {{Debugger::Key(src), {{13, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    if (host.stops.empty()) return;
+    d.SetBreakpoints(src, {});
+    auto value = [&] {
+        auto v = d.Evaluate("qword [[p]]", error);
+        return v ? *v : 999;
+    };
+    CHECK_EQ(value(), 1ull);
+    d.StepOver();
+    CHECK(host.Wait(10000));
+    d.StepOver();
+    CHECK(host.Wait(10000));
+    CHECK_EQ(value(), 3ull);
+    CHECK(d.StepBack(error));
+    CHECK(host.Wait(5000));
+    CHECK_EQ(value(), 2ull);
+    CHECK(d.StepBack(error));
+    CHECK(host.Wait(5000));
+    CHECK_EQ(value(), 1ull);
+    d.Continue();
+    CHECK(host.Wait(10000));
+    CHECK(host.exited);
 }
 
 // The profiler counts how often each line ran and how many instructions it took.

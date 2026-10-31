@@ -1095,6 +1095,87 @@ std::string ExplainLine(const std::string& line, const Eval& eval, uint32_t efla
 
 }
 
+// ---- structures -------------------------------------------------------------------------------------------------
+
+namespace Structs {
+
+std::map<std::string, Struct> Parse(const std::string& text) {
+    std::map<std::string, Struct> out;
+    std::istringstream in(text);
+    std::string raw;
+    Struct* cur = nullptr;
+    int offset = 0;
+    static const std::map<std::string, int> reserve = {{"resb", 1}, {"resw", 2}, {"resd", 4}, {"resq", 8}, {"rest", 10},
+                                                       {"reso", 16}, {"resy", 32}, {"resz", 64}};
+    static const std::map<std::string, int> define = {{"db", 1}, {"dw", 2}, {"dd", 4}, {"dq", 8}, {"dt", 10}, {"do", 16}};
+    while (std::getline(in, raw)) {
+        std::string code, comment;
+        SplitComment(RTrim(raw), code, comment);
+        std::string t = LTrim(code);
+        if (t.empty()) continue;
+        std::string w = LowerAscii(ReadWord(t, 0));
+        if (w == "struc") {
+            std::string name = ReadWord(LTrim(t.substr(5)), 0);
+            if (name.empty()) continue;
+            cur = &out[name];
+            cur->name = name;
+            cur->fields.clear();
+            offset = 0;
+            continue;
+        }
+        if (!cur) continue;
+        if (w == "endstruc") {
+            cur->size = offset;
+            cur = nullptr;
+            continue;
+        }
+        // ".field resd 1", ".field: resq 2", ".name db 0" (a field without a dot is a global label: also counted)
+        std::string name = ReadWord(t, 0);
+        if (name.empty()) continue;
+        std::string rest = LTrim(t.substr(name.size()));
+        if (!rest.empty() && rest[0] == ':') rest = LTrim(rest.substr(1));
+        std::string kind = LowerAscii(ReadWord(rest, 0));
+        std::string arg = LTrim(rest.substr(kind.size()));
+        Field f;
+        f.name = name[0] == '.' ? name.substr(1) : name;
+        f.offset = offset;
+        if (auto r = reserve.find(kind); r != reserve.end()) {
+            f.size = r->second;
+            f.count = std::max(1, atoi(arg.c_str()));
+        } else if (auto d = define.find(kind); d != define.end()) {
+            f.size = d->second;
+            f.count = std::max<int>(1, static_cast<int>(SplitOperands(arg).size()));
+            if (kind == "db" && !arg.empty() && (arg[0] == '"' || arg[0] == '\'')) f.count = static_cast<int>(arg.size()) - 2;
+        } else {
+            continue;
+        }
+        offset += f.size * f.count;
+        cur->fields.push_back(f);
+    }
+    return out;
+}
+
+std::optional<std::pair<std::string, std::string>> SplitAs(const std::string& watch) {
+    std::string lower = LowerAscii(watch);
+    size_t at = lower.rfind(" as ");
+    if (at == std::string::npos) return std::nullopt;
+    std::string expr = LTrim(RTrim(watch.substr(0, at))), type = LTrim(RTrim(watch.substr(at + 4)));
+    if (expr.empty() || type.empty() || ReadWord(type, 0) != type) return std::nullopt;
+    return std::make_pair(expr, type);
+}
+
+std::optional<std::pair<std::string, int>> SplitDump(const std::string& watch) {
+    size_t comma = watch.rfind(',');
+    if (comma == std::string::npos || watch.find('[') != std::string::npos && watch.rfind(']') > comma) return std::nullopt;
+    std::string count = LTrim(RTrim(watch.substr(comma + 1)));
+    if (count.empty() || count.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
+    int n = atoi(count.c_str());
+    if (n < 1 || n > 256) return std::nullopt;
+    return std::make_pair(LTrim(RTrim(watch.substr(0, comma))), n);
+}
+
+}
+
 // ---- disassembler -----------------------------------------------------------------------------------------------
 
 namespace Disasm {

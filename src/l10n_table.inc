@@ -768,6 +768,14 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
      L"the address, dword [address] 4 bytes. In breakpoint conditions: rcx == 5, #10 for the 10th hit, log: rbx = {rbx} "
      L"prints without stopping."},
     {L"Все команды", L"All commands"},
+    {L"msg, 32 — 32 байта памяти; p as Point — поля структуры Point (struc).",
+     L"msg, 32: 32 bytes of memory; p as Point: the fields of the structure Point (struc)."},
+    {L"нет структуры ", L"no structure "},
+    {L"байт: ", L"bytes: "},
+    {L"Шаг назад восстанавливает регистры, глобальные переменные, стек и кучу (malloc). Вывод в консоль и файлы не "
+     L"откатываются.",
+     L"Step back restores the registers, global variables, the stack and the heap (malloc). Console output and files "
+     L"are not rolled back."},
     // explain the line
     {L"адрес", L"address"},
     {L"обнуление", L"cleared"},

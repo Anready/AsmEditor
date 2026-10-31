@@ -297,8 +297,8 @@ void MainWindow::StepBack() {
     static bool explained = false;
     if (!explained) {
         explained = true;
-        PrintTo(Pane::DebugOutput, Tr(std::string("Шаг назад восстанавливает регистры, глобальные переменные и стек. "
-                                                  "Вывод в консоль, файлы и память из кучи не откатываются.\n")),
+        PrintTo(Pane::DebugOutput, Tr(std::string("Шаг назад восстанавливает регистры, глобальные переменные, стек и кучу "
+                                                  "(malloc). Вывод в консоль и файлы не откатываются.\n")),
                 Out::Info);
     }
 }
@@ -643,6 +643,32 @@ void MainWindow::RenderCallStack() {
     RenderPanel(*stackView_, r.runs);
 }
 
+// The text of the open files and of the project's .asm / .inc files (for the structures of the watch list).
+std::string MainWindow::ProjectSourceText() {
+    std::string text;
+    std::set<std::wstring> seen;
+    for (const auto& e : editors_) {
+        text += e->Text() + "\n";
+        if (!e->file().empty()) seen.insert(Debugger::Key(e->file()));
+    }
+    if (projectRoot_.empty()) return text;
+    std::error_code ec;
+    int files = 0;
+    for (fs::recursive_directory_iterator it(projectRoot_, ec), end; !ec && it != end && files < 300; it.increment(ec)) {
+        std::wstring ext = Lower(it->path().extension().wstring());
+        if (!it->is_regular_file(ec) || (ext != L".asm" && ext != L".inc" && ext != L".mac") ||
+            seen.count(Debugger::Key(it->path()))) {
+            continue;
+        }
+        std::ifstream in(it->path(), std::ios::binary);
+        std::stringstream ss;
+        ss << in.rdbuf();
+        text += ss.str() + "\n";
+        files++;
+    }
+    return text;
+}
+
 void MainWindow::RenderWatches() {
     PanelText r;
     watchLines_.clear();
@@ -660,12 +686,76 @@ void MainWindow::RenderWatches() {
             continue;
         }
         std::wstring error;
+        char buf[64];
+        if (auto dump = Structs::SplitDump(watches_[i])) {  // "msg, 32": a memory area
+            auto a = debugger_->Evaluate(dump->first, error);
+            if (!a) {
+                r.Add(Narrow(error) + "\n", P_ERROR);
+                continue;
+            }
+            std::vector<uint8_t> bytes(dump->second);
+            bytes.resize(debugger_->ReadMemory(*a, bytes.data(), bytes.size()));
+            sprintf_s(buf, "@ 0x%llX\n", static_cast<unsigned long long>(*a));
+            r.Add(buf, P_ADDR);
+            for (size_t row = 0; row < bytes.size(); row += 16) {
+                std::string hex = "    ", text;
+                for (size_t k = row; k < std::min(bytes.size(), row + 16); k++) {
+                    sprintf_s(buf, "%02X ", bytes[k]);
+                    hex += buf;
+                    text += bytes[k] >= 32 && bytes[k] < 127 ? static_cast<char>(bytes[k]) : '.';
+                }
+                r.Add(PadRight(hex, 53), P_TEXT);
+                r.Add(text + "\n", P_DIM);
+            }
+            if (bytes.empty()) r.Add(Tr(std::string("память недоступна\n")), P_ERROR);
+            continue;
+        }
+        if (auto as = Structs::SplitAs(watches_[i])) {  // "p as Point": the fields of a structure
+            auto structs = Structs::Parse(ProjectSourceText());
+            auto it = structs.find(as->second);
+            auto a = debugger_->Evaluate(as->first, error);
+            if (it == structs.end() || !a) {
+                r.Add((a ? Tr(std::string("нет структуры ")) + as->second : Narrow(error)) + "\n", P_ERROR);
+                continue;
+            }
+            sprintf_s(buf, "@ 0x%llX\n", static_cast<unsigned long long>(*a));
+            r.Add(buf, P_ADDR);
+            for (const Structs::Field& f : it->second.fields) {
+                std::vector<uint8_t> bytes(static_cast<size_t>(f.size) * f.count);
+                bytes.resize(debugger_->ReadMemory(*a + f.offset, bytes.data(), bytes.size()));
+                r.Add("    ." + PadRight(f.name, 10) + " ", P_LABEL);
+                std::string value;
+                if (bytes.size() < static_cast<size_t>(f.size)) {
+                    value = "?";
+                } else if (f.size == 1 && f.count > 1) {  // text
+                    value = "\"";
+                    for (uint8_t b : bytes) {
+                        if (!b) break;
+                        value += b >= 32 && b < 127 ? static_cast<char>(b) : '.';
+                    }
+                    value += "\"";
+                } else if (f.size <= 8) {
+                    for (int k = 0; k < std::min(f.count, 8); k++) {
+                        uint64_t x = 0;
+                        memcpy(&x, bytes.data() + k * f.size, f.size);
+                        int64_t sx = f.size == 8 ? static_cast<int64_t>(x)
+                                   : static_cast<int64_t>(x << (64 - 8 * f.size)) >> (64 - 8 * f.size);
+                        sprintf_s(buf, "%s%lld", k ? ", " : "", static_cast<long long>(sx));
+                        value += buf;
+                    }
+                    if (f.count > 8) value += ", …";
+                } else {
+                    value = Tr(std::string("байт: ")) + std::to_string(bytes.size());
+                }
+                r.Add(value + "\n", P_TEXT);
+            }
+            continue;
+        }
         auto v = debugger_->Evaluate(watches_[i], error);
         if (!v) {
             r.Add(Narrow(error) + "\n", P_ERROR);
             continue;
         }
-        char buf[64];
         sprintf_s(buf, "0x%llX  (%lld)", static_cast<unsigned long long>(*v), static_cast<long long>(*v));
         r.Add(buf, P_TEXT);
         std::wstring sym = debugger_->SymbolAt(*v);
@@ -681,6 +771,7 @@ void MainWindow::RenderWatches() {
         r.Add("\n", P_TEXT);
     }
     if (watches_.empty()) r.Add(Tr(std::string("Введите выражение в поле выше и нажмите Enter.\n")), P_DIM);
+    r.Add(Tr(std::string("msg, 32 — 32 байта памяти; p as Point — поля структуры Point (struc).\n")), P_DIM);
 
     r.Add("\n" + Tr(std::string("ТОЧКИ ОСТАНОВА НА ДАННЫЕ")) + "\n", P_HEADER);
     std::vector<DataWatch> data = debugger_ ? debugger_->DataWatches() : std::vector<DataWatch>{};

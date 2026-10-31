@@ -223,6 +223,7 @@ private:
     void RenderRegisters();
     void RenderCallStack();
     void RenderWatches();
+    std::string ProjectSourceText();  // open files and the project's .asm/.inc (structures for the watches)
     void RenderDisassembly();
     void RenderMemory();
     void RenderFlags();

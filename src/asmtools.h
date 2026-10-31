@@ -66,6 +66,26 @@ using Eval = std::function<std::optional<uint64_t>(const std::string&)>;
 std::string ExplainLine(const std::string& line, const Eval& eval, uint32_t eflags);
 }
 
+// NASM structures (struc … endstruc) for the watch list: "p as Point" shows the fields of Point at p.
+namespace Structs {
+struct Field {
+    std::string name;  // without the leading dot
+    int offset = 0;
+    int size = 1;      // of one element: 1, 2, 4, 8, 10, 16
+    int count = 1;
+};
+struct Struct {
+    std::string name;
+    int size = 0;
+    std::vector<Field> fields;
+};
+std::map<std::string, Struct> Parse(const std::string& text);
+// "p as Point" -> {"p", "Point"}; anything else -> nothing.
+std::optional<std::pair<std::string, std::string>> SplitAs(const std::string& watch);
+// "msg, 32" -> {"msg", 32}: a memory dump of 32 bytes (1–256).
+std::optional<std::pair<std::string, int>> SplitDump(const std::string& watch);
+}
+
 namespace Disasm {
 struct Line {
     uint64_t address = 0;

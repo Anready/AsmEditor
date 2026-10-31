@@ -92,7 +92,7 @@ public:
     bool RunTo(const SourceLocation& where);  // continue to a line (false: no code there)
     void Pause();
     void Stop();
-    // Back to the previous stop: registers, the program's global data and the stack are restored (the heap, files
+    // Back to the previous stop: registers, global data, the stack and the heaps are restored (files
     // and the console are not). Posts WM_DEBUG_STOPPED. False with a reason when there is nothing to go back to.
     bool StepBack(std::wstring& error);
     size_t HistorySize();
@@ -187,6 +187,7 @@ private:
         size_t Bytes() const;
     };
     void RecordSnapshot(HANDLE thread, const CONTEXT& ctx);
+    std::vector<uint64_t> HeapBases();
     void FindWritableSections();
     std::deque<Snapshot> history_;
     std::vector<std::pair<uint64_t, uint64_t>> writable_;  // address, size of the image's writable sections

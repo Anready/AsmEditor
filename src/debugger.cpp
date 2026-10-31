@@ -546,6 +546,31 @@ void Debugger::FindWritableSections() {
     }
 }
 
+// Base addresses of the program's heaps, from PEB.ProcessHeaps (64-bit programs only).
+std::vector<uint64_t> Debugger::HeapBases() {
+    std::vector<uint64_t> out;
+    if (wow64_) return out;
+    using Query = LONG(NTAPI*)(HANDLE, int, void*, ULONG, ULONG*);
+    static auto query = reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationProcess"));
+    struct BasicInformation {
+        void* reserved1;
+        void* peb;
+        void* reserved2[2];
+        ULONG_PTR pid;
+        void* reserved3;
+    } info{};
+    if (!query || query(process_, 0, &info, sizeof(info), nullptr) != 0 || !info.peb) return out;
+    uint64_t peb = reinterpret_cast<uint64_t>(info.peb);
+    uint32_t count = 0;
+    uint64_t heaps = 0;
+    if (ReadMemory(peb + 0xE8, &count, 4) != 4 || ReadMemory(peb + 0xF0, &heaps, 8) != 8) return out;
+    for (uint32_t i = 0; i < std::min<uint32_t>(count, 16); i++) {
+        uint64_t h = 0;
+        if (ReadMemory(heaps + i * 8ull, &h, 8) == 8 && h) out.push_back(h);
+    }
+    return out;
+}
+
 void Debugger::RecordSnapshot(HANDLE thread, const CONTEXT& ctx) {
     constexpr size_t kMaxSnapshots = 2000, kMaxBytes = 256u << 20, kStackBytes = 64u << 10;
     std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -556,6 +581,26 @@ void Debugger::RecordSnapshot(HANDLE thread, const CONTEXT& ctx) {
         std::vector<uint8_t> bytes(size);
         bytes.resize(ReadMemory(address, bytes.data(), size));
         snap.memory.push_back({address, std::move(bytes)});
+    }
+    // The heaps (malloc, HeapAlloc): the committed parts of each heap's first segment, up to 8 MB in all.
+    size_t heapBytes = 0;
+    for (uint64_t base : HeapBases()) {
+        for (uint64_t a = base; heapBytes < (8u << 20);) {
+            MEMORY_BASIC_INFORMATION r{};
+            if (!VirtualQueryEx(process_, reinterpret_cast<void*>(a), &r, sizeof(r)) ||
+                reinterpret_cast<uint64_t>(r.AllocationBase) != base) {
+                break;
+            }
+            uint64_t next = reinterpret_cast<uint64_t>(r.BaseAddress) + r.RegionSize;
+            if (r.State == MEM_COMMIT && (r.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE)) && !(r.Protect & PAGE_GUARD)) {
+                size_t size = std::min<size_t>(r.RegionSize, (8u << 20) - heapBytes);
+                std::vector<uint8_t> bytes(size);
+                bytes.resize(ReadMemory(reinterpret_cast<uint64_t>(r.BaseAddress), bytes.data(), size));
+                heapBytes += bytes.size();
+                snap.memory.push_back({reinterpret_cast<uint64_t>(r.BaseAddress), std::move(bytes)});
+            }
+            a = next;
+        }
     }
     // The used part of the stack: from a little below rsp up to the end of its committed region.
     MEMORY_BASIC_INFORMATION mbi{};

@@ -31,6 +31,7 @@ if /i "%~1"=="nobuild" (
 rem Scintilla (static library) is built once.
 if not exist third_party\scintilla\bin\libscintilla.lib (
     if not exist third_party\scintilla\win32\obj mkdir third_party\scintilla\win32\obj
+    if not exist third_party\scintilla\bin mkdir third_party\scintilla\bin
     pushd third_party\scintilla\win32
     nmake -nologo -f scintilla.mak ..\bin\libscintilla.lib || (popd & exit /b 1)
     popd

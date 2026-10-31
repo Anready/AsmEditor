@@ -787,6 +787,125 @@ TEST(ProjectExcludedAndIncludedFiles) {
     CHECK_EQ(Project::Dependencies(dir / L"main.asm", {dir}).size(), 1u);
 }
 
+// ---- built-in disassembler: round trip through NASM -------------------------------------------------------------
+
+// Assembles `source` with NASM (-f bin, no optimization) and returns the bytes.
+std::optional<std::vector<uint8_t>> Assemble(const Settings& s, const std::string& source, const std::string& name) {
+    wchar_t tmp[MAX_PATH + 1];
+    GetTempPathW(MAX_PATH + 1, tmp);
+    fs::path dir = fs::path(tmp) / L"asmeditor-tests" / L"disasm";
+    fs::create_directories(dir);
+    fs::path src = dir / Widen(name + ".asm"), bin = dir / Widen(name + ".bin");
+    std::ofstream(src, std::ios::binary) << source;
+    std::error_code ec;
+    fs::remove(bin, ec);
+    std::string log;
+    int code = Toolchain::Exec({s.nasmPath, L"-f", L"bin", L"-O0", src.wstring(), L"-o", bin.wstring()}, dir, nullptr, &log);
+    if (code != 0) {
+        printf("    nasm: %s\n", log.c_str());
+        return std::nullopt;
+    }
+    std::ifstream in(bin, std::ios::binary);
+    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+// Every instruction of the corpus is decoded (no "db"), and its text, assembled again at the same address,
+// decodes to the same text.
+void RoundTrip(int bits, const std::vector<std::string>& corpus) {
+    Settings s;
+    s.Load();
+    Toolchain::ApplyDefaults(s);
+    if (!Toolchain::NasmAvailable(s)) {
+        printf("    (skipped: needs NASM)\n");
+        return;
+    }
+    const uint64_t org = bits == 64 ? 0x401000 : 0x8048000;
+    std::string source = "bits " + std::to_string(bits) + "\norg " + std::to_string(org) + "\n";
+    for (const std::string& line : corpus) source += line + "\n";
+    auto bytes = Assemble(s, source, "corpus" + std::to_string(bits));
+    CHECK(bytes.has_value());
+    if (!bytes) return;
+    auto lines = Disasm::Decode(bytes->data(), bytes->size(), org, bits);
+    CHECK_EQ(lines.size(), corpus.size());
+    int bad = 0;
+    std::string batch;
+    for (size_t k = 0; k < lines.size(); k++) {
+        const Disasm::Line& l = lines[k];
+        if (l.text.rfind("db ", 0) == 0) {
+            if (bad++ < 15) printf("    not decoded: %s  (%s)\n", k < corpus.size() ? corpus[k].c_str() : "?", l.bytes.c_str());
+            continue;
+        }
+        // Each instruction alone at its address (relative jumps and [rel] need the same address). NASM makes
+        // [rel number] absolute in a flat binary: give it as $$ + offset, which it encodes RIP-relative.
+        std::string text = l.text;
+        if (size_t r = text.find("[rel 0x"); r != std::string::npos) {
+            size_t end = text.find(']', r);
+            uint64_t target = strtoull(text.c_str() + r + 5, nullptr, 16);
+            text.replace(r, end - r + 1, "[rel $$+" + std::to_string(target - l.address) + "]");
+        }
+        auto again = Assemble(s, "bits " + std::to_string(bits) + "\norg " + std::to_string(l.address) + "\n" + text + "\n", "one");
+        if (!again) {
+            if (bad++ < 15) printf("    NASM rejects: %s\n", l.text.c_str());
+            continue;
+        }
+        auto redecoded = Disasm::Decode(again->data(), again->size(), l.address, bits);
+        if (redecoded.size() != 1 || redecoded[0].text != l.text) {
+            if (bad++ < 15) printf("    round trip: %s -> %s\n", l.text.c_str(), redecoded.empty() ? "" : redecoded[0].text.c_str());
+        }
+    }
+    CHECK_EQ(bad, 0);
+}
+
+TEST(DisassemblerRoundTrip64) {
+    RoundTrip(64, {
+        "mov rax, rbx", "mov eax, ecx", "mov ax, dx", "mov al, bl", "mov sil, dil", "mov r8, r15", "mov r12d, r13d",
+        "mov rax, [rbx]", "mov rax, [rbx+8]", "mov [rbp-16], rcx", "mov rdx, [rax+rcx*4+0x100]", "mov rax, [rsp+8]",
+        "mov rax, [r13]", "mov rax, [r12+r9*8-4]", "mov qword [rax], 5", "mov dword [rbx], -1", "mov byte [rcx], 0x41",
+        "mov word [rdx], 0x1234", "mov rax, 0x123456789abc", "mov eax, 7", "mov r9b, 3", "mov rax, [rel $+0x100]",
+        "lea rcx, [rel $+0x20]", "lea rax, [rbx+rcx*2+3]", "movzx eax, byte [rsi]", "movzx ecx, word [rdi+2]",
+        "movsx rax, al", "movsxd rax, dword [rbx]", "movsxd rcx, edx",
+        "add rax, rbx", "add rax, 1", "add rax, -1", "add eax, 0x12345678", "add al, 5", "add rsp, 40", "sub rsp, 0x28",
+        "sub eax, ecx", "adc rdx, 0", "sbb rax, rbx", "and rax, -16", "or ecx, 0x80", "xor eax, eax", "xor r10, r11",
+        "cmp rax, 10", "cmp byte [rsi], 0", "cmp rcx, [rdx]", "test rax, rax", "test al, 1", "test dword [rbx], 0x100",
+        "inc rax", "dec ecx", "inc qword [rbx]", "dec byte [rax]", "neg rax", "not rdx", "mul rcx", "imul rbx",
+        "div rcx", "idiv qword [rsp+8]", "imul rax, rbx", "imul rax, rbx, 10", "imul ecx, edx, 1000",
+        "shl rax, 3", "shr rdx, 1", "sar eax, cl", "rol rbx, 4", "ror ecx, 1", "rcl rax, 1", "shld rax, rbx, 4",
+        "shrd rax, rbx, cl", "bt rax, 3", "bts rax, rbx", "btr ecx, 5", "btc qword [rax], 1", "bsf rax, rbx",
+        "bsr ecx, edx", "popcnt rax, rbx", "lzcnt eax, ecx", "tzcnt rdx, r8", "bswap rax", "bswap r12d",
+        "push rbx", "push r12", "pop rbp", "pop r15", "push 10", "push 0x12345", "push qword [rax]", "pop qword [rbx]",
+        "call $+0x100", "call rax", "call qword [rel $+0x40]", "jmp $+0x200", "jmp short $+0x10", "jmp rcx",
+        "jmp qword [rax+8]", "je $+0x10", "jne $-0x20", "jl $+0x1000", "jg $+5", "jb $+10", "jae $+10", "js $+3",
+        "jo $+4", "jp $+6", "loop $-5", "jrcxz $+8", "ret", "ret 16", "leave", "enter 32, 0", "nop", "pause",
+        "int3", "int 0x80", "hlt", "syscall", "ud2", "cpuid", "rdtsc", "cqo", "cdq", "cdqe", "cwde", "cbw", "cwd",
+        "pushfq", "popfq", "sahf", "lahf", "clc", "stc", "cmc", "cld", "std",
+        "sete al", "setne bl", "setg cl", "setb byte [rax]", "cmove rax, rbx", "cmovl ecx, edx", "cmovge rax, [rbx]",
+        "xchg rax, rbx", "xchg rcx, rax", "xchg [rbx], eax", "cmpxchg [rcx], rdx", "lock cmpxchg [rcx], rdx",
+        "xadd [rax], ebx", "lock add qword [rax], 1", "lock inc dword [rbx]",
+        "movsb", "movsq", "rep movsb", "rep stosq", "lodsb", "repne scasb", "repe cmpsb", "stosd",
+        "nop dword [rax+rax+0]",
+        "movss xmm0, [rax]", "movsd xmm1, [rbx+8]", "movsd [rcx], xmm2", "movss xmm3, xmm4", "movaps xmm0, xmm1",
+        "movups xmm5, [rdx]", "movapd [rax], xmm6", "movdqa xmm7, [rsp]", "movdqu [rbx], xmm8", "movq xmm0, rax",
+        "movq rax, xmm1", "movd xmm2, ecx", "movd edx, xmm3", "movq xmm4, [rax]", "movq [rbx], xmm5",
+        "addsd xmm0, xmm1", "subss xmm2, [rax]", "mulpd xmm3, xmm4", "divps xmm5, [rbx]", "sqrtsd xmm0, xmm0",
+        "minsd xmm1, xmm2", "maxss xmm3, xmm4", "xorps xmm0, xmm0", "andpd xmm1, [rax]", "orps xmm2, xmm3",
+        "cvtsi2sd xmm0, rax", "cvtsi2ss xmm1, dword [rbx]", "cvttsd2si rax, xmm0", "cvtsd2si ecx, xmm1",
+        "cvtss2sd xmm0, xmm1", "cvtsd2ss xmm2, [rax]", "ucomisd xmm0, xmm1", "comiss xmm2, [rax]",
+        "pxor xmm0, xmm0", "paddd xmm1, xmm2", "psubq xmm3, [rax]", "pcmpeqb xmm4, xmm5", "pand xmm6, xmm7",
+        "por xmm8, xmm9", "pmovmskb eax, xmm1", "pshufd xmm0, xmm1, 0x1b", "punpcklbw xmm2, xmm3",
+    });
+}
+
+TEST(DisassemblerRoundTrip32) {
+    RoundTrip(32, {
+        "mov eax, ebx", "mov ax, cx", "mov al, ah", "mov eax, [ebx+8]", "mov [ebp-4], ecx", "mov dword [eax], 5",
+        "mov eax, [0x804a000]", "lea esi, [eax+ecx*4]", "push ebx", "push dword [esp+4]", "pop edi", "push 0x10",
+        "inc eax", "dec ecx", "add esp, 8", "sub esp, 0x20", "call $+0x50", "call eax", "jmp $-10", "je $+0x30",
+        "ret", "pushad", "popad", "cdq", "idiv ecx", "imul eax, [ebx], 3", "shl eax, 2", "test eax, eax",
+        "movzx eax, byte [esi]", "rep movsd", "loop $-3", "jecxz $+5", "int 0x80", "movsd xmm0, [eax]",
+        "cvtsi2sd xmm1, eax", "pushfd", "popfd", "xchg eax, edx", "cmovne eax, ebx", "setl al",
+    });
+}
+
 // ---- debugger end to end ---------------------------------------------------------------------------------------
 
 struct DebugHost {

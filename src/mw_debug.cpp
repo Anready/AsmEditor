@@ -838,11 +838,6 @@ void MainWindow::RenderDisassembly() {
         RenderPanel(*disasmView_, {{Tr(std::string("Дизассемблер показывает код, когда программа остановлена.\n")), P_DIM}});
         return;
     }
-    auto ndisasm = Toolchain::FindNdisasm(*settings_);
-    if (!ndisasm) {
-        RenderPanel(*disasmView_, {{Tr(std::string("Не найден ndisasm.exe (входит в NASM, ищется рядом с nasm.exe).\n")), P_ERROR}});
-        return;
-    }
     const CONTEXT& c = debugger_->Context();
     uint64_t start = c.Rip;
     std::wstring sym = debugger_->SymbolAt(c.Rip);
@@ -853,7 +848,14 @@ void MainWindow::RenderDisassembly() {
     }
     std::vector<uint8_t> code(std::min<uint64_t>(c.Rip - start, 0x800) + 160);
     size_t got = debugger_->ReadMemory(start, code.data(), code.size());
-    std::vector<Disasm::Line> lines = Disasm::Run(*ndisasm, code.data(), got, start, debugger_->Is32() ? 32 : 64);
+    std::vector<Disasm::Line> lines = Disasm::Decode(code.data(), got, start, debugger_->Is32() ? 32 : 64);
+    for (Disasm::Line& l : lines) {  // name the targets of jumps and calls and the [rel …] addresses
+        size_t at = l.text.rfind("0x");
+        if (at == std::string::npos || l.text.rfind("db ", 0) == 0) continue;
+        uint64_t target = strtoull(l.text.c_str() + at, nullptr, 16);
+        std::wstring name = target >= 0x10000 ? debugger_->SymbolAt(target) : std::wstring();
+        if (!name.empty()) l.text += "  ; " + Narrow(name);
+    }
     PanelText r;
     r.Add(Tr(std::string("КОД")) + "  " + Narrow(sym.empty() ? std::wstring() : sym.substr(0, plus)) + "  " +
               Tr(std::string("(двойной клик — к строке исходника)")) + "\n", P_HEADER);

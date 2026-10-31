@@ -223,6 +223,12 @@ public:
              std::string flags = w_.flagsView_->Text();
              Check(flags.find("SF") != std::string::npos && flags.find("jl") != std::string::npos, "the flags tab lists flags and conditions");
              Screenshot("03-flags");
+             w_.ShowDebugTab(MainWindow::DebugTab::Disasm);
+             std::string code = w_.disasmView_->Text();
+             Check(code.find("cmp rbx, 0x5") != std::string::npos && code.find("inc qword [rel 0x") != std::string::npos,
+                   "the built-in disassembler shows the code of main");
+             Screenshot("05-code");
+             w_.ShowDebugTab(MainWindow::DebugTab::Flags);
              lastLine_ = ExecLine();
              Command(ID_STEP_BACK);
              return true;

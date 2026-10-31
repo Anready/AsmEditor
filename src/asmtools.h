@@ -95,6 +95,9 @@ struct Line {
 std::vector<Line> Parse(const std::string& ndisasmOutput);
 // Runs ndisasm on the given bytes (written to a temporary file).
 std::vector<Line> Run(const fs::path& ndisasm, const uint8_t* data, size_t size, uint64_t address, int bits);
+// The built-in disassembler (disasm.cpp): NASM syntax, general-purpose and common SSE/SSE2 instructions; anything
+// else is "db 0x..". Jump targets and RIP-relative operands are absolute addresses ("[rel 0x404010]").
+std::vector<Line> Decode(const uint8_t* data, size_t size, uint64_t address, int bits);
 }
 
 namespace Conditions {

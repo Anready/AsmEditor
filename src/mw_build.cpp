@@ -289,6 +289,7 @@ void MainWindow::RunInWsl(const fs::path& exe, const fs::path& cwd, bool debug) 
         LaunchOptions launch = MakeLaunch(exe, cwd);
         launch.wsl = true;
         launch.wslTty = tty;
+        launch.linux32 = runConfig_.Linux32();
         debugger_ = std::make_unique<Debugger>(hwnd_);
         std::optional<SourceLocation> runTo = runTo_;
         runTo_.reset();

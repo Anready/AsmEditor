@@ -745,6 +745,29 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
      L"fopen returns a FILE* in rax: keep it in a variable (resq 1) before the next calls."},
     {L"fprintf(rcx = FILE*, rdx = fmt_str, r8 = input); затем fclose(rcx = FILE*).",
      L"fprintf(rcx = FILE*, rdx = fmt_str, r8 = input); then fclose(rcx = FILE*)."},
+    {L"Linux 32 бит через WSL (-f elf32, gcc -m32, gdb)", L"Linux 32-bit through WSL (-f elf32, gcc -m32, gdb)"},
+    {L"Справка по редактору", L"Editor help"},
+    {L"Быстрый старт", L"Quick start"},
+    {L"Файл → «Новый проект…» и шаблон Hello world (или откройте папку с .asm).",
+     L"File → New project… and the Hello world template (or open a folder with .asm files)."},
+    {L"Ctrl+F5 — собрать и запустить, ввод и вывод программы — во вкладке «Терминал».",
+     L"Ctrl+F5 builds and runs; the program's input and output are in the Terminal tab."},
+    {L"F9 — точка останова, F5 — отладка, F10/F11 — шаги, у строки — что она сделает.",
+     L"F9 sets a breakpoint, F5 debugs, F10/F11 step; a note at the line tells what it will do."},
+    {L"Запуск → «Уроки…» и «Новая учебная задача», Ctrl+Shift+T — проверка решения.",
+     L"Run → Lessons… and New exercise; Ctrl+Shift+T checks the solution."},
+    {L"Пример программы", L"Example program"},
+    {L"теневое место и выравнивание стека (Win64)", L"shadow space and stack alignment (Win64)"},
+    {L"1-й аргумент", L"1st argument"},
+    {L"2-й аргумент", L"2nd argument"},
+    {L"Выражения отладчика", L"Debugger expressions"},
+    {L"Регистры, метки, числа (42, 0x2A, 2Ah), + − * / %, & | ^ << >>, сравнения, && ||, [адрес] — значение по адресу, "
+     L"dword [адрес] — 4 байта. В условиях точек останова: rcx == 5, #10 — на 10-й раз, log: rbx = {rbx} — печать без "
+     L"остановки.",
+     L"Registers, labels, numbers (42, 0x2A, 2Ah), + − * / %, & | ^ << >>, comparisons, && ||, [address] is the value at "
+     L"the address, dword [address] 4 bytes. In breakpoint conditions: rcx == 5, #10 for the 10th hit, log: rbx = {rbx} "
+     L"prints without stopping."},
+    {L"Все команды", L"All commands"},
     // explain the line
     {L"адрес", L"address"},
     {L"обнуление", L"cleared"},

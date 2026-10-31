@@ -549,6 +549,17 @@ TEST(ExplainLine) {
     CHECK_EQ(Analyzer::ExplainLine("    mov rax, [unknown]", eval, 0), std::string());
 }
 
+TEST(LinuxPlatformsNasmArgs) {
+    Settings s;
+    s.nasmArgs = L"-f win64 -g -F cv8";
+    RunConfig c;
+    c.platform = L"wsl";
+    CHECK_EQ(Toolchain::NasmArgs(s, c), std::wstring(L"-f elf64 -g -F dwarf"));
+    c.platform = L"wsl32";
+    CHECK(c.Wsl() && c.Linux32());
+    CHECK_EQ(Toolchain::NasmArgs(s, c), std::wstring(L"-f elf32 -g -F dwarf"));
+}
+
 TEST(GdbMiRecords) {
     auto r = Mi::Parse("12^done,bkpt={number=\"3\",type=\"breakpoint\",file=\"main.asm\",line=\"13\"}");
     CHECK(r && r->type == '^' && r->token == 12 && r->klass == "done");

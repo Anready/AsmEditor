@@ -100,7 +100,8 @@ private:
     void CommandPalette();
     void QuickOpen();
     void EditKeys();
-    void ToggleAssociation();  // Help → open .asm files in AsmEditor (HKCU)
+    void ToggleAssociation();
+    void ShowHelpPage();  // F1: a page with the shortcuts and short examples, opened in the browser  // Help → open .asm files in AsmEditor (HKCU)
 
     // editors
     Editor* Active() const { return active_ >= 0 && active_ < (int)editors_.size() ? editors_[active_].get() : nullptr; }

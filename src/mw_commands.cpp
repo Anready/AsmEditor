@@ -413,3 +413,51 @@ void MainWindow::ToggleAssociation() {
     ShowMessage(hwnd_, Tr(L"Готово: файлы .asm, .inc, .nasm и .mac открываются в AsmEditor (двойной клик в Проводнике). "
                           L"Если Windows спросит, чем открыть файл, выберите AsmEditor."), false);
 }
+
+// F1: an HTML page (in the settings folder) with every command and its current shortcut, and short examples.
+void MainWindow::ShowHelpPage() {
+    auto html = [](const std::wstring& w) {
+        std::string out;
+        for (char c : Narrow(w)) {
+            if (c == '<') out += "&lt;";
+            else if (c == '>') out += "&gt;";
+            else if (c == '&') out += "&amp;";
+            else out += c;
+        }
+        return out;
+    };
+    auto t = [&](const wchar_t* ru) { return html(Tr(ru)); };
+    std::string page = "<!doctype html><html><head><meta charset=\"utf-8\"><title>AsmEditor</title><style>"
+                       "body{font:15px/1.5 'Segoe UI',sans-serif;max-width:900px;margin:24px auto;padding:0 16px;"
+                       "color:#1f2328;background:#fff}h1{font-size:24px}h2{font-size:18px;margin-top:28px}"
+                       "table{border-collapse:collapse;width:100%}td{border-bottom:1px solid #e5e7eb;padding:4px 8px}"
+                       "td.k{white-space:nowrap;font-family:Consolas,monospace;color:#0b57d0}"
+                       "pre{background:#f6f8fa;padding:12px;border-radius:6px;overflow:auto}"
+                       "@media(prefers-color-scheme:dark){body{color:#dfe1e5;background:#1e1f22}"
+                       "td{border-color:#393b40}pre{background:#2b2d30}td.k{color:#8ab4f8}}</style></head><body>";
+    page += "<h1>AsmEditor " ASMEDITOR_VERSION_TEXT "</h1>";
+    page += "<h2>" + t(L"Быстрый старт") + "</h2><ol>";
+    page += "<li>" + t(L"Файл → «Новый проект…» и шаблон Hello world (или откройте папку с .asm).") + "</li>";
+    page += "<li>" + t(L"Ctrl+F5 — собрать и запустить, ввод и вывод программы — во вкладке «Терминал».") + "</li>";
+    page += "<li>" + t(L"F9 — точка останова, F5 — отладка, F10/F11 — шаги, у строки — что она сделает.") + "</li>";
+    page += "<li>" + t(L"Запуск → «Уроки…» и «Новая учебная задача», Ctrl+Shift+T — проверка решения.") + "</li></ol>";
+    page += "<h2>" + t(L"Пример программы") + "</h2><pre>default rel\nextern printf\nglobal main\n\nsection .data\n"
+            "    msg db \"Hello, %s!\", 10, 0\n    who db \"world\", 0\n\nsection .text\nmain:\n    sub rsp, 40        ; "
+            + t(L"теневое место и выравнивание стека (Win64)") + "\n    lea rcx, [msg]     ; " + t(L"1-й аргумент") +
+            "\n    lea rdx, [who]     ; " + t(L"2-й аргумент") + "\n    call printf\n    add rsp, 40\n    xor eax, eax\n"
+            "    ret</pre>";
+    page += "<h2>" + t(L"Выражения отладчика") + "</h2><p>" +
+            t(L"Регистры, метки, числа (42, 0x2A, 2Ah), + − * / %, & | ^ << >>, сравнения, && ||, [адрес] — значение по "
+              L"адресу, dword [адрес] — 4 байта. В условиях точек останова: rcx == 5, #10 — на 10-й раз, "
+              L"log: rbx = {rbx} — печать без остановки.") + "</p>";
+    page += "<h2>" + t(L"Все команды") + "</h2><table>";
+    for (const CommandDef& c : Commands()) {
+        page += "<tr><td>" + html(Tr(c.name)) + "</td><td class=k>" + html(KeysFor(c.id)) + "</td></tr>";
+    }
+    page += "</table></body></html>";
+    fs::path file = Settings::Dir() / L"help.html";
+    std::error_code ec;
+    fs::create_directories(file.parent_path(), ec);
+    std::ofstream(file, std::ios::binary | std::ios::trunc) << page;
+    ShellExecuteW(hwnd_, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}

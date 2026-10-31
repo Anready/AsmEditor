@@ -48,6 +48,7 @@ struct LaunchOptions {
     bool sample = false;       // profile by sampling: where the program is, every millisecond (fast, no counts)
     bool wsl = false;          // a Linux program: debugged by gdb in WSL (GdbSession)
     std::string wslTty;        // the pseudo-terminal in WSL that becomes the program's console
+    bool linux32 = false;      // a 32-bit Linux program (eax… registers, 4-byte pointers)
 };
 
 // Profiler result for one source line.

@@ -180,11 +180,12 @@ struct RunConfig {
     std::wstring stdinFile;  // its contents are typed into the program at start
     std::wstring output = L"exe";       // exe | dll | lib
     std::wstring profile = L"Debug";    // Debug | Release
-    std::wstring platform = L"windows"; // windows | wsl (Linux, -f elf64)
+    std::wstring platform = L"windows"; // windows | wsl (Linux, -f elf64) | wsl32 (Linux, -f elf32)
     std::wstring preBuild;   // commands run in the project folder before / after the build
     std::wstring postBuild;
     bool Release() const { return profile == L"Release"; }
-    bool Wsl() const { return platform == L"wsl"; }
+    bool Wsl() const { return platform == L"wsl" || platform == L"wsl32"; }
+    bool Linux32() const { return platform == L"wsl32"; }
 };
 
 struct BuildPlan {

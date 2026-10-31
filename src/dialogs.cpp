@@ -708,7 +708,9 @@ bool ShowRunConfigDialog(HWND owner, RunConfig& c) {
     d.Label(Tr(L"Платформа:"), 16, y + 4, 170, 20);
     std::wstring platform = c.platform;
     auto platformTitle = [&] {
-        return std::wstring(platform == L"wsl" ? Tr(L"Linux через WSL (-f elf64, ld/gcc, gdb)") : L"Windows") + L"  ▾";
+        return std::wstring(platform == L"wsl"     ? Tr(L"Linux через WSL (-f elf64, ld/gcc, gdb)")
+                            : platform == L"wsl32" ? Tr(L"Linux 32 бит через WSL (-f elf32, gcc -m32, gdb)")
+                                                   : L"Windows") + L"  ▾";
     };
     HWND platButton = d.Button(kPlatform, platformTitle(), F, y, FW, 26);
     y += 40;
@@ -732,10 +734,11 @@ bool ShowRunConfigDialog(HWND owner, RunConfig& c) {
                 SetWindowTextW(outButton, outputTitle().c_str());
             }
         } else if (id == kPlatform) {
-            int choice = PopupChoice(platButton, {L"Windows", Tr(L"Linux через WSL (-f elf64, ld/gcc, gdb)")},
-                                     platform == L"wsl" ? 1 : 0);
+            int choice = PopupChoice(platButton, {L"Windows", Tr(L"Linux через WSL (-f elf64, ld/gcc, gdb)"),
+                                                  Tr(L"Linux 32 бит через WSL (-f elf32, gcc -m32, gdb)")},
+                                     platform == L"wsl" ? 1 : platform == L"wsl32" ? 2 : 0);
             if (choice >= 0) {
-                platform = choice ? L"wsl" : L"windows";
+                platform = choice == 1 ? L"wsl" : choice == 2 ? L"wsl32" : L"windows";
                 SetWindowTextW(platButton, platformTitle().c_str());
             }
         }

@@ -278,7 +278,7 @@ void MainWindow::BuildMenus() {
     }
 
     helpMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_COMMAND_PALETTE, ID_KEYS, 0, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
+    for (int id : std::initializer_list<int>{ID_HELP_PAGE, ID_COMMAND_PALETTE, ID_KEYS, 0, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
         if (id) AppendCommand(helpMenu_, id);
         else AppendMenuW(helpMenu_, MF_SEPARATOR, 0, nullptr);
     }
@@ -873,6 +873,7 @@ void MainWindow::OnCommand(int id) {
         break;
     }
     case ID_KEYS: EditKeys(); break;
+    case ID_HELP_PAGE: ShowHelpPage(); break;
     case ID_ASSOCIATE: ToggleAssociation(); break;
     case ID_CHECK_UPDATES: CheckUpdates(); break;
     case ID_OPEN_LOG: {

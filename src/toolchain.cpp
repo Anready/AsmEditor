@@ -259,7 +259,9 @@ std::wstring NasmArgs(const Settings& s, const RunConfig& c) {
     }
     if (c.Wsl()) {  // Linux object files: ELF with DWARF line information
         for (std::wstring& a : args) {
-            if (a == L"win64") a = L"elf64";
+            if (c.Linux32() && (a == L"win64" || a == L"win32")) a = L"elf32";
+            else if (c.Linux32() && (a == L"-fwin64" || a == L"-fwin32")) a = L"-felf32";
+            else if (a == L"win64") a = L"elf64";
             else if (a == L"win32") a = L"elf32";
             else if (a == L"cv8") a = L"dwarf";
             else if (a == L"-fwin64") a = L"-felf64";
@@ -361,6 +363,10 @@ static std::vector<std::wstring> WslLinkCommand(const BuildPlan& plan, const std
     for (const fs::path& src : plan.sources) hasMain |= Project::DefinesMain(src);
     std::vector<std::wstring> cmd{L"wsl.exe", L"--exec", hasMain ? L"gcc" : L"ld"};
     if (hasMain) cmd.push_back(L"-no-pie");
+    if (plan.config.Linux32()) {  // needs gcc-multilib in WSL for the C runtime
+        cmd.push_back(hasMain ? L"-m32" : L"-m");
+        if (!hasMain) cmd.push_back(L"elf_i386");
+    }
     if (plan.config.output == L"dll") cmd.push_back(L"-shared");
     cmd.push_back(L"-o");
     cmd.push_back(WslPath(plan.exe));

@@ -243,6 +243,7 @@ GdbSession::~GdbSession() {
 bool GdbSession::Start(const LaunchOptions& launch, const std::string& tty, const Debugger::Breakpoints& breakpoints,
                        bool stopAtEntry, std::optional<SourceLocation> runTo, std::wstring& error) {
     dir_ = launch.cwd;
+    d_.wow64_ = launch.linux32;  // 4-byte pointers and 32-bit register names in the panels
     SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
     HANDLE inRead, outWrite;
     CreatePipe(&inRead, &in_, &sa, 0);
@@ -454,13 +455,14 @@ void GdbSession::ReadRegisters() {
                        &c.R8, &c.R9, &c.R10, &c.R11, &c.R12, &c.R13, &c.R14, &c.R15, &c.Rip};
     static const char* names[] = {"rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "r8",
                                   "r9", "r10", "r11", "r12", "r13", "r14", "r15", "rip"};
+    static const char* names32[] = {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "", "", "", "", "", "", "", "", "eip"};
     for (const Mi::Value& v : values->items) {
         size_t number = static_cast<size_t>(atoi(v.Str("number").c_str()));
         if (number >= registerNames_.size()) continue;
         const std::string& name = registerNames_[number];
         std::string text = v.Str("value");
         for (int i = 0; i < 17; i++) {
-            if (name == names[i]) *regs[i] = Mi::ParseNumber(text);
+            if (name == names[i] || (*names32[i] && name == names32[i])) *regs[i] = Mi::ParseNumber(text);
         }
         if (name == "eflags") c.EFlags = static_cast<DWORD>(Mi::ParseNumber(text));
         if (name.rfind("xmm", 0) == 0 && name.size() <= 5) {

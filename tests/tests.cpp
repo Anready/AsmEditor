@@ -1454,6 +1454,13 @@ TEST(LessonsAndResults) {
     CHECK(csv.find("Иванов И.;sum;") != std::string::npos);
     CHECK(csv.find(";да;3/3;3;2026-10-31 10:05;2026-10-31 10:09") != std::string::npos);
     CHECK(csv.find(";gcd;") != std::string::npos);  // unattempted tasks are listed too
+    // every task has an English text; the English starter's header has no Russian
+    for (const Exercises::Exercise& e : Exercises::All()) {
+        std::string text = Exercises::StarterText(e, true);
+        std::string header = text.substr(0, text.find("default rel"));
+        CHECK(!e.descriptionEn.empty() && header.find('\xD0') == std::string::npos && header.find('\xD1') == std::string::npos);
+        CHECK_EQ(Exercises::IdFromSource(text), e.id);
+    }
     // the teacher's summary of two students
     std::map<std::string, Results::Entry> other;
     Results::Record(other, "max", 2, 4, "2026-10-31 11:00");

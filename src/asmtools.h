@@ -133,7 +133,10 @@ struct Exercise {
     std::vector<std::string> mustUse;     // instructions the solution has to contain (as the task says)
     std::vector<std::string> mustNotUse;  // instructions it may not contain
     std::vector<std::string> hints;       // shown one by one on request (Russian; the UI translates)
+    std::string descriptionEn;
 };
+// The starter file in the UI language (the task text in its comments).
+std::string StarterText(const Exercise& e, bool english);
 // Instructions of the requirements the source breaks: "нужна инструкция div", "нельзя использовать imul".
 std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source);
 const std::vector<Exercise>& All();

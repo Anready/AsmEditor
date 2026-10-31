@@ -633,7 +633,8 @@ void MainWindow::NewExercise() {
     std::vector<std::wstring> items;
     auto results = Results::Load(ResultsFile());
     for (const Exercises::Exercise& e : Exercises::All()) {
-        std::string first = e.description.substr(0, e.description.find('\n'));
+        const std::string& d = English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description;
+        std::string first = d.substr(0, d.find('\n'));
         bool solved = results.count(e.id) && results[e.id].solved;
         items.push_back(std::wstring(solved ? L"✓ " : L"") + Tr(e.title.c_str()) + L"\t" + Widen(first));
     }
@@ -653,7 +654,7 @@ void MainWindow::NewExercise() {
     fs::path file = dir / (Widen(e.id) + L".asm");
     if (!fs::exists(file)) {
         std::ofstream out(file, std::ios::binary);
-        out << e.starter;
+        out << Exercises::StarterText(e, English());
     }
     // Each exercise is its own program: keep it out of the project's build.
     if (!projectRoot_.empty()) excludedFromBuild_.insert(Project::Key(file));
@@ -669,7 +670,8 @@ void MainWindow::NewExercise() {
     }
     for (const std::string& r : e.mustNotUse) conditions += "  " + Tr(std::string("нельзя использовать ")) + r + "\n";
     if (!conditions.empty()) conditions = Tr(std::string("Условия:")) + "\n" + conditions;
-    Print(Narrow(Tr(e.title.c_str())) + "\n" + e.description + "\n" + conditions + "\n" +
+    Print(Narrow(Tr(e.title.c_str())) + "\n" + (English() && !e.descriptionEn.empty() ? e.descriptionEn : e.description) +
+              "\n" + conditions + "\n" +
               Tr(std::string("Напишите решение и нажмите Ctrl+Shift+T — редактор соберёт программу и проверит её на тестах.")) +
               "\n", Out::Info);
 }

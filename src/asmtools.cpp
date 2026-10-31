@@ -1927,6 +1927,26 @@ const std::vector<Exercise>& All() {
             {"file", {}, {}, {"fopen возвращает FILE* в rax: сохраните его в переменную (resq 1) до следующих call.",
                               "fprintf(rcx = FILE*, rdx = fmt_str, r8 = input); затем fclose(rcx = FILE*)."}},
         };
+        const std::pair<const char*, const char*> english[] = {
+            {"sum", "Read two integers and print their sum.\nExample: input \"2 3\", output \"5\"."},
+            {"max", "Read three integers and print the largest.\nExample: input \"3 9 4\", output \"9\"."},
+            {"factorial", "Read n (0 ≤ n ≤ 20) and print n! (the product 1·2·…·n, 0! = 1).\nExample: input \"5\", output \"120\"."},
+            {"fib", "Read n (1 ≤ n ≤ 90) and print the n-th Fibonacci number: F1 = F2 = 1, Fn = Fn-1 + Fn-2.\nExample: input \"10\", output \"55\"."},
+            {"digits", "Read a non-negative integer and print the sum of its digits (div by 10).\nExample: input \"1234\", output \"10\"."},
+            {"power", "Read n and print \"yes\" if n is a power of two (1, 2, 4, 8…), otherwise \"no\".\nHint: a power of two has n & (n - 1) = 0. Print the strings with your own format, for example\nyes db \"yes\", 10, 0 and printf with it."},
+            {"reverse", "Read a word (up to 99 characters, no spaces) and print it backwards.\nA string in memory is bytes with a 0 at the end. Find the length, then walk from the end (movzx eax, byte [rsi]).\nExample: input \"hello\", output \"olleh\"."},
+            {"upper", "Read a word of Latin letters and print it in upper case.\nLower and upper case codes differ by 32 ('a' = 97, 'A' = 65): check the range 'a'…'z'.\nExample: input \"Hello\", output \"HELLO\"."},
+            {"array_sum", "Read n (1 ≤ n ≤ 100), then n integers, and print their sum.\nRead the numbers into an array: element i is at [arr + i*8] (lea rdx, [arr + rbx*8]).\nExample: input \"3 1 2 3\", output \"6\"."},
+            {"sort", "Read n (1 ≤ n ≤ 100) and n integers, print them in ascending order separated by spaces.\nBubble sort will do: two nested loops swapping neighbours.\nExample: input \"5 3 1 4 1 5\", output \"1 1 3 4 5\"."},
+            {"gcd", "Read two natural numbers and print their greatest common divisor.\nWrite a recursive function gcd(a, b): if b = 0 the answer is a, otherwise gcd(b, a mod b).\nArguments in rcx and rdx, the result in rax; remember div and rdx.\nExample: input \"12 18\", output \"6\"."},
+            {"binary", "Read a non-negative number and print it in binary (no leading zeros).\nRecursion: print(n) = print(n / 2), then the digit n mod 2. For 0 print \"0\".\nExample: input \"5\", output \"101\"."},
+            {"file", "Read a word, write it to the file copy.txt (fopen with \"w\", fprintf, fclose), then open the\nfile for reading (\"r\"), read the word back (fscanf) and print it.\nExample: input \"hello\", output \"hello\"."},
+        };
+        for (const auto& [id, text] : english) {
+            for (Exercise& e : v) {
+                if (e.id == id) e.descriptionEn = text;
+            }
+        }
         for (const Extra& x : extras) {
             for (Exercise& e : v) {
                 if (e.id != x.id) continue;
@@ -1938,6 +1958,17 @@ const std::vector<Exercise>& All() {
         return v;
     }();
     return list;
+}
+
+std::string StarterText(const Exercise& e, bool english) {
+    if (!english || e.descriptionEn.empty()) return e.starter;
+    size_t code = e.starter.find("default rel");
+    if (code == std::string::npos) return e.starter;
+    std::string text = "; task: " + e.id + "\r\n";
+    std::istringstream in(e.descriptionEn);
+    for (std::string line; std::getline(in, line);) text += "; " + line + "\r\n";
+    text += ";\r\n; Check the solution: Run → Check solution (Ctrl+Shift+T).\r\n";
+    return text + e.starter.substr(code);
 }
 
 std::vector<std::string> CheckRequirements(const Exercise& e, const std::string& source) {
@@ -2139,8 +2170,9 @@ std::string FileText(const Lesson& lesson, bool english) {
     text += ";\r\n; " + std::string(english ? "Task:" : "Задача:") + "\r\n";
     if (ex) {
         // The exercise's starter without its own "; task:" line.
-        size_t first = ex->starter.find('\n');
-        text += first == std::string::npos ? ex->starter : ex->starter.substr(first + 1);
+        std::string starter = StarterText(*ex, english);
+        size_t first = starter.find('\n');
+        text += first == std::string::npos ? starter : starter.substr(first + 1);
     }
     return text;
 }

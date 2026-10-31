@@ -447,6 +447,19 @@ public:
              DeleteDC(dc);
              ReleaseDC(nullptr, screen);
              Tip::Hide();
+             if (ed) ed->Call(SCI_SETFIRSTVISIBLELINE, 1000);  // as far down as Scintilla lets it
+             return true;
+         }},
+        {"scrolling past the end",
+         [this] {
+             if (!Waited(400)) return false;
+             if (Editor* ed = w_.Active()) {
+                 Sci_Position lines = ed->Call(SCI_GETLINECOUNT), top = ed->Call(SCI_GETFIRSTVISIBLELINE),
+                              shown = ed->Call(SCI_LINESONSCREEN);
+                 Check(top == std::max<Sci_Position>(0, lines + 5 - shown),
+                       "scrolling stops 5 lines past the end (top " + std::to_string(top) + " of " + std::to_string(lines) +
+                           " lines, " + std::to_string(shown) + " on screen)");
+             }
              return true;
          }},    };
 };

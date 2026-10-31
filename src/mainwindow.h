@@ -376,7 +376,12 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
 
     // mark bar: errors, warnings, breakpoints and search hits along the vertical scrollbar
     void PaintMarkBar(HWND bar, HDC dc);
-    void MarkBarClick(HWND bar, int y);
+    void MarkBarMouse(HWND bar, UINT msg, int y);
+    Editor* MarkBarEditor(HWND bar) const;
+    RECT MarkBarThumb(HWND bar, Editor* ed) const;
+    int MarkBarMarkAt(HWND bar, Editor* ed, int y) const;  // the line of a mark at y (-1: none)
+    HWND markDrag_ = nullptr, markHover_ = nullptr;  // the scrollbar whose thumb is dragged / under the mouse
+    int markGrab_ = 0;                                // where the thumb was taken (from its top)
 
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;

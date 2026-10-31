@@ -462,6 +462,16 @@ void Editor::ShowDiagnosticTip(Sci_Position pos) {
     ShowTip(pos, Narrow(tip));
 }
 
+Sci_Position Editor::ScrollLines() const {
+    Sci_Position last = Call(SCI_GETLINECOUNT) - 1;
+    return Call(SCI_VISIBLEFROMDOCLINE, last) + Call(SCI_WRAPCOUNT, last) + kScrollPastEnd;
+}
+
+void Editor::LimitScroll() const {
+    Sci_Position maxTop = std::max<Sci_Position>(0, ScrollLines() - Call(SCI_LINESONSCREEN));
+    if (Call(SCI_GETFIRSTVISIBLELINE) > maxTop) Call(SCI_SETFIRSTVISIBLELINE, maxTop);
+}
+
 void Editor::ShowTip(Sci_Position pos, const std::string& utf8, size_t hltFrom, size_t hltTo) const {
     POINT p{static_cast<LONG>(Call(SCI_POINTXFROMPOSITION, 0, pos)), static_cast<LONG>(Call(SCI_POINTYFROMPOSITION, 0, pos))};
     int height = static_cast<int>(Call(SCI_TEXTHEIGHT, Call(SCI_LINEFROMPOSITION, pos)));

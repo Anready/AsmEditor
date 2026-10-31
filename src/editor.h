@@ -68,6 +68,11 @@ public:
     void ToggleComment();
     void GotoLine(int line);
     void ShowDiagnosticTip(Sci_Position pos);
+    // Scrolling stops a few lines past the end, not a whole page (Scintilla knows only those two). Called on
+    // SCN_UPDATEUI.
+    static constexpr int kScrollPastEnd = 5;
+    void LimitScroll() const;
+    Sci_Position ScrollLines() const;  // lines on screen (wrapped, unfolded) plus kScrollPastEnd: the scroll range
     // The hint card (tip.h) for the text at pos; bytes [hltFrom, hltTo) of utf8 are its header.
     void ShowTip(Sci_Position pos, const std::string& utf8, size_t hltFrom = 0, size_t hltTo = 0) const;
     std::string LineText(Sci_Position line) const;  // 0-based line

@@ -42,7 +42,7 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
     WNDCLASSW bar{};
     bar.lpfnWndProc = MarkBarProc;
     bar.hInstance = inst;
-    bar.hCursor = LoadCursorW(nullptr, IDC_HAND);
+    bar.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     bar.lpszClassName = L"AsmMarkBar";
     RegisterClassW(&bar);
 
@@ -1135,15 +1135,18 @@ void MainWindow::OnNotify(NMHDR* nm) {
     for (auto& view : views_) {
         if (!view || nm->hwndFrom != view->hwnd()) continue;
         if (nm->code == SCN_DOUBLECLICK && view.get() != &View(Pane::Terminal)) ConsoleDoubleClick(*view, scn->position);
+        if (nm->code == SCN_UPDATEUI) view->LimitScroll();
         return;
     }
     for (Editor* v : PanelViews()) {
         if (nm->hwndFrom != v->hwnd()) continue;
         if (nm->code == SCN_DOUBLECLICK) PanelDoubleClick(*v, scn->position);
+        if (nm->code == SCN_UPDATEUI) v->LimitScroll();
         return;
     }
     Editor* ed = FindByHwnd(nm->hwndFrom);
     if (!ed) return;
+    if (nm->code == SCN_UPDATEUI) ed->LimitScroll();
     switch (nm->code) {
     case SCN_STYLENEEDED:
         ed->Lex(scn->position);

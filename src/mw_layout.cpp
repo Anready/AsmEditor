@@ -2,8 +2,8 @@
 
 namespace {
 
-// Width of the mark bar beside each editor's scrollbar.
-constexpr int kMarkBarWidth = 10;
+// Width of the mark bar: the scrollbar of the main editor, with the marks of the whole file.
+constexpr int kMarkBarWidth = 14;
 // Islands: the gap between the panels, the inset of the windows inside them and the corner radius (96-dpi pixels).
 constexpr int kIslandGap = 6;
 constexpr int kIslandPadding = 4;
@@ -127,6 +127,9 @@ void MainWindow::Layout() {
         Editor* e = editors_[i].get();
         int group = e->group;
         bool shown = static_cast<int>(i) == ShownIndex(group) && ShownPart(group) < 0 && onScreen(group);
+        // In the main editor the mark bar beside it is its scrollbar (IntelliJ-style); elsewhere Scintilla's own.
+        bool ownScrollbar = group >= kPanelGroup;
+        if ((e->Call(SCI_GETVSCROLLBAR) != 0) != ownScrollbar) e->Call(SCI_SETVSCROLLBAR, ownScrollbar ? 1 : 0);
         if (shown) {
             RECT r = GroupContent(group);
             int m = group < kPanelGroup ? mark : 0;
@@ -1040,14 +1043,72 @@ LRESULT CALLBACK MainWindow::MarkBarProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM 
         return 0;
     }
     case WM_LBUTTONDOWN:
-        if (self) self->MarkBarClick(hwnd, GET_Y_LPARAM(lp));
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONUP:
+    case WM_MOUSELEAVE:
+    case WM_CAPTURECHANGED:
+        if (self) self->MarkBarMouse(hwnd, msg, GET_Y_LPARAM(lp));
         return 0;
+    case WM_MOUSEWHEEL:  // scrolls the editor
+        if (Editor* ed = self ? self->MarkBarEditor(hwnd) : nullptr) return SendMessageW(ed->hwnd(), msg, wp, lp);
+        return 0;
+    case WM_SETCURSOR:
+        if (self && LOWORD(lp) == HTCLIENT) {
+            POINT p;
+            GetCursorPos(&p);
+            ScreenToClient(hwnd, &p);
+            Editor* ed = self->MarkBarEditor(hwnd);
+            bool onMark = ed && self->MarkBarMarkAt(hwnd, ed, p.y) >= 0;
+            SetCursor(LoadCursorW(nullptr, onMark ? IDC_HAND : IDC_ARROW));
+            return TRUE;
+        }
+        break;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-// Marks along the editor, at the height of their line in the whole file: errors, warnings, breakpoints, the
-// execution line and highlighted search hits; a light band shows the visible part.
+Editor* MainWindow::MarkBarEditor(HWND bar) const {
+    return bar == markBar2_ ? SplitEditor() : Active();
+}
+
+// The thumb of the scrollbar: the visible part of the scroll range (the lines plus a few past the end).
+RECT MainWindow::MarkBarThumb(HWND bar, Editor* ed) const {
+    RECT rc;
+    GetClientRect(bar, &rc);
+    int64_t total = std::max<int64_t>(1, ed->ScrollLines()), shown = ed->Call(SCI_LINESONSCREEN);
+    int64_t top = ed->Call(SCI_GETFIRSTVISIBLELINE);
+    if (shown >= total) return {};  // everything fits: no thumb
+    int h = rc.bottom, minH = S(24);
+    int thumbH = std::max<int>(minH, static_cast<int>(shown * h / total));
+    int y = static_cast<int>(top * (h - thumbH) / std::max<int64_t>(1, total - shown));
+    return {S(2), y, rc.right - S(2), y + thumbH};
+}
+
+// The line of a mark (problem, breakpoint, execution line) within a few pixels of y, else -1.
+int MainWindow::MarkBarMarkAt(HWND bar, Editor* ed, int y) const {
+    RECT rc;
+    GetClientRect(bar, &rc);
+    int64_t total = std::max<int64_t>(1, std::max<int64_t>(ed->ScrollLines(), ed->Call(SCI_LINESONSCREEN)));
+    auto yOf = [&](int line) { return static_cast<int>(ed->Call(SCI_VISIBLEFROMDOCLINE, line) * rc.bottom / total); };
+    std::vector<int> lines;
+    for (const auto& [line, diags] : ed->Diagnostics()) lines.push_back(line - 1);
+    for (const auto& [line, condition] : ed->Breakpoints()) lines.push_back(line - 1);
+    Sci_Position exec = ed->Call(SCI_MARKERNEXT, 0, 1 << Editor::kMarkerExecArrow);
+    if (exec >= 0) lines.push_back(static_cast<int>(exec));
+    int best = -1, bestDistance = S(4);
+    for (int line : lines) {
+        int d = std::abs(yOf(line) + S(1) - y);
+        if (d <= bestDistance) {
+            best = line;
+            bestDistance = d;
+        }
+    }
+    return best;
+}
+
+// The editor's scrollbar, as in IntelliJ: a rounded thumb over the marks of the whole file (problems,
+// breakpoints, the execution line, search hits). Dragging the thumb scrolls; clicking a mark goes to its line,
+// clicking elsewhere moves the thumb there.
 void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
     RECT rc;
     GetClientRect(bar, &rc);
@@ -1055,14 +1116,15 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
     HBITMAP bmp = CreateCompatibleBitmap(dc, std::max(1L, rc.right), std::max(1L, rc.bottom));
     HGDIOBJ old = SelectObject(mem, bmp);
     FillRectColor(mem, rc, Theme::EditorBg);
-    Editor* ed = bar == markBar2_ ? SplitEditor() : Active();
-    if (ed) {
-        int lines = std::max<int>(1, static_cast<int>(ed->Call(SCI_GETLINECOUNT)));
+    if (Editor* ed = MarkBarEditor(bar)) {
         int h = rc.bottom, w = rc.right;
-        auto yOf = [&](int line) { return static_cast<int>(static_cast<int64_t>(line) * h / lines); };
-        int first = static_cast<int>(ed->Call(SCI_DOCLINEFROMVISIBLE, ed->Call(SCI_GETFIRSTVISIBLELINE)));
-        int shown = static_cast<int>(ed->Call(SCI_LINESONSCREEN));
-        if (shown < lines) FillRectColor(mem, {0, yOf(first), w, std::max(yOf(first + shown), yOf(first) + 2)}, Theme::Hover);
+        RECT thumb = MarkBarThumb(bar, ed);
+        if (thumb.bottom > thumb.top) {
+            bool active = markDrag_ == bar || markHover_ == bar;
+            FillRound(mem, thumb, S(4), Theme::Blend(Theme::EditorBg, Theme::Muted, active ? 55 : 30));
+        }
+        int64_t total = std::max<int64_t>(1, std::max<int64_t>(ed->ScrollLines(), ed->Call(SCI_LINESONSCREEN)));
+        auto yOf = [&](int line) { return static_cast<int>(ed->Call(SCI_VISIBLEFROMDOCLINE, line) * h / total); };
         int markH = std::max(2, S(3));
         auto mark = [&](int line, COLORREF c, int left, int right) {
             int y = yOf(line);
@@ -1076,7 +1138,7 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
                 Sci_Position start = ed->Call(SCI_INDICATORVALUEAT, ind, pos) ? pos : ed->Call(SCI_INDICATOREND, ind, pos);
                 if (start <= pos && !ed->Call(SCI_INDICATORVALUEAT, ind, pos)) break;
                 if (start >= len || !ed->Call(SCI_INDICATORVALUEAT, ind, start)) break;
-                mark(static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, start)), Theme::Accent, w / 2, w);
+                mark(static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, start)), Theme::Accent, w / 2, w - S(2));
                 Sci_Position end = ed->Call(SCI_INDICATOREND, ind, start);
                 if (end <= start) break;
                 pos = end;
@@ -1084,13 +1146,13 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
         }
         for (const auto& [line, diags] : ed->Diagnostics()) {
             bool error = std::any_of(diags.begin(), diags.end(), [](const Diagnostic& d) { return d.severity == Severity::Error; });
-            mark(line - 1, error ? Theme::Error : Theme::Warning, 0, w);
+            mark(line - 1, error ? Theme::Error : Theme::Warning, S(2), w - S(2));
         }
         for (const auto& [line, condition] : ed->Breakpoints()) {
-            mark(line - 1, condition.empty() ? Theme::Breakpoint : Theme::ConditionalBreakpoint, 0, w / 2);
+            mark(line - 1, condition.empty() ? Theme::Breakpoint : Theme::ConditionalBreakpoint, S(2), w / 2);
         }
         Sci_Position exec = ed->Call(SCI_MARKERNEXT, 0, 1 << Editor::kMarkerExecArrow);
-        if (exec >= 0) mark(static_cast<int>(exec), Theme::ExecArrow, 0, w);
+        if (exec >= 0) mark(static_cast<int>(exec), Theme::ExecArrow, S(2), w - S(2));
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);
@@ -1098,12 +1160,60 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
     DeleteDC(mem);
 }
 
-void MainWindow::MarkBarClick(HWND bar, int y) {
-    Editor* ed = bar == markBar2_ ? SplitEditor() : Active();
+void MainWindow::MarkBarMouse(HWND bar, UINT msg, int y) {
+    if (msg == WM_MOUSELEAVE || msg == WM_CAPTURECHANGED) {
+        if (msg == WM_CAPTURECHANGED) markDrag_ = nullptr;
+        else markHover_ = nullptr;
+        InvalidateRect(bar, nullptr, FALSE);
+        return;
+    }
+    Editor* ed = MarkBarEditor(bar);
     if (!ed) return;
     RECT rc;
     GetClientRect(bar, &rc);
-    int lines = static_cast<int>(ed->Call(SCI_GETLINECOUNT));
-    int line = static_cast<int>(static_cast<int64_t>(std::clamp<int>(y, 0, rc.bottom)) * lines / std::max(1L, rc.bottom));
-    ed->GotoLine(line + 1);
+    RECT thumb = MarkBarThumb(bar, ed);
+    int64_t total = ed->ScrollLines(), shown = ed->Call(SCI_LINESONSCREEN);
+    // Puts the thumb's top at thumbTop (as the first visible line).
+    auto scrollTo = [&](int thumbTop) {
+        int track = std::max<int>(1, rc.bottom - (thumb.bottom - thumb.top));
+        int64_t top = static_cast<int64_t>(std::clamp(thumbTop, 0, track)) * std::max<int64_t>(0, total - shown) / track;
+        ed->Call(SCI_SETFIRSTVISIBLELINE, top);
+    };
+    bool onThumb = y >= thumb.top && y < thumb.bottom;
+    switch (msg) {
+    case WM_LBUTTONDOWN: {
+        int line = MarkBarMarkAt(bar, ed, y);
+        if (line >= 0 && !onThumb) {  // a mark: go to its line
+            ed->GotoLine(line + 1);
+            SetFocus(ed->hwnd());
+            return;
+        }
+        if (thumb.bottom <= thumb.top) return;
+        // On the thumb: drag it from where it was taken; beside it: the thumb jumps there (centered) and drags.
+        markGrab_ = onThumb ? y - thumb.top : (thumb.bottom - thumb.top) / 2;
+        if (!onThumb) scrollTo(y - markGrab_);
+        markDrag_ = bar;
+        SetCapture(bar);
+        InvalidateRect(bar, nullptr, FALSE);
+        return;
+    }
+    case WM_MOUSEMOVE:
+        if (markDrag_ == bar) {
+            scrollTo(y - markGrab_);
+            UpdateWindow(ed->hwnd());
+        } else if (markHover_ != bar) {
+            markHover_ = bar;
+            TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, bar, 0};
+            TrackMouseEvent(&tme);
+        }
+        InvalidateRect(bar, nullptr, FALSE);
+        return;
+    case WM_LBUTTONUP:
+        if (markDrag_ == bar) {
+            markDrag_ = nullptr;
+            ReleaseCapture();
+            InvalidateRect(bar, nullptr, FALSE);
+        }
+        return;
+    }
 }

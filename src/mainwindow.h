@@ -228,6 +228,7 @@ private:
     void RenderMemory();
     void RenderFlags();
     void StepBack();
+    void AttachToProcess();
     void OnProfile(std::vector<ProfileLine> lines);
     void ShowProfileNotes(Editor* ed);
     void ClearProfile();

@@ -1,6 +1,8 @@
 #include "mw_internal.h"
 #include "hints.h"
 
+#include <tlhelp32.h>
+
 namespace {
 
 // Collects styled text for a panel view and remembers which line each piece starts on.
@@ -139,7 +141,14 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
 
 void MainWindow::OnDebugExited(DWORD code, const std::string& stats) {
     if (!debugging_) return;
+    bool attached = debugger_ && debugger_->Attached();
     debugger_.reset();
+    if (attached) {  // the program had its own console: nothing to finish here
+        ClearExecutionLine();
+        SetDebugging(false);
+        Print("[" + (stats.empty() ? Tr(std::string("отладка завершена")) : stats) + "]\n", Out::Info);
+        return;
+    }
     if (job_ && !process_) {  // the terminal holder of a WSL debugging session
         TerminateJobObject(job_, 0);
         CloseHandle(job_);
@@ -284,6 +293,37 @@ void MainWindow::SetNextStatement() {
     debugStatus_ = Tr(L"выполнение перенесено");
     PrintTo(Pane::DebugOutput, Tr(std::string("rip перенесён на строку ")) + std::to_string(actual.line) + "\n", Out::Info);
     RenderDebugPanel();
+}
+
+// Run → Attach to process: debug a program that is already running (its .pdb gives the source lines).
+void MainWindow::AttachToProcess() {
+    if (debugging_ || building_) return;
+    std::vector<std::pair<DWORD, std::wstring>> processes;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32W pe{sizeof(pe)};
+    for (BOOL ok = Process32FirstW(snap, &pe); ok; ok = Process32NextW(snap, &pe)) {
+        if (pe.th32ProcessID > 8 && pe.th32ProcessID != GetCurrentProcessId()) processes.push_back({pe.th32ProcessID, pe.szExeFile});
+    }
+    CloseHandle(snap);
+    std::sort(processes.begin(), processes.end(), [](const auto& a, const auto& b) { return Lower(a.second) < Lower(b.second); });
+    std::vector<std::wstring> items;
+    for (const auto& [pid, name] : processes) items.push_back(name + L"\t" + std::to_wstring(pid));
+    auto pick = PickFromList(hwnd_, Tr(L"Подключиться к процессу"), items, Tr(L"Имя программы…"));
+    if (!pick) return;
+    LaunchOptions launch;
+    launch.attachPid = processes[*pick].first;
+    debugger_ = std::make_unique<Debugger>(hwnd_);
+    std::wstring error;
+    if (!debugger_->Start(launch, nullptr, CollectBreakpoints(), false, std::nullopt, error)) {
+        debugger_.reset();
+        ShowMessage(hwnd_, std::wstring(Tr(L"Не удалось подключиться: ")) + error);
+        return;
+    }
+    Print("\n" + Tr(std::string("Подключено к ")) + Narrow(processes[*pick].second) + " (" +
+              std::to_string(processes[*pick].first) + "). " +
+              Tr(std::string("«Стоп» отключает отладчик, программа продолжает работу.")) + "\n",
+          Out::Info);
+    SetDebugging(true);
 }
 
 // Ctrl+Shift+F11: back to the previous stop (registers, global variables and the stack are restored).

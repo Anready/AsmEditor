@@ -49,6 +49,7 @@ struct LaunchOptions {
     bool wsl = false;          // a Linux program: debugged by gdb in WSL (GdbSession)
     std::string wslTty;        // the pseudo-terminal in WSL that becomes the program's console
     bool linux32 = false;      // a 32-bit Linux program (eax… registers, 4-byte pointers)
+    DWORD attachPid = 0;       // attach to this running process instead of starting exe (Stop detaches)
 };
 
 // Profiler result for one source line.
@@ -102,6 +103,7 @@ public:
     bool Stopped() const { return stopped_; }
     bool Is32() const { return wow64_; }
     bool Gdb() const { return gdb_ != nullptr; }
+    bool Attached() const { return attached_; }
 
     // Valid only while stopped.
     const CONTEXT& Context() const { return context_; }
@@ -222,6 +224,8 @@ private:
     bool foreignStop_ = false;     // stopped on a thread that did not report the event (pause in a system call)
     bool stepFromForeign_ = false; // after such a stop: the next temporary line breakpoint ends the step
     bool watchesChanged_ = false;  // debug registers must be rewritten
+    std::atomic<bool> attached_{false};         // attached to a running process: Stop detaches
+    std::atomic<bool> detachRequested_{false};
     bool wow64_ = false;
 
     std::atomic<HANDLE> process_{nullptr};

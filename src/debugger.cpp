@@ -506,6 +506,11 @@ void Debugger::Pause() {
 
 void Debugger::Stop() {
     if (gdb_) return gdb_->Stop();
+    if (attached_) {  // detach (in the debug loop), the program keeps running
+        detachRequested_ = true;
+        Send(Command::Stop);
+        return;
+    }
     Send(Command::Stop);
     HANDLE p = process_;
     if (running_ && p) TerminateProcess(p, 1);
@@ -866,21 +871,43 @@ std::vector<DataWatch> Debugger::DataWatches() {
 
 void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool stopAtEntry,
                     std::optional<SourceLocation> runTo, std::promise<std::wstring>* started) {
-    PROCESS_INFORMATION pi{};
-    std::wstring cmd = Toolchain::QuoteCommandLine({launch.exe.wstring()});
-    if (!launch.args.empty()) cmd += L" " + launch.args;
-    if (!Toolchain::SpawnInConsole(cmd, launch.cwd, console, DEBUG_ONLY_THIS_PROCESS, pi, launch.environment)) {
-        started->set_value(Tr(L"не удалось запустить процесс, код ") + std::to_wstring(GetLastError()));
-        return;
+    if (launch.attachPid) {  // a running program: its own console stays, Stop detaches and leaves it running
+        if (!DebugActiveProcess(launch.attachPid)) {
+            started->set_value(Tr(L"не удалось подключиться к процессу, код ") + std::to_wstring(GetLastError()));
+            return;
+        }
+        DebugSetProcessKillOnExit(FALSE);
+        attached_ = true;
+    } else {
+        PROCESS_INFORMATION pi{};
+        std::wstring cmd = Toolchain::QuoteCommandLine({launch.exe.wstring()});
+        if (!launch.args.empty()) cmd += L" " + launch.args;
+        if (!Toolchain::SpawnInConsole(cmd, launch.cwd, console, DEBUG_ONLY_THIS_PROCESS, pi, launch.environment)) {
+            started->set_value(Tr(L"не удалось запустить процесс, код ") + std::to_wstring(GetLastError()));
+            return;
+        }
+        CloseHandle(pi.hProcess);  // the debug events provide their own handles
+        CloseHandle(pi.hThread);
     }
-    CloseHandle(pi.hProcess);  // the debug events provide their own handles
-    CloseHandle(pi.hThread);
     startTick_ = GetTickCount64();
     started->set_value(L"");
 
     DWORD exitCode = 0;
     std::string stats;
     for (bool done = false; !done;) {
+        if (detachRequested_) {  // attached: put the original bytes back and let the program go
+            {
+                std::lock_guard<std::recursive_mutex> lock(mutex_);
+                for (const auto& [addr, bp] : breakpoints_) {
+                    WriteProcessMemory(process_, reinterpret_cast<void*>(addr), &bp.original, 1, nullptr);
+                    FlushInstructionCache(process_, reinterpret_cast<void*>(addr), 1);
+                }
+                breakpoints_.clear();
+            }
+            DebugActiveProcessStop(launch.attachPid);
+            stats = Tr(std::string("отключено, программа продолжает работу"));
+            break;
+        }
         DEBUG_EVENT ev{};
         if (!WaitForDebugEventEx(&ev, 100)) continue;
         DWORD status = DBG_CONTINUE;
@@ -897,6 +924,14 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
             wow64_ = IsWow64Process(info.hProcess, &wow) && wow;
             imageBase_ = reinterpret_cast<uint64_t>(info.lpBaseOfImage);
             imageSize_ = ImageSize(imageBase_);
+            if (launch.exe.empty() && info.hFile) {  // attached: the program's path (for its .pdb)
+                wchar_t path[MAX_PATH * 2] = L"";
+                if (GetFinalPathNameByHandleW(info.hFile, path, static_cast<DWORD>(std::size(path)), FILE_NAME_NORMALIZED)) {
+                    std::wstring p = path;
+                    if (p.rfind(L"\\\\?\\", 0) == 0) p.erase(0, 4);
+                    launch.exe = p;
+                }
+            }
             {
                 std::lock_guard<std::recursive_mutex> lock(mutex_);
                 SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS);
@@ -1355,7 +1390,7 @@ void Debugger::StopAt(HANDLE thread, CONTEXT& ctx, DebugStop::Reason reason, con
         foreignStop_ = false;
         contextChanged_ = false;
         if (cmd == Command::Stop) {
-            TerminateProcess(process_, 1);
+            if (!attached_) TerminateProcess(process_, 1);
         } else if (cmd != Command::Continue) {
             std::lock_guard<std::recursive_mutex> lock(mutex_);
             for (uint64_t a : lineAddresses_) Install(a, false, false, true);
@@ -1372,7 +1407,8 @@ void Debugger::StopAt(HANDLE thread, CONTEXT& ctx, DebugStop::Reason reason, con
         ContinueStepping(thread, ctx);
         break;
     case Command::Stop:
-        TerminateProcess(process_, 1);
+        if (attached_) RunFree(thread, ctx);  // detached at the top of the debug loop
+        else TerminateProcess(process_, 1);
         break;
     default:
         RunFree(thread, ctx);

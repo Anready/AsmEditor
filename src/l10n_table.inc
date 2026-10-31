@@ -776,6 +776,15 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
      L"откатываются.",
      L"Step back restores the registers, global variables, the stack and the heap (malloc). Console output and files "
      L"are not rolled back."},
+    {L"Подключиться к процессу…", L"Attach to process…"},
+    {L"Подключиться к процессу", L"Attach to process"},
+    {L"Имя программы…", L"Program name…"},
+    {L"Не удалось подключиться: ", L"Could not attach: "},
+    {L"Подключено к ", L"Attached to "},
+    {L"«Стоп» отключает отладчик, программа продолжает работу.", L"Stop detaches the debugger; the program keeps running."},
+    {L"отладка завершена", L"debugging finished"},
+    {L"не удалось подключиться к процессу, код ", L"could not attach to the process, code "},
+    {L"отключено, программа продолжает работу", L"detached, the program keeps running"},
     // explain the line
     {L"адрес", L"address"},
     {L"обнуление", L"cleared"},

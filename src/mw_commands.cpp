@@ -78,6 +78,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_STEP_OUT, L"Шаг с выходом", L"Shift+F11"},
         {ID_STEP_BACK, L"Шаг назад", L"Ctrl+Shift+F11"},
         {ID_PAUSE, L"Пауза", L""},
+        {ID_ATTACH, L"Подключиться к процессу…", L""},
         {ID_STOP, L"Остановить", L"Shift+F5 / Ctrl+F2"},
         {ID_TOGGLE_BP, L"Точка останова", L"F9"},
         {ID_BP_CONDITION, L"Условие точки останова…", L"Alt+F9"},

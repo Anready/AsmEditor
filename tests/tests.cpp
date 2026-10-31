@@ -1089,6 +1089,53 @@ TEST(DebuggerStepBackHeap) {
     CHECK(host.exited);
 }
 
+const char* kTickProgram =
+    "default rel\n"              // 1
+    "extern Sleep\n"             // 2
+    "global main\n"              // 3
+    "section .bss\n"             // 4
+    "    ticks resq 1\n"         // 5
+    "section .text\n"            // 6
+    "main:\n"                    // 7
+    "    sub rsp, 40\n"          // 8
+    ".loop:\n"                   // 9
+    "    inc qword [ticks]\n"    // 10
+    "    mov ecx, 20\n"          // 11
+    "    call Sleep\n"           // 12
+    "    jmp .loop\n";           // 13
+
+// Attach to a running program, stop on a breakpoint, detach: the program keeps running.
+TEST(DebuggerAttachAndDetach) {
+    auto exe = BuildProgram("tick", kTickProgram);
+    if (!exe) return;
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    std::wstring cmd = L"\"" + exe->wstring() + L"\"";
+    CHECK(CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+    if (!pi.hProcess) return;
+    Sleep(300);
+    DebugHost host;
+    Debugger d(host.hwnd);
+    fs::path src = exe->parent_path().parent_path() / L"main.asm";
+    LaunchOptions launch;
+    launch.attachPid = pi.dwProcessId;
+    std::wstring error;
+    CHECK(d.Start(launch, nullptr, {{Debugger::Key(src), {{11, ""}}}}, false, std::nullopt, error));
+    CHECK(host.Wait(10000));
+    CHECK(!host.stops.empty() && host.stops.back()->location.line == 11);
+    CHECK(d.Attached());
+    auto ticks = d.Evaluate("qword [ticks]", error);
+    CHECK(ticks && *ticks > 0);
+    d.Stop();  // detach
+    CHECK(host.Wait(5000));
+    CHECK(host.exited);
+    Sleep(200);
+    CHECK_EQ(WaitForSingleObject(pi.hProcess, 0), static_cast<DWORD>(WAIT_TIMEOUT));  // still running
+    TerminateProcess(pi.hProcess, 0);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+}
+
 // The profiler counts how often each line ran and how many instructions it took.
 TEST(DebuggerProfiler) {
     auto exe = BuildProgram("counter", kCounterProgram);

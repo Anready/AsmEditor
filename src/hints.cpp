@@ -7,6 +7,8 @@
 #include <unordered_map>
 #include <vector>
 
+bool English();  // l10n.cpp
+
 namespace Hints {
 namespace {
 
@@ -18,6 +20,8 @@ struct Entry {
 };
 
 void AddExtended(std::unordered_map<std::string, Entry>& m);
+void AddEnglish(std::unordered_map<std::string, Entry>& m);  // hints_en.inc
+bool EnglishFunction(const std::string& name, std::string& args, std::string& note);
 
 constexpr const char* kNoFlags = "не меняет";
 constexpr const char* kArith = "OF SF ZF AF PF CF";
@@ -366,9 +370,14 @@ std::unordered_map<std::string, Entry> Build() {
     return m;
 }
 
-const std::unordered_map<std::string, Entry>& Table() {
-    static const auto table = Build();
-    return table;
+const std::unordered_map<std::string, Entry>& Table(bool english = false) {
+    static const auto russian = Build();
+    static const auto translated = [] {
+        auto m = Build();
+        AddEnglish(m);
+        return m;
+    }();
+    return english ? translated : russian;
 }
 
 std::string LowerAscii(std::string s) {
@@ -414,19 +423,24 @@ namespace {
 // The entry for a mnemonic. AVX forms (v + SSE mnemonic) are described through their SSE original.
 std::optional<Entry> Lookup(const std::string& word) {
     std::string w = LowerAscii(word);
-    auto it = Table().find(w);
-    if (it != Table().end()) return it->second;
+    bool en = English();
+    const auto& table = Table(en);
+    auto it = table.find(w);
+    if (it != table.end()) return it->second;
     if (w.size() > 1 && w[0] == 'v') {
-        auto sse = Table().find(w.substr(1));
-        if (sse != Table().end() && !sse->second.flags.empty()) {
+        auto sse = table.find(w.substr(1));
+        if (sse != table.end() && !sse->second.flags.empty()) {
             Entry e = sse->second;
             std::string syntax = e.syntax;
             size_t space = syntax.find(' ');
             std::string operands = space == std::string::npos ? std::string() : syntax.substr(space + 1);
             e.syntax = w + (operands.empty() ? "" : " xmm/ymm, xmm/ymm, xmm/ymm/m (AVX)");
-            e.text = "AVX-форма " + w.substr(1) + ": три операнда (приёмник отдельно от источников, источники не "
-                     "портятся), работает с xmm (128 бит) или ymm (256 бит — вдвое больше элементов); запись в xmm "
-                     "обнуляет старшую половину ymm. " + e.text;
+            e.text = en ? "The AVX form of " + w.substr(1) + ": three operands (the destination apart from the sources, "
+                          "which are kept), works on xmm (128 bits) or ymm (256 bits, twice the elements); writing xmm "
+                          "clears the upper half of ymm. " + e.text
+                        : "AVX-форма " + w.substr(1) + ": три операнда (приёмник отдельно от источников, источники не "
+                          "портятся), работает с xmm (128 бит) или ymm (256 бит — вдвое больше элементов); запись в xmm "
+                          "обнуляет старшую половину ymm. " + e.text;
             if (!e.example.empty()) e.example.clear();
             return e;
         }
@@ -439,8 +453,9 @@ std::string For(const std::string& word) {
     auto e = Lookup(word);
     if (!e) return {};
     std::string card = e->syntax + "\n" + Wrap(e->text, 64);
-    if (!e->flags.empty()) card += "\nФлаги: " + e->flags;
-    if (!e->example.empty()) card += "\nПример: " + e->example;
+    bool en = English();
+    if (!e->flags.empty()) card += (en ? "\nFlags: " : "\nФлаги: ") + e->flags;
+    if (!e->example.empty()) card += (en ? "\nExample: " : "\nПример: ") + e->example;
     return card;
 }
 
@@ -541,8 +556,11 @@ std::string Function(const std::string& name) {
         std::string n;
         while (in >> n) {
             if (n != name) continue;
-            std::string card = std::string(f.prototype) + "\n" + Wrap(std::string("Аргументы (Win64): ") + f.args, 64);
-            if (*f.note) card += "\n" + Wrap(f.note, 64);
+            std::string args = f.args, note = f.note;
+            bool en = English() && EnglishFunction(n, args, note);
+            std::string card = std::string(f.prototype) + "\n" +
+                               Wrap(std::string(en ? "Arguments (Win64): " : "Аргументы (Win64): ") + args, 64);
+            if (!note.empty()) card += "\n" + Wrap(note, 64);
             return card;
         }
     }
@@ -590,3 +608,4 @@ size_t HeaderLength(const std::string& card) {
 }
 
 #include "hints_ext.inc"
+#include "hints_en.inc"

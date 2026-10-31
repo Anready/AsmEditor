@@ -255,7 +255,7 @@ std::wstring BrowseExe(HWND owner, const std::wstring& current) {
     wcsncpy_s(buf, current.c_str(), _TRUNCATE);
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = owner;
-    ofn.lpstrFilter = L"Программы (*.exe)\0*.exe\0Все файлы\0*.*\0";
+    ofn.lpstrFilter = English() ? L"Programs (*.exe)\0*.exe\0All files\0*.*\0" : L"Программы (*.exe)\0*.exe\0Все файлы\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;

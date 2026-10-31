@@ -236,8 +236,7 @@ void MainWindow::RunProgram(const fs::path& exe, const fs::path& cwd, After mode
     }).detach();
 }
 
-// A Linux program (built with -f elf64) runs inside WSL in the same terminal; "debugging" starts gdb there with
-// the editor's breakpoints, and gdb is then used through its own commands.
+// A Linux program (built with -f elf64) runs inside WSL in the same terminal; debugging goes through gdb (MI).
 void MainWindow::RunInWsl(const fs::path& exe, const fs::path& cwd, bool debug) {
     if (!Toolchain::FindOnPath(L"wsl.exe")) {
         Print(Tr(std::string("wsl.exe не найден: для Linux-программ нужна подсистема Windows для Linux (WSL).\n")), Out::Error);
@@ -250,25 +249,65 @@ void MainWindow::RunInWsl(const fs::path& exe, const fs::path& cwd, bool debug) 
         Print(Tr(std::string("Не удалось создать консоль для программы.\n")), Out::Error);
         return;
     }
-    std::vector<std::wstring> cmd{L"wsl.exe", L"--cd", Toolchain::WslPath(cwd), L"--exec"};
+    auto makeJob = [&](HANDLE process) {
+        job_ = CreateJobObjectW(nullptr, nullptr);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+        AssignProcessToJobObject(job_, process);
+    };
     if (debug) {
-        cmd.insert(cmd.end(), {L"gdb", L"-q"});
-        static const std::regex reg("\\b(r[a-ds][xip]|r[sd]i|r[sb]p|r(?:8|9|1[0-5])[dwb]?|e[a-ds][xip]|e[sd]i|e[sb]p|rip|eflags)\\b");
-        for (const auto& [key, lines] : CollectBreakpoints()) {
-            for (const auto& [line, condition] : lines) {
-                std::string where = Narrow(fs::path(key).filename().wstring()) + ":" + std::to_string(line);
-                if (!condition.empty() && condition[0] != '#') {
-                    where += " if " + std::regex_replace(condition, reg, "$$$1");  // gdb names registers $rax
-                }
-                cmd.push_back(L"-ex");
-                cmd.push_back(L"break " + Widen(where));
-            }
+        // The debugger drives gdb (MI) in WSL and fills the same panels as for Windows programs. The program's
+        // console is a WSL pseudo-terminal kept open in this terminal pane by "sleep", so input and output work as
+        // usual.
+        std::string ttyFile = "/tmp/asmeditor-tty-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount());
+        std::vector<std::wstring> holder{L"wsl.exe", L"--exec", L"sh", L"-c",
+                                         Widen("tty > " + ttyFile + "; exec sleep 2147483647")};
+        PROCESS_INFORMATION pi{};
+        if (!Toolchain::SpawnInConsole(Toolchain::QuoteCommandLine(holder), cwd, pty_, CREATE_SUSPENDED, pi)) {
+            Print(Tr(std::string("Не удалось запустить программу (код ")) + std::to_string(GetLastError()) + ")\n", Out::Error);
+            FinishConsole(static_cast<DWORD>(-1));
+            return;
         }
-        cmd.push_back(L"-ex");
-        cmd.push_back(CollectBreakpoints().empty() ? L"starti" : L"run");
-        cmd.push_back(L"--args");
-        Print(Tr(std::string("Команды gdb: next, step, continue, info registers, x/8xg $rsp, quit\n")), Out::Info);
+        makeJob(pi.hProcess);
+        ResumeThread(pi.hThread);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);  // the job ends it with the debugging session
+        std::string tty;
+        for (int i = 0; i < 50 && tty.empty(); i++) {
+            std::string out;
+            Toolchain::Exec({L"wsl.exe", L"--exec", L"cat", Widen(ttyFile)}, cwd, nullptr, &out);
+            out = Narrow(Trim(Widen(out)));
+            if (out.rfind("/dev/", 0) == 0) tty = out;
+            else Sleep(100);
+        }
+        if (tty.empty()) {
+            Print(Tr(std::string("Не удалось получить терминал WSL: вывод программы попадёт в «Отладочный вывод».\n")),
+                  Out::Warning);
+        }
+        LaunchOptions launch = MakeLaunch(exe, cwd);
+        launch.wsl = true;
+        launch.wslTty = tty;
+        debugger_ = std::make_unique<Debugger>(hwnd_);
+        std::optional<SourceLocation> runTo = runTo_;
+        runTo_.reset();
+        std::wstring error;
+        Debugger::Breakpoints bps = CollectBreakpoints();
+        if (!debugger_->Start(launch, pty_, bps, bps.empty() && !runTo, runTo, error)) {
+            debugger_.reset();
+            Print(Tr(std::string("Не удалось запустить отладку: ")) + Narrow(Tr(error.c_str())) + "\n", Out::Error);
+            TerminateJobObject(job_, 1);
+            CloseHandle(job_);
+            job_ = nullptr;
+            FinishConsole(static_cast<DWORD>(-1));
+            return;
+        }
+        SetDebugging(true);
+        ShowPane(Pane::Terminal);
+        SetFocus(View(Pane::Terminal).hwnd());
+        return;
     }
+    std::vector<std::wstring> cmd{L"wsl.exe", L"--cd", Toolchain::WslPath(cwd), L"--exec"};
     cmd.push_back(Toolchain::WslPath(exe));
     for (const std::wstring& a : Toolchain::SplitArgs(runConfig_.args)) cmd.push_back(a);
 
@@ -278,11 +317,7 @@ void MainWindow::RunInWsl(const fs::path& exe, const fs::path& cwd, bool debug) 
         FinishConsole(static_cast<DWORD>(-1));
         return;
     }
-    job_ = CreateJobObjectW(nullptr, nullptr);
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    SetInformationJobObject(job_, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
-    AssignProcessToJobObject(job_, pi.hProcess);
+    makeJob(pi.hProcess);
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     process_ = pi.hProcess;
@@ -291,7 +326,7 @@ void MainWindow::RunInWsl(const fs::path& exe, const fs::path& cwd, bool debug) 
     ShowPane(Pane::Terminal);
     SetFocus(View(Pane::Terminal).hwnd());
     InvalidateChrome();
-    if (!debug) FeedStdin();
+    FeedStdin();
     HWND hwnd = hwnd_;
     HANDLE process = process_;
     std::thread([hwnd, process, generation] {
@@ -1027,8 +1062,8 @@ void MainWindow::RefreshToolStatus() {
         bool linker = Toolchain::LinkerAvailable(copy);
         std::wstring text;
         bool warn = true;
-        if (version.empty()) text = L"NASM не найден — укажите путь в настройках (Ctrl+Alt+S)";
-        else if (!linker) text = L"NASM " + version + L" · линкер не найден — проверьте настройки";
+        if (version.empty()) text = Tr(L"NASM не найден — укажите путь в настройках (Ctrl+Alt+S)");
+        else if (!linker) text = L"NASM " + version + Tr(L" · линкер не найден — проверьте настройки");
         else {
             text = L"NASM " + version + L" · " + fs::path(copy.linkerPath).filename().wstring();
             warn = false;

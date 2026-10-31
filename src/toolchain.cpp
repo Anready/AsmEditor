@@ -513,8 +513,8 @@ int Exec(const std::vector<std::wstring>& cmd, const fs::path& cwd, const std::f
     CloseHandle(nul);
     if (!started) {
         CloseHandle(rd);
-        std::string msg = "Не удалось запустить " + Narrow(cmd.empty() ? L"" : cmd[0]) + " (код " +
-                          std::to_string(GetLastError()) + ")";
+        std::string msg = Tr(std::string("Не удалось запустить ")) + Narrow(cmd.empty() ? L"" : cmd[0]) + " (" +
+                          Tr(std::string("код")) + " " + std::to_string(GetLastError()) + ")";
         if (onLine) onLine(msg);
         if (capture) *capture += msg + "\n";
         return -1;
@@ -621,8 +621,9 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
         return result;
     }
     size_t n = plan.sources.size();
-    sink(n == 1 ? "Сборка " + Narrow(plan.sources[0].wstring()) + "\n"
-                : "Сборка " + std::to_string(n) + " файлов → " + Narrow(plan.exe.filename().wstring()) + "\n",
+    sink(n == 1 ? Tr(std::string("Сборка ")) + Narrow(plan.sources[0].wstring()) + "\n"
+                : Tr(std::string("Сборка ")) + std::to_string(n) + Tr(std::string(" файлов → ")) +
+                      Narrow(plan.exe.filename().wstring()) + "\n",
          Out::Info);
 
     struct Job {
@@ -659,7 +660,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
             const Job& job = jobs[i];
             std::string counter = n > 1 ? "[" + std::to_string(i + 1) + "/" + std::to_string(n) + "] " : "";
             if (job.skip) {
-                sink(counter + relName(job.src) + " — без изменений\n", Out::Command);
+                sink(counter + relName(job.src) + Tr(std::string(" — без изменений")) + "\n", Out::Command);
                 continue;
             }
             if (n > 1) sink(counter + relName(job.src) + "\n", Out::Normal);
@@ -674,7 +675,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
     }
     size_t failed = std::count_if(jobs.begin(), jobs.end(), [](const Job& j) { return !j.skip && j.code != 0; });
     if (failed) {
-        sink("Ассемблирование завершилось с ошибками (файлов с ошибками: " + std::to_string(failed) + ")\n", Out::Error);
+        sink(Tr(std::string("Ассемблирование завершилось с ошибками, файлов с ошибками: ")) + std::to_string(failed) + "\n", Out::Error);
         return result;
     }
     {
@@ -683,7 +684,7 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
     }
 
     if (!plan.config.Wsl() && !LinkerAvailable(s)) {
-        sink("Линкер не найден — укажите его в настройках.\n", Out::Error);
+        sink(Tr(std::string("Линкер не найден — укажите его в настройках.\n")), Out::Error);
         return result;
     }
     std::vector<fs::path> objs;
@@ -693,14 +694,15 @@ BuildResult Build(const Settings& s, const BuildPlan& plan, const Sink& sink) {
     auto echo = [&](const std::string& line) { sink(line + "\n", Classify(line)); };
     int code = Exec(linkCmd, plan.outDir, echo, nullptr);
     if (code != 0) {
-        sink("Линковка завершилась с ошибкой (код " + std::to_string(code) + ")\n", Out::Error);
+        sink(Tr(std::string("Линковка завершилась с ошибкой, код ")) + std::to_string(code) + "\n", Out::Error);
         return result;
     }
     if (!plan.config.postBuild.empty() && !RunUserCommands(plan.config.postBuild, plan.root, "post-build", sink)) {
         return result;
     }
     auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
-    sink("Сборка успешна за " + std::to_string(ms) + " мс → " + Narrow(plan.exe.wstring()) + "\n", Out::Success);
+    sink(Tr(std::string("Сборка успешна за ")) + std::to_string(ms) + " " + Tr(std::string("мс")) + " → " +
+             Narrow(plan.exe.wstring()) + "\n", Out::Success);
     result.ok = true;
     result.exe = plan.exe;
     return result;
@@ -756,7 +758,7 @@ std::wstring DescribeExitCode(DWORD code) {
     wchar_t hex[16];
     swprintf_s(hex, L"0x%08X", code);
     std::wstring dec = std::to_wstring(static_cast<int>(code));
-    if (name) return dec + L" (" + hex + L", " + name + L")";
+    if (name) return dec + L" (" + hex + L", " + Tr(name) + L")";
     if (code > 255) return dec + L" (" + hex + L")";
     return dec;
 }

@@ -3,6 +3,7 @@
 #include "../src/asmtools.h"
 #include "../src/completion.h"
 #include "../src/debugger.h"
+#include "../src/gdbmi.h"
 #include "../src/hints.h"
 #include "../src/project.h"
 #include "../src/terminal.h"
@@ -456,6 +457,68 @@ TEST(ConditionsExplainJumps) {
     CHECK(j && j->mnemonic == "jecxz");
     uint8_t mov[] = {0x48, 0x89, 0xC8};
     CHECK(!Conditions::Decode(mov, 3, 0, 0, false));
+}
+
+// In English every reference card (instructions, AVX forms, registers, directives, functions) is in English.
+TEST(ReferenceInEnglish) {
+    SetLanguage(L"en");
+    auto russian = [](const std::string& s) { return s.find('\xD0') != std::string::npos || s.find('\xD1') != std::string::npos; };
+    std::vector<std::string> words = Hints::KnownInstructions();
+    for (const char* w : {"vaddps", "vpaddd", "rax", "r12d", "xmm3", "ymm9", "rip", "db", "resq", "equ", "section",
+                          "%macro", "%ifdef", "default", "jnz", "setge", "cmovb"}) {
+        words.push_back(w);
+    }
+    int left = 0;
+    for (const std::string& w : words) {
+        std::string card = Hints::For(w);
+        if (card.empty() || russian(card)) {
+            if (left++ < 10) printf("    not in English: %s\n", w.c_str());
+        }
+    }
+    for (const char* f : {"printf", "WriteFile", "CreateFileA", "ExitProcess"}) {
+        std::string card = Hints::Function(f);
+        if (card.empty() || russian(card)) {
+            if (left++ < 10) printf("    not in English: %s\n", f);
+        }
+    }
+    SetLanguage(L"ru");
+    CHECK_EQ(left, 0);
+    CHECK(russian(Hints::For("mov")));
+}
+
+TEST(GdbMiRecords) {
+    auto r = Mi::Parse("12^done,bkpt={number=\"3\",type=\"breakpoint\",file=\"main.asm\",line=\"13\"}");
+    CHECK(r && r->type == '^' && r->token == 12 && r->klass == "done");
+    if (r) {
+        const Mi::Value* b = r->results.Get("bkpt");
+        CHECK(b && b->Str("number") == "3" && b->Str("line") == "13");
+    }
+    r = Mi::Parse("*stopped,reason=\"breakpoint-hit\",disp=\"keep\",bkptno=\"1\",frame={addr=\"0x401005\",func=\"main\","
+                  "args=[],file=\"main.asm\",fullname=\"/mnt/d/proj/main.asm\",line=\"13\"},thread-id=\"1\"");
+    CHECK(r && r->type == '*' && r->klass == "stopped" && r->results.Str("reason") == "breakpoint-hit");
+    if (r) {
+        const Mi::Value* f = r->results.Get("frame");
+        CHECK(f && f->Str("fullname") == "/mnt/d/proj/main.asm" && f->Get("args") && f->Get("args")->kind == Mi::Value::Kind::List);
+    }
+    r = Mi::Parse("5^done,register-names=[\"rax\",\"rbx\",\"\",\"rcx\"]");
+    CHECK(r && r->results.Get("register-names") && r->results.Get("register-names")->items.size() == 4);
+    r = Mi::Parse("6^done,stack=[frame={level=\"0\",addr=\"0x401010\",func=\"helper\"},frame={level=\"1\",func=\"main\"}]");
+    CHECK(r && r->results.Get("stack") && r->results.Get("stack")->fields.size() == 2);
+    r = Mi::Parse("~\"Line 13 of \\\"main.asm\\\" starts at address 0x401005\\n\"");
+    CHECK(r && r->type == '~' && r->text == "Line 13 of \"main.asm\" starts at address 0x401005\n");
+    CHECK(!Mi::Parse("(gdb) "));
+    CHECK(!Mi::Parse("hello from the program"));
+    CHECK_EQ(Mi::FromWsl("/mnt/d/proj/main.asm").wstring(), std::wstring(L"D:\\proj\\main.asm"));
+    CHECK_EQ(Mi::FromWsl("/home/u/a.asm").wstring(), std::wstring(L"/home/u/a.asm"));
+    CHECK_EQ(Mi::GdbExpression("rcx == 5 && dword [counter] > 3"),
+             std::string("$rcx == 5 && *(unsigned int*)(counter) > 3"));
+    CHECK_EQ(Mi::GdbExpression("[rsp+8]"), std::string("*(long*)($rsp+8)"));
+    auto [format, args] = Mi::LogFormat("i={rbx} c={[counter]:x} 100%");
+    CHECK_EQ(format, std::string("i=%ld c=%#lx 100%%"));
+    CHECK(args.size() == 2 && args[0] == "(long)($rbx)" && args[1] == "(long)(*(long*)(counter))");
+    CHECK_EQ(Mi::Quote("a\"b\\c"), std::string("\"a\\\"b\\\\c\""));
+    CHECK_EQ(Mi::ParseNumber("(long *) 0x404010 <counter>"), 0x404010ull);
+    CHECK_EQ(Mi::ParseNumber("value 42"), 42ull);
 }
 
 TEST(ExpressionsWithoutProcess) {

@@ -45,6 +45,8 @@ struct LaunchOptions {
     fs::path cwd;
     std::wstring environment;  // CreateProcess block (empty = inherit)
     bool profile = false;      // trace every instruction of the program's own code and count lines
+    bool wsl = false;          // a Linux program: debugged by gdb in WSL (GdbSession)
+    std::string wslTty;        // the pseudo-terminal in WSL that becomes the program's console
 };
 
 // Profiler result for one source line.
@@ -57,6 +59,8 @@ struct ProfileLine {
 
 // Source-level debugger for x64 and 32-bit (WOW64) executables built with NASM (-g -F cv8) and link /debug.
 // The Win32 debug loop runs on its own thread; the UI sends commands and reads state while stopped.
+class GdbSession;
+
 class Debugger {
 public:
     // Key(path) -> line -> condition ("" = always; "rcx == 5", "#10" = on the 10th hit, "#10 rax > 0").
@@ -78,10 +82,10 @@ public:
     bool Start(const LaunchOptions& launch, HPCON console, const Breakpoints& breakpoints, bool stopAtEntry,
                std::optional<SourceLocation> runTo, std::wstring& error);
 
-    void Continue() { Send(Command::Continue); }
-    void StepInto() { Send(Command::StepInto); }
-    void StepOver() { Send(Command::StepOver); }
-    void StepOut() { Send(Command::StepOut); }
+    void Continue();
+    void StepInto();
+    void StepOver();
+    void StepOut();
     bool RunTo(const SourceLocation& where);  // continue to a line (false: no code there)
     void Pause();
     void Stop();
@@ -94,6 +98,7 @@ public:
     bool Running() const { return running_; }
     bool Stopped() const { return stopped_; }
     bool Is32() const { return wow64_; }
+    bool Gdb() const { return gdb_ != nullptr; }
 
     // Valid only while stopped.
     const CONTEXT& Context() const { return context_; }
@@ -120,6 +125,9 @@ public:
     static bool SetRegisterIn(CONTEXT& c, const std::string& lowerName, uint64_t value);
 
 private:
+    friend class GdbSession;
+    std::unique_ptr<GdbSession> gdb_;
+
     enum class Command { None, Continue, StepInto, StepOver, StepOut, Stop };
     enum class StepMode { None, Into, Over, Out };
 

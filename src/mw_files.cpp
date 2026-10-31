@@ -169,7 +169,7 @@ bool MainWindow::SaveAs(Editor* ed) {
     wcsncpy_s(buf, ed->file().empty() ? ed->Title().c_str() : ed->file().c_str(), _TRUNCATE);
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = hwnd_;
-    ofn.lpstrFilter = L"Ассемблер (*.asm)\0*.asm\0Все файлы\0*.*\0";
+    ofn.lpstrFilter = English() ? L"Assembly (*.asm)\0*.asm\0All files\0*.*\0" : L"Ассемблер (*.asm)\0*.asm\0Все файлы\0*.*\0";
     ofn.lpstrFile = buf;
     ofn.nMaxFile = static_cast<DWORD>(std::size(buf));
     ofn.lpstrDefExt = L"asm";

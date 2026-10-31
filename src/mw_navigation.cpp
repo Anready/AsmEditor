@@ -122,21 +122,21 @@ void MainWindow::Rename(Editor* ed, Sci_Position pos) {
     if (!SymbolUnderCaret(ed, pos, word, scope)) return;
     bool local = word[0] == '.' && word.rfind("..", 0) != 0;
     if (local && scope.empty()) {
-        ShowMessage(hwnd_, L"Локальная метка вне глобальной метки — переименуйте её вручную.", false);
+        ShowMessage(hwnd_, Tr(L"Локальная метка вне глобальной метки — переименуйте её вручную."), false);
         return;
     }
-    auto answer = InputBox(hwnd_, L"Переименование", L"Новое имя для «" + Widen(word) + L"»:", Widen(word));
+    auto answer = InputBox(hwnd_, Tr(L"Переименование"), Tr(L"Новое имя для ") + Widen(word) + L":", Widen(word));
     if (!answer) return;
     std::string name = Narrow(Trim(*answer));
     if (name == word) return;
 
     std::wstring problem;
     if (!Completion::IsValidName(name)) {
-        problem = L"«" + Widen(name) + L"» — недопустимое имя. Можно буквы, цифры, _ . ? @ $ # ~; начинается не с цифры.";
+        problem = Widen(name) + Tr(L": недопустимое имя. Можно буквы, цифры, _ . ? @ $ # ~; начинается не с цифры.");
     } else if (Completion::IsReservedWord(name)) {
-        problem = L"«" + Widen(name) + L"» — зарезервированное слово NASM (регистр, инструкция или директива).";
+        problem = Widen(name) + Tr(L": зарезервированное слово NASM (регистр, инструкция или директива).");
     } else if (local != (name[0] == '.' && name.rfind("..", 0) != 0)) {
-        problem = local ? L"Локальная метка должна начинаться с точки." : L"Имя глобального символа не может начинаться с точки.";
+        problem = local ? Tr(L"Локальная метка должна начинаться с точки.") : Tr(L"Имя глобального символа не может начинаться с точки.");
     }
     std::vector<UsageSource> sources = UsageSources(ed, local);
     if (problem.empty()) {  // the new name must not already be defined (in the same scope for a local label)
@@ -145,7 +145,7 @@ void MainWindow::Rename(Editor* ed, Sci_Position pos) {
                 if (s.name != name || s.declaration) continue;
                 if (local && s.scope != scope) continue;
                 std::wstring where = src.file.empty() ? ed->Title() : src.file.filename().wstring();
-                problem = L"«" + Widen(name) + L"» уже определено: " + where + L", строка " + std::to_wstring(s.line) + L".";
+                problem = Widen(name) + Tr(L": уже определено в ") + where + L":" + std::to_wstring(s.line) + L".";
                 break;
             }
             if (!problem.empty()) break;
@@ -180,9 +180,9 @@ void MainWindow::Rename(Editor* ed, Sci_Position pos) {
         if (editors_[i].get() == ed) Activate(static_cast<int>(i));
     }
     InvalidateChrome();
-    Print("\nПереименовано «" + word + "» → «" + name + "»: " + std::to_string(total) + " замен в " +
-              std::to_string(targets.size()) + (targets.size() == 1 ? " файле" : " файлах") +
-              ". Файлы не сохранены: Ctrl+Z — отменить в файле, «Сохранить всё» — сохранить.\n",
+    Print("\n" + Tr(std::string("Переименовано: ")) + word + " → " + name + " (" + Tr(std::string("замен: ")) +
+              std::to_string(total) + ", " + Tr(std::string("файлов: ")) + std::to_string(targets.size()) + "). " +
+              Tr(std::string("Файлы не сохранены: Ctrl+Z — отменить в файле, «Сохранить всё» — сохранить.")) + "\n",
           Out::Success);
 }
 
@@ -249,7 +249,7 @@ bool MainWindow::OpenIncludeAt(Editor* ed, Sci_Position pos) {
             return true;
         }
     }
-    std::string tip = "Файл не найден: " + Narrow(name.wstring());
+    std::string tip = Tr(std::string("Файл не найден: ")) + Narrow(name.wstring());
     ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
     return true;
 }
@@ -332,13 +332,13 @@ void MainWindow::GoToDefinition(Editor* ed, Sci_Position pos) {
             JumpTo(*decl);
             Editor* now = Active();
             if (now && decl->symbol.kind == Completion::Kind::Function) {
-                std::string tip = word + " — внешний символ: определён вне проекта (библиотека или DLL)";
+                std::string tip = word + Tr(std::string(": внешний символ, определён вне проекта (библиотека или DLL)"));
                 now->Call(SCI_CALLTIPSHOW, now->Call(SCI_GETCURRENTPOS), reinterpret_cast<sptr_t>(tip.c_str()));
             }
             return;
         }
     }
-    std::string tip = "Определение «" + word + "» не найдено";
+    std::string tip = Tr(std::string("Определение не найдено: ")) + word;
     ed->Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(tip.c_str()));
 }
 
@@ -1026,6 +1026,6 @@ void MainWindow::OnFindMessage(FINDREPLACEW* fr) {
             count++;
         }
         ed->Call(SCI_ENDUNDOACTION);
-        ShowMessage(findDialog_ ? findDialog_ : hwnd_, L"Заменено: " + std::to_wstring(count), false);
+        ShowMessage(findDialog_ ? findDialog_ : hwnd_, Tr(L"Заменено: ") + std::to_wstring(count), false);
     }
 }

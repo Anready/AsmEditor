@@ -133,6 +133,11 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
 void MainWindow::OnDebugExited(DWORD code, const std::string& stats) {
     if (!debugging_) return;
     debugger_.reset();
+    if (job_ && !process_) {  // the terminal holder of a WSL debugging session
+        TerminateJobObject(job_, 0);
+        CloseHandle(job_);
+        job_ = nullptr;
+    }
     ClearExecutionLine();
     SetDebugging(false);
     exitStats_ = stats;

@@ -232,7 +232,7 @@ void Editor::ApplyStyles(int fontSize) {
 std::wstring Editor::Title() const {
     if (!file_.empty()) return file_.filename().wstring();
     if (!untitled_) const_cast<Editor*>(this)->untitled_ = g_nextUntitled++;
-    return L"Безымянный-" + std::to_wstring(untitled_) + L".asm";
+    return Tr(L"Безымянный-") + std::to_wstring(untitled_) + L".asm";
 }
 
 std::string Editor::Text() const {
@@ -260,7 +260,7 @@ int Editor::CaretColumn() const {
 bool Editor::Load(const fs::path& path, std::wstring& error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        error = L"не удалось открыть файл";
+        error = Tr(L"не удалось открыть файл");
         return false;
     }
     std::stringstream ss;
@@ -324,13 +324,13 @@ bool Editor::Save(const fs::path& path, std::wstring& error) {
     if (ansi_) data = Narrow(Widen(data), 1251);
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
-        error = L"не удалось записать файл";
+        error = Tr(L"не удалось записать файл");
         return false;
     }
     if (bom_) out.write("\xEF\xBB\xBF", 3);
     out.write(data.data(), (std::streamsize)data.size());
     if (!out) {
-        error = L"ошибка записи";
+        error = Tr(L"ошибка записи");
         return false;
     }
     out.close();
@@ -456,7 +456,7 @@ void Editor::ShowDiagnosticTip(Sci_Position pos) {
     std::wstring tip;
     for (const Diagnostic& d : *diags) {
         if (!tip.empty()) tip += L"\n";
-        tip += (d.severity == Severity::Error ? L"Ошибка: " : L"Предупреждение: ") + d.message;
+        tip += std::wstring(d.severity == Severity::Error ? Tr(L"Ошибка: ") : Tr(L"Предупреждение: ")) + d.message;
     }
     std::string utf8 = Narrow(tip);
     Call(SCI_CALLTIPSHOW, pos, reinterpret_cast<sptr_t>(utf8.c_str()));

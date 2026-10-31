@@ -58,7 +58,7 @@ rem The unit tests use the UI-independent sources only.
 cl /nologo /std:c++20 /utf-8 /EHsc /O1 /MT /W3 /DUNICODE /D_UNICODE /Ithird_party\scintilla\include /Isrc ^
    /Foout\tests\ tests\tests.cpp src\syntax.cpp src\completion.cpp src\toolchain.cpp src\project.cpp ^
    src\util.cpp src\theme.cpp src\log.cpp src\l10n.cpp src\asmtools.cpp src\terminal.cpp src\hints.cpp ^
-   src\debugger.cpp /Fe:out\tests\tests.exe /link %LIBS% || exit /b 1
+   src\debugger.cpp src\gdbmi.cpp /Fe:out\tests\tests.exe /link %LIBS% || exit /b 1
 out\tests\tests.exe || exit /b 1
 exit /b 0
 

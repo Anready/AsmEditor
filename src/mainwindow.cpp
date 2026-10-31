@@ -668,7 +668,8 @@ void MainWindow::OnCommand(int id) {
         std::vector<wchar_t> buf(32768, L'\0');
         OPENFILENAMEW ofn{sizeof(ofn)};
         ofn.hwndOwner = hwnd_;
-        ofn.lpstrFilter = L"Ассемблер (*.asm;*.inc;*.s;*.nasm;*.mac)\0*.asm;*.inc;*.s;*.nasm;*.mac\0Все файлы\0*.*\0";
+        ofn.lpstrFilter = English() ? L"Assembly (*.asm;*.inc;*.s;*.nasm;*.mac)\0*.asm;*.inc;*.s;*.nasm;*.mac\0All files\0*.*\0"
+                                : L"Ассемблер (*.asm;*.inc;*.s;*.nasm;*.mac)\0*.asm;*.inc;*.s;*.nasm;*.mac\0Все файлы\0*.*\0";
         ofn.lpstrFile = buf.data();
         ofn.nMaxFile = static_cast<DWORD>(buf.size());
         std::wstring initial = projectRoot_.wstring();

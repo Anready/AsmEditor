@@ -1,4 +1,5 @@
 #include "debugger.h"
+#include "gdbmi.h"
 
 #include <dbghelp.h>
 
@@ -54,7 +55,7 @@ public:
         auto v = Or();
         Skip();
         if (v && i_ < s_.size()) {
-            err_ = L"лишние символы: " + Widen(s_.substr(i_));
+            err_ = Tr(L"лишние символы: ") + Widen(s_.substr(i_));
             return std::nullopt;
         }
         return v;
@@ -150,7 +151,7 @@ private:
         return Binary(&ExpressionParser::Factor, {"*", "/", "%"}, [this](const char* op, uint64_t a, uint64_t b) {
             if (op[0] == '*') return std::optional<uint64_t>(a * b);
             if (b == 0) {
-                err_ = L"деление на ноль";
+                err_ = Tr(L"деление на ноль");
                 return std::optional<uint64_t>();
             }
             auto x = static_cast<int64_t>(a), y = static_cast<int64_t>(b);
@@ -161,12 +162,12 @@ private:
         auto v = Or();
         if (!v) return std::nullopt;
         if (!Eat("]")) {
-            err_ = L"ожидалась «]»";
+            err_ = Tr(L"ожидалась «]»");
             return std::nullopt;
         }
         uint64_t q = 0;
         if (d_.ReadMemory(*v, &q, size) != static_cast<size_t>(size)) {
-            err_ = L"память по адресу недоступна";
+            err_ = Tr(L"память по адресу недоступна");
             return std::nullopt;
         }
         return q;
@@ -174,7 +175,7 @@ private:
     std::optional<uint64_t> Factor() {
         Skip();
         if (i_ >= s_.size()) {
-            err_ = L"ожидалось выражение";
+            err_ = Tr(L"ожидалось выражение");
             return std::nullopt;
         }
         if (Eat("-")) {
@@ -195,7 +196,7 @@ private:
         if (Eat("(")) {
             auto v = Or();
             if (v && !Eat(")")) {
-                err_ = L"ожидалась «)»";
+                err_ = Tr(L"ожидалась «)»");
                 return std::nullopt;
             }
             return v;
@@ -209,7 +210,7 @@ private:
         while (i_ < s_.size() && isWord(s_[i_])) i_++;
         std::string word = s_.substr(start, i_ - start);
         if (word.empty()) {
-            err_ = L"неожиданный символ «" + Widen(std::string(1, s_[i_])) + L"»";
+            err_ = Tr(L"неожиданный символ: ") + Widen(std::string(1, s_[i_]));
             return std::nullopt;
         }
         if (isdigit(static_cast<unsigned char>(word[0]))) return Number(word);
@@ -219,7 +220,7 @@ private:
             if (lower == name) {
                 Eat("ptr");
                 if (!Eat("[")) {
-                    err_ = L"после «" + Widen(word) + L"» ожидалась «[»";
+                    err_ = Widen(word) + Tr(L": ожидалась «[»");
                     return std::nullopt;
                 }
                 return Deref(size);
@@ -227,7 +228,7 @@ private:
         }
         if (auto r = Debugger::Register(d_.Context(), lower)) return r;
         if (auto a = d_.LookupSymbol(word)) return a;
-        err_ = L"неизвестное имя «" + Widen(word) + L"»";
+        err_ = Tr(L"неизвестное имя: ") + Widen(word);
         return std::nullopt;
     }
     std::optional<uint64_t> Number(const std::string& w) {
@@ -247,7 +248,7 @@ private:
         char* end = nullptr;
         uint64_t v = t.empty() ? 0 : strtoull(t.c_str(), &end, base);
         if (t.empty() || *end) {
-            err_ = L"неверное число «" + Widen(w) + L"»";
+            err_ = Tr(L"неверное число: ") + Widen(w);
             return std::nullopt;
         }
         return v;
@@ -350,6 +351,7 @@ Debugger::Debugger(HWND notify) : notify_(notify) {}
 
 Debugger::~Debugger() {
     Stop();
+    gdb_.reset();
     if (thread_.joinable()) thread_.join();
 }
 
@@ -426,6 +428,16 @@ bool Debugger::SetContext(HANDLE thread, const CONTEXT& ctx, bool full) {
 
 bool Debugger::Start(const LaunchOptions& launch, HPCON console, const Breakpoints& breakpoints, bool stopAtEntry,
                      std::optional<SourceLocation> runTo, std::wstring& error) {
+    if (launch.wsl) {  // a Linux program: gdb in WSL does the work
+        gdb_ = std::make_unique<GdbSession>(*this, notify_);
+        running_ = true;
+        if (!gdb_->Start(launch, launch.wslTty, breakpoints, stopAtEntry, runTo, error)) {
+            gdb_.reset();
+            running_ = false;
+            return false;
+        }
+        return true;
+    }
     std::promise<std::wstring> started;
     auto result = started.get_future();
     running_ = true;
@@ -445,7 +457,28 @@ void Debugger::Send(Command c) {
     cv_.notify_all();
 }
 
+void Debugger::Continue() {
+    if (gdb_) gdb_->Exec("-exec-continue");
+    else Send(Command::Continue);
+}
+
+void Debugger::StepInto() {
+    if (gdb_) gdb_->Exec("-exec-step");
+    else Send(Command::StepInto);
+}
+
+void Debugger::StepOver() {
+    if (gdb_) gdb_->Exec("-exec-next");
+    else Send(Command::StepOver);
+}
+
+void Debugger::StepOut() {
+    if (gdb_) gdb_->Exec("-exec-finish");
+    else Send(Command::StepOut);
+}
+
 void Debugger::Pause() {
+    if (gdb_) return gdb_->Interrupt();
     HANDLE p = process_;
     if (!running_ || stopped_ || !p || pauseRequested_) return;
     pauseRequested_ = true;
@@ -470,12 +503,14 @@ void Debugger::Pause() {
 }
 
 void Debugger::Stop() {
+    if (gdb_) return gdb_->Stop();
     Send(Command::Stop);
     HANDLE p = process_;
     if (running_ && p) TerminateProcess(p, 1);
 }
 
 void Debugger::SetBreakpoints(const fs::path& file, const std::map<int, std::string>& lines) {
+    if (gdb_) return gdb_->SetBreakpoints(file, lines);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!process_) return;
     std::wstring key = Key(file);
@@ -546,20 +581,24 @@ size_t Debugger::HistorySize() {
 
 bool Debugger::StepBack(std::wstring& error) {
     if (!stopped_) return false;
+    if (gdb_) {
+        error = Tr(L"в WSL (gdb) шаг назад не поддерживается");
+        return false;
+    }
     if (foreignStop_) {
-        error = L"программа остановлена внутри системного вызова — сначала сделайте шаг";
+        error = Tr(L"программа остановлена внутри системного вызова — сначала сделайте шаг");
         return false;
     }
     DebugStop* stop = nullptr;
     {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         if (history_.size() < 2) {
-            error = L"нет более ранней остановки";
+            error = Tr(L"нет более ранней остановки");
             return false;
         }
         const Snapshot& prev = history_[history_.size() - 2];
         if (prev.thread != stopThread_) {
-            error = L"предыдущая остановка была в другом потоке";
+            error = Tr(L"предыдущая остановка была в другом потоке");
             return false;
         }
         history_.pop_back();
@@ -634,6 +673,7 @@ void Debugger::ProfileStep(const CONTEXT& ctx) {
 }
 
 bool Debugger::RunTo(const SourceLocation& where) {
+    if (gdb_) return stopped_ && gdb_->RunTo(where);
     auto address = AddressOfLine(where);
     if (!address || !stopped_) return false;
     {
@@ -647,6 +687,7 @@ bool Debugger::RunTo(const SourceLocation& where) {
 
 bool Debugger::SetRegister(const std::string& name, uint64_t value) {
     if (!stopped_) return false;
+    if (gdb_) return gdb_->SetRegister(name, value);
     if (wow64_) value &= 0xFFFFFFFF;
     if (!SetRegisterIn(context_, name, value)) return false;
     contextChanged_ = true;
@@ -655,13 +696,14 @@ bool Debugger::SetRegister(const std::string& name, uint64_t value) {
 
 bool Debugger::SetNextStatement(const SourceLocation& where, std::wstring& error) {
     if (!stopped_) return false;
+    if (gdb_) return gdb_->SetNextStatement(where, error);
     auto address = AddressOfLine(where);
     if (!address) {
-        error = L"на этой строке нет кода";
+        error = Tr(L"на этой строке нет кода");
         return false;
     }
     if (foreignStop_) {
-        error = L"программа остановлена внутри системного вызова — сделайте шаг, чтобы вернуться в свой код";
+        error = Tr(L"программа остановлена внутри системного вызова — сделайте шаг, чтобы вернуться в свой код");
         return false;
     }
     context_.Rip = *address;
@@ -670,6 +712,7 @@ bool Debugger::SetNextStatement(const SourceLocation& where, std::wstring& error
 }
 
 bool Debugger::WriteMemory(uint64_t address, const void* data, size_t size) {
+    if (gdb_) return stopped_ && gdb_->WriteMemory(address, data, size);
     HANDLE p = process_;
     if (!p || !stopped_) return false;
     std::lock_guard<std::recursive_mutex> lock(mutex_);
@@ -692,21 +735,22 @@ bool Debugger::WriteMemory(uint64_t address, const void* data, size_t size) {
 }
 
 bool Debugger::AddDataWatch(const DataWatch& watch, std::wstring& error) {
+    if (gdb_) return gdb_->AddDataWatch(watch, error);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (watches_.size() >= 4) {
-        error = L"процессор поддерживает не больше 4 точек останова на данные";
+        error = Tr(L"процессор поддерживает не больше 4 точек останова на данные");
         return false;
     }
     if (watch.size != 1 && watch.size != 2 && watch.size != 4 && watch.size != 8) {
-        error = L"размер должен быть 1, 2, 4 или 8 байт";
+        error = Tr(L"размер должен быть 1, 2, 4 или 8 байт");
         return false;
     }
     if (wow64_ && watch.size == 8) {
-        error = L"в 32-битной программе — не больше 4 байт";
+        error = Tr(L"в 32-битной программе — не больше 4 байт");
         return false;
     }
     if (watch.address % watch.size) {
-        error = L"адрес должен быть кратен размеру (" + std::to_wstring(watch.size) + L")";
+        error = Tr(L"адрес должен быть кратен размеру: ") + std::to_wstring(watch.size);
         return false;
     }
     DataWatch w = watch;
@@ -718,12 +762,14 @@ bool Debugger::AddDataWatch(const DataWatch& watch, std::wstring& error) {
 }
 
 void Debugger::RemoveDataWatch(size_t index) {
+    if (gdb_) return gdb_->RemoveDataWatch(index);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (index < watches_.size()) watches_.erase(watches_.begin() + index);
     watchesChanged_ = true;
 }
 
 std::vector<DataWatch> Debugger::DataWatches() {
+    if (gdb_) return gdb_->DataWatches();
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     return watches_;
 }
@@ -736,7 +782,7 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
     std::wstring cmd = Toolchain::QuoteCommandLine({launch.exe.wstring()});
     if (!launch.args.empty()) cmd += L" " + launch.args;
     if (!Toolchain::SpawnInConsole(cmd, launch.cwd, console, DEBUG_ONLY_THIS_PROCESS, pi, launch.environment)) {
-        started->set_value(L"не удалось запустить процесс (код " + std::to_wstring(GetLastError()) + L")");
+        started->set_value(Tr(L"не удалось запустить процесс, код ") + std::to_wstring(GetLastError()));
         return;
     }
     CloseHandle(pi.hProcess);  // the debug events provide their own handles
@@ -768,14 +814,14 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
                 SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME | SYMOPT_FAIL_CRITICAL_ERRORS | SYMOPT_NO_PROMPTS);
                 SymInitializeW(process_, launch.exe.parent_path().c_str(), FALSE);
                 if (!SymLoadModuleExW(process_, info.hFile, launch.exe.c_str(), nullptr, imageBase_, 0, nullptr, 0)) {
-                    PostLog(notify_, "Не удалось загрузить отладочную информацию\n", Out::Warning);
+                    PostLog(notify_, Tr(std::string("Не удалось загрузить отладочную информацию\n")), Out::Warning);
                 }
                 IMAGEHLP_MODULEW64 mod{sizeof(mod)};
                 if (SymGetModuleInfoW64(process_, imageBase_, &mod) && !mod.LineNumbers) {
-                    PostLog(notify_, "В программе нет номеров строк: нужны «-g -F cv8» для NASM и /debug для link.\n",
+                    PostLog(notify_, Tr(std::string("В программе нет номеров строк: нужны «-g -F cv8» для NASM и /debug для link.\n")),
                         Out::Warning);
                 }
-                if (wow64_) PostLog(notify_, "32-битная программа (WOW64)\n", Out::Info);
+                if (wow64_) PostLog(notify_, Tr(std::string("32-битная программа (WOW64)\n")), Out::Info);
                 for (const auto& [key, lines] : bps) InstallFile(key, lines);
                 FindWritableSections();
                 profiling_ = launch.profile;
@@ -866,8 +912,8 @@ void Debugger::Loop(LaunchOptions launch, HPCON console, Breakpoints bps, bool s
             if (profiling_) {
                 auto* lines = new std::vector<ProfileLine>(profile_);
                 if (profileLimitHit_) {
-                    PostLog(notify_, "Профилирование остановлено после " + std::to_string(kProfileLimit / 1000000) +
-                                         " млн инструкций — дальше программа работала без подсчёта.\n", Out::Warning);
+                    PostLog(notify_, Tr(std::string("Профилирование остановлено после 1 млн инструкций — дальше программа работала "
+                                                     "без подсчёта.\n")), Out::Warning);
                 }
                 PostMessageW(notify_, WM_DEBUG_PROFILE, 0, reinterpret_cast<LPARAM>(lines));
             }
@@ -959,7 +1005,7 @@ DWORD Debugger::OnException(const DEBUG_EVENT& ev) {
                                        : bp.entry && !bp.user ? DebugStop::Reason::Entry
                                                               : DebugStop::Reason::Breakpoint;
             std::wstring message;
-            if (bp.user && !bp.condition.empty()) message = L"условие: " + Widen(bp.condition);
+            if (bp.user && !bp.condition.empty()) message = Tr(L"условие: ") + Widen(bp.condition);
             StopAt(thread, ctx, reason, message);
         } else if (bp.runTo) {
             stepMode_ = StepMode::None;
@@ -1012,12 +1058,12 @@ DWORD Debugger::OnException(const DEBUG_EVENT& ev) {
         if ((rec.ExceptionCode & 0xF0000000) != 0xC0000000) return DBG_EXCEPTION_NOT_HANDLED;  // informational
         GetContext(thread, ctx);
         stepMode_ = StepMode::None;
-        std::wstring msg = (ev.u.Exception.dwFirstChance ? L"Исключение " : L"Необработанное исключение ") +
+        std::wstring msg = std::wstring(ev.u.Exception.dwFirstChance ? Tr(L"Исключение ") : Tr(L"Необработанное исключение ")) +
                            Toolchain::DescribeExitCode(rec.ExceptionCode);
         if (rec.ExceptionCode == EXCEPTION_ACCESS_VIOLATION && rec.NumberParameters >= 2) {
             wchar_t buf[96];
-            const wchar_t* kind = rec.ExceptionInformation[0] == 0 ? L"чтение" : rec.ExceptionInformation[0] == 1 ? L"запись" : L"выполнение";
-            swprintf_s(buf, L"; %s по адресу 0x%llX", kind, static_cast<unsigned long long>(rec.ExceptionInformation[1]));
+            const wchar_t* kind = rec.ExceptionInformation[0] == 0 ? Tr(L"чтение") : rec.ExceptionInformation[0] == 1 ? Tr(L"запись") : Tr(L"выполнение");
+            swprintf_s(buf, Tr(L"; %s по адресу 0x%llX"), kind, static_cast<unsigned long long>(rec.ExceptionInformation[1]));
             msg += buf;
         }
         StopAt(thread, ctx, DebugStop::Reason::Exception, msg);
@@ -1055,7 +1101,8 @@ bool Debugger::ConditionHolds(Breakpoint& bp, const CONTEXT& ctx) {
             std::wstring error;
             auto v = Evaluate(cond, error);
             if (!v) {
-                PostLog(notify_, "Условие точки останова «" + bp.condition + "»: " + Narrow(error) + " — остановка\n",
+                PostLog(notify_, Tr(std::string("Условие точки останова не вычисляется, остановка: ")) + bp.condition + ": " +
+                                     Narrow(error) + "\n",
                         Out::Warning);
                 context_ = saved;
                 return true;
@@ -1113,7 +1160,7 @@ std::wstring Debugger::WatchHit(uint64_t dr6) {
         uint64_t now = 0;
         ReadMemory(w.address, &now, w.size);
         wchar_t buf[160];
-        swprintf_s(buf, L"%s изменилось: 0x%llX → 0x%llX (%lld)", Widen(w.expression).c_str(),
+        swprintf_s(buf, Tr(L"%s изменилось: 0x%llX → 0x%llX (%lld)"), Widen(w.expression).c_str(),
                    static_cast<unsigned long long>(w.value), static_cast<unsigned long long>(now),
                    static_cast<long long>(now));
         if (!message.empty()) message += L"; ";
@@ -1376,6 +1423,7 @@ void Debugger::RemoveTemps() {
 }
 
 std::optional<uint64_t> Debugger::AddressOfLine(const SourceLocation& where) {
+    if (gdb_) return gdb_->AddressOfLine(where);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!process_) return std::nullopt;
     LONG displacement = 0;
@@ -1431,6 +1479,7 @@ uint64_t Debugger::ImageSize(uint64_t base) {
 }
 
 SourceLocation Debugger::LocationOf(uint64_t address) {
+    if (gdb_) return gdb_->LocationOf(address);
     if (!InMainImage(address)) return {};  // source exists only for our own executable
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     DWORD displacement = 0;
@@ -1450,6 +1499,7 @@ uint64_t Debugger::ReadPointer(uint64_t address) {
 }
 
 size_t Debugger::ReadMemory(uint64_t address, void* buffer, size_t size) {
+    if (gdb_) return gdb_->ReadMemory(address, buffer, size);
     HANDLE p = process_;
     if (!p) return 0;
     auto* out = static_cast<uint8_t*>(buffer);
@@ -1473,6 +1523,7 @@ std::optional<uint64_t> Debugger::Evaluate(const std::string& expression, std::w
 }
 
 std::optional<uint64_t> Debugger::LookupSymbol(const std::string& name) {
+    if (gdb_) return gdb_->LookupSymbol(name);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!process_) return std::nullopt;
     SymbolBuffer sym;
@@ -1482,6 +1533,7 @@ std::optional<uint64_t> Debugger::LookupSymbol(const std::string& name) {
 }
 
 std::wstring Debugger::SymbolAt(uint64_t address) {
+    if (gdb_) return gdb_->SymbolAt(address);
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (!process_ || address < 0x10000) return {};
     wchar_t buf[32];
@@ -1718,6 +1770,7 @@ bool Debugger::UnwindFrame(uint64_t regs[16], uint64_t& rip, bool caller) {
 std::vector<Debugger::Frame> Debugger::CallStack() {
     std::vector<Frame> frames;
     if (!stopped_) return frames;
+    if (gdb_) return gdb_->CallStack();
     auto globalPart = [](std::wstring name) {
         size_t plus = name.find(L'+');
         if (plus != std::wstring::npos) name.erase(plus);

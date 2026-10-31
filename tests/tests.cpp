@@ -7,6 +7,8 @@
 #include "../src/hints.h"
 #include "../src/project.h"
 #include "../src/terminal.h"
+#include "../src/update.h"
+#include "../src/version.h"
 
 #include <chrono>
 #include <cstdio>
@@ -593,6 +595,72 @@ TEST(StructsAndWatchForms) {
     CHECK(dump && dump->first == "msg" && dump->second == 32);
     CHECK(!Structs::SplitDump("[a, 3]"));
     CHECK(!Structs::SplitDump("x, 1000"));
+}
+
+TEST(UpdateReleaseAndVersions) {
+    std::string json = R"({"url":"x","html_url":"https://github.com/Anready/AsmEditor/releases/tag/v1.3.0",
+        "tag_name":"v1.3.0","body":"Новое:\n- fixes \"quoted\"",
+        "assets":[{"name":"AsmEditor-portable.zip","digest":"sha256:aaaa","browser_download_url":
+        "https://github.com/Anready/AsmEditor/releases/download/v1.3.0/AsmEditor-portable.zip"},
+        {"name":"AsmEditor.exe","size":5,"digest":"sha256:0123abcd","browser_download_url":
+        "https://github.com/Anready/AsmEditor/releases/download/v1.3.0/AsmEditor.exe"},
+        {"name":"AsmEditor-setup-1.3.0.exe","browser_download_url":
+        "https://github.com/Anready/AsmEditor/releases/download/v1.3.0/AsmEditor-setup-1.3.0.exe"}]})";
+    auto r = Update::ParseRelease(json);
+    CHECK(r.has_value());
+    if (r) {
+        CHECK_EQ(r->version, std::string("1.3.0"));
+        CHECK_EQ(r->notes, std::string("Новое:\n- fixes \"quoted\""));
+        CHECK_EQ(r->exeUrl, std::string("https://github.com/Anready/AsmEditor/releases/download/v1.3.0/AsmEditor.exe"));
+        CHECK_EQ(r->exeSha256, std::string("0123abcd"));
+        CHECK(r->setupUrl.find("AsmEditor-setup-1.3.0.exe") != std::string::npos && r->setupSha256.empty());
+    }
+    CHECK(!Update::ParseRelease("{\"message\":\"Not Found\"}"));
+    CHECK(Update::CompareVersions("1.2.0", "1.2.1") < 0);
+    CHECK(Update::CompareVersions("1.10.0", "1.9.3") > 0);
+    CHECK(Update::CompareVersions("1.2", "1.2.0") == 0);
+    CHECK(Update::CompareVersions(ASMEDITOR_VERSION_TEXT, "1.0.0") > 0);
+}
+
+TEST(UpdateFilesAndDownload) {
+    wchar_t tmp[MAX_PATH + 1];
+    GetTempPathW(MAX_PATH + 1, tmp);
+    fs::path dir = fs::path(tmp) / L"asmeditor-tests" / L"update";
+    fs::create_directories(dir);
+    fs::path abc = dir / L"abc.txt";
+    std::ofstream(abc, std::ios::binary | std::ios::trunc) << "abc";
+    CHECK_EQ(Update::Sha256(abc), std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    // replacing a "running" exe: the old one is kept as .old, removed by CleanupOld
+    fs::path exe = dir / L"app.exe", fresh = dir / L"app.new";
+    std::ofstream(exe, std::ios::binary | std::ios::trunc) << "old";
+    std::ofstream(fresh, std::ios::binary | std::ios::trunc) << "new";
+    std::string error;
+    CHECK(Update::ReplaceExecutable(exe, fresh, error));
+    std::ifstream in(exe, std::ios::binary);
+    std::string now((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    CHECK_EQ(now, std::string("new"));
+    CHECK(fs::exists(dir / L"app.exe.old"));
+    Update::CleanupOld(exe);
+    CHECK(!fs::exists(dir / L"app.exe.old"));
+    // Verify: a real program with its checksum passes, a wrong checksum or a text file does not
+    wchar_t self[MAX_PATH];
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    CHECK(Update::Verify(self, Update::Sha256(self), error));
+    CHECK(!Update::Verify(self, "00", error));
+    CHECK(!Update::Verify(abc, "", error));
+    // HTTPS download and the GitHub API (skipped without a network)
+    fs::path readme = dir / L"README.md";
+    if (Update::Download(L"https://raw.githubusercontent.com/Anready/AsmEditor/main/README.md", readme, error)) {
+        std::ifstream r(readme, std::ios::binary);
+        std::string text((std::istreambuf_iterator<char>(r)), std::istreambuf_iterator<char>());
+        CHECK(text.find("AsmEditor") != std::string::npos);
+        auto latest = Update::Latest(error);
+        printf("    latest release: %s%s\n", latest ? latest->tag.c_str() : "(none)", error.empty() ? "" : (" — " + error).c_str());
+        CHECK(latest || error.empty());  // either a release, or none published yet
+    } else {
+        printf("    (network checks skipped: %s)\n", error.c_str());
+    }
 }
 
 TEST(LinuxPlatformsNasmArgs) {

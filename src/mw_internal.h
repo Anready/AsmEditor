@@ -29,7 +29,7 @@ enum : int {
     ID_PROFILE_DEBUG, ID_PROFILE_RELEASE, ID_SHOW_PROBLEMS, ID_SHOW_TERMINAL, ID_SHOW_OUTPUT,
     // learning & help
     ID_CHECK_SOLUTION, ID_NEW_EXERCISE, ID_KEYS, ID_CHECK_UPDATES, ID_OPEN_LOG, ID_ABOUT, ID_LANGUAGE,
-    ID_STEP_BACK, ID_PROFILE_RUN, ID_PROFILE_CLEAR, ID_QUICK_FIX, ID_LESSONS, ID_EXPORT_RESULTS, ID_ASSOCIATE, ID_PROFILE_SAMPLE, ID_EXERCISE_HINT, ID_GROUP_SUMMARY, ID_HELP_PAGE, ID_ATTACH, ID_LOAD_TASKS,
+    ID_STEP_BACK, ID_PROFILE_RUN, ID_PROFILE_CLEAR, ID_QUICK_FIX, ID_LESSONS, ID_EXPORT_RESULTS, ID_ASSOCIATE, ID_PROFILE_SAMPLE, ID_EXERCISE_HINT, ID_GROUP_SUMMARY, ID_HELP_PAGE, ID_ATTACH, ID_LOAD_TASKS, ID_UPDATE_APP,
     ID_MENU_FILE = 300, ID_MENU_EDIT, ID_MENU_VIEW, ID_MENU_RUN, ID_MENU_HELP, ID_TARGET, ID_PROFILE,
     ID_RECENT = 400,
     ID_TREE_NEW_FILE = 500, ID_TREE_NEW_FOLDER, ID_TREE_OPEN, ID_TREE_MAIN, ID_TREE_RENAME, ID_TREE_DELETE,
@@ -55,6 +55,8 @@ enum : UINT {
     WM_APP_PTY_DONE,              // wp = exit code, lp = console session
     WM_APP_INFO,                  // wp = Out, lp = std::string* (background result for the Output tab)
     WM_APP_SOLUTION_DONE,         // lp = SolutionDone*
+    WM_APP_UPDATE_INFO,           // lp = UpdateInfo* (mw_update.cpp)
+    WM_APP_UPDATE_DONE,           // lp = UpdateDone*
 };
 
 constexpr UINT_PTR kCheckTimerBase = 1000;
@@ -63,8 +65,9 @@ constexpr UINT_PTR kOccurrenceTimer = 3;  // highlight uses of the word under th
 constexpr UINT_PTR kOutlineTimer = 4;     // rebuild the outline after edits
 constexpr UINT_PTR kBackupTimer = 5;      // write unsaved texts for crash recovery
 constexpr UINT_PTR kRepaintTimer = 6;
-constexpr UINT_PTR kStackFlashTimer = 7;
-constexpr UINT_PTR kUiTestTimer = 8;  // fades the highlight of stack slots that changed
+constexpr UINT_PTR kStackFlashTimer = 7;  // fades the highlight of stack slots that changed
+constexpr UINT_PTR kUiTestTimer = 8;
+constexpr UINT_PTR kUpdateTimer = 9;      // the update check a few seconds after start
 
 struct BuildDone {
     BuildResult result;

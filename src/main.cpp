@@ -1,4 +1,5 @@
 #include "mainwindow.h"
+#include "update.h"
 
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' " \
                         "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -20,6 +21,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         SetEnvironmentVariableW(L"ASMEDITOR_HOME", (uiTest / L"home").c_str());
     }
 
+    {
+        wchar_t self[MAX_PATH * 2];
+        GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
+        Update::CleanupOld(self);  // the exe replaced by the last update
+    }
     Settings settings;
     settings.Load();
     Theme::Apply(settings.theme);
@@ -53,6 +59,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    window.RestartIfUpdated();
     Scintilla_ReleaseResources();
     CoUninitialize();
     return exitCode;

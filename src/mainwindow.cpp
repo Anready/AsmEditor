@@ -64,6 +64,7 @@ bool MainWindow::Create(HINSTANCE inst, Settings* settings) {
     checkThread_ = std::thread([this] { CheckWorker(); });
     RefreshToolStatus();
     SetTimer(hwnd_, kBackupTimer, 30'000, nullptr);
+    SetTimer(hwnd_, kUpdateTimer, 4'000, nullptr);  // the update check, once the window is up
     Log::Write("AsmEditor started");
 
     ShowWindow(hwnd_, settings->maximized ? SW_SHOWMAXIMIZED : SW_SHOW);
@@ -287,7 +288,7 @@ void MainWindow::BuildMenus() {
     }
 
     helpMenu_ = CreatePopupMenu();
-    for (int id : std::initializer_list<int>{ID_HELP_PAGE, ID_COMMAND_PALETTE, ID_KEYS, 0, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
+    for (int id : std::initializer_list<int>{ID_HELP_PAGE, ID_COMMAND_PALETTE, ID_KEYS, 0, ID_UPDATE_APP, ID_ASSOCIATE, ID_CHECK_UPDATES, ID_OPEN_LOG, 0, ID_ABOUT}) {
         if (id) AppendCommand(helpMenu_, id);
         else AppendMenuW(helpMenu_, MF_SEPARATOR, 0, nullptr);
     }
@@ -481,6 +482,11 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             }
             return 0;
         }
+        if (wp == kUpdateTimer) {
+            KillTimer(hwnd_, wp);
+            MaybeCheckForUpdate();
+            return 0;
+        }
         if (wp == kUiTestTimer) {
             UiTestTick();
             return 0;
@@ -586,6 +592,12 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (static_cast<Out>(wp) == Out::Warning || static_cast<Out>(wp) == Out::Error) Print(*text, static_cast<Out>(wp));
         return 0;
     }
+    case WM_APP_UPDATE_INFO:
+        OnUpdateInfo(lp);
+        return 0;
+    case WM_APP_UPDATE_DONE:
+        OnUpdateDone(lp);
+        return 0;
     case WM_DEBUG_PROFILE: {
         std::unique_ptr<std::vector<ProfileLine>> lines(reinterpret_cast<std::vector<ProfileLine>*>(lp));
         OnProfile(std::move(*lines));
@@ -884,6 +896,15 @@ void MainWindow::OnCommand(int id) {
     }
     case ID_KEYS: EditKeys(); break;
     case ID_HELP_PAGE: ShowHelpPage(); break;
+    case ID_UPDATE_APP:
+        if (pendingRelease_ && MessageBoxW(hwnd_, (std::wstring(Tr(L"Вышла новая версия AsmEditor: ")) + Widen(pendingRelease_->version) +
+                                                   L".\n\n" + Tr(L"Скачать и установить её сейчас?")).c_str(),
+                                           L"AsmEditor", MB_YESNO | MB_ICONQUESTION) == IDYES) {
+            InstallUpdate(*pendingRelease_);
+        } else if (!pendingRelease_) {
+            CheckForAppUpdate(true);
+        }
+        break;
     case ID_ASSOCIATE: ToggleAssociation(); break;
     case ID_CHECK_UPDATES: CheckUpdates(); break;
     case ID_OPEN_LOG: {

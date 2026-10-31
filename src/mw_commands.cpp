@@ -99,6 +99,8 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_GROUP_SUMMARY, L"Сводка по группе (из файлов результатов)…", L""},
         {ID_EXPORT_RESULTS, L"Экспорт результатов задач…", L""},
         {ID_SETTINGS, L"Настройки…", L"Ctrl+Alt+S"},
+        {ID_HELP_PAGE, L"Справка по редактору", L"F1"},
+        {ID_UPDATE_APP, L"Обновить AsmEditor…", L""},
         {ID_KEYS, L"Горячие клавиши…", L""},
         {ID_CHECK_UPDATES, L"Проверить обновления NASM и Scintilla", L""},
         {ID_OPEN_LOG, L"Открыть журнал работы", L""},

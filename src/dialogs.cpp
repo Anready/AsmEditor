@@ -24,6 +24,7 @@ constexpr int kOutput = 117;
 constexpr int kPlatform = 118;
 constexpr int kResetKeys = 119;
 constexpr int kFormatOnSave = 120;
+constexpr int kCheckUpdates = 121;
 
 // Modal dark dialog built from plain child windows (no resource files).
 class Dialog {
@@ -306,7 +307,7 @@ void ShowMessage(HWND owner, const std::wstring& text, bool error) {
 bool ShowSettingsDialog(HWND owner, Settings& s) {
     RegisterDialogClass();
     // Two columns: tools on the left, editor and run options on the right.
-    const int W = 1000, H = 630;
+    const int W = 1000, H = 660;
     const int X0 = 16, F = 150, FW = 480 - F;
     const int X1 = 516, F1 = X1 + 150, FW1 = W - 16 - F1;
     Dialog d(owner, Tr(L"Настройки"), W, H);
@@ -405,6 +406,10 @@ bool ShowSettingsDialog(HWND owner, Settings& s) {
     HWND formatOnSave = d.Button(kFormatOnSave, Tr(L"Форматировать код при сохранении (Ctrl+Alt+L)"), X1, y, W - X1 - 16, 22,
                                  FB_CHECK);
     SendMessageW(formatOnSave, BM_SETCHECK, s.formatOnSave ? BST_CHECKED : BST_UNCHECKED, 0);
+    y += 28;
+    HWND checkUpdates = d.Button(kCheckUpdates, Tr(L"Проверять обновления AsmEditor (раз в день при запуске)"), X1, y,
+                                 W - X1 - 16, 22, FB_CHECK);
+    SendMessageW(checkUpdates, BM_SETCHECK, s.checkUpdates ? BST_CHECKED : BST_UNCHECKED, 0);
     y += 28;
     HWND log = d.Button(kLog, Tr(L"Вести журнал работы (asmeditor.log)"), X1, y, W - X1 - 16, 22, FB_CHECK);
     SendMessageW(log, BM_SETCHECK, s.log ? BST_CHECKED : BST_UNCHECKED, 0);
@@ -533,6 +538,7 @@ bool ShowSettingsDialog(HWND owner, Settings& s) {
         s.stackCheck = checked(stack);
         s.autosave = checked(autosave);
         s.formatOnSave = checked(formatOnSave);
+        s.checkUpdates = checked(checkUpdates);
         s.log = checked(log);
         s.theme = theme;
         s.language = language;

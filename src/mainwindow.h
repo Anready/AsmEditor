@@ -5,6 +5,7 @@
 #include "debugger.h"
 #include "editor.h"
 #include "terminal.h"
+#include "update.h"
 
 #include <condition_variable>
 #include <deque>
@@ -101,7 +102,18 @@ private:
     void QuickOpen();
     void EditKeys();
     void ToggleAssociation();
-    void ShowHelpPage();  // F1: a page with the shortcuts and short examples, opened in the browser  // Help → open .asm files in AsmEditor (HKCU)
+    void ShowHelpPage();
+    // updates of AsmEditor (mw_update.cpp)
+    void MaybeCheckForUpdate();
+    void CheckForAppUpdate(bool interactive);
+    void OnUpdateInfo(LPARAM lp);
+    void InstallUpdate(const Update::Release& r);
+    void OnUpdateDone(LPARAM lp);
+    std::optional<Update::Release> pendingRelease_;  // found by the check at start
+    bool restartAfterClose_ = false;
+public:
+    void RestartIfUpdated();  // after the message loop: start the replaced exe
+private:  // F1: a page with the shortcuts and short examples, opened in the browser  // Help → open .asm files in AsmEditor (HKCU)
 
     // editors
     Editor* Active() const { return active_ >= 0 && active_ < (int)editors_.size() ? editors_[active_].get() : nullptr; }

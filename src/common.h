@@ -113,6 +113,8 @@ struct Settings {
     bool stackCheck = true;       // warn about a misaligned stack / missing shadow space before call
     bool autosave = false;        // save every file when the window loses focus
     bool formatOnSave = false;    // align the columns (Ctrl+Alt+L) of .asm files when saving
+    bool checkUpdates = true;     // look for a new AsmEditor release once a day at start
+    int lastUpdateCheck = 0;      // yyyymmdd
     bool log = false;             // write %APPDATA%\AsmEditor\asmeditor.log
     std::wstring theme = L"dark";
     std::wstring language = L"ru";

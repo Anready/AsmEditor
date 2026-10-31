@@ -377,6 +377,8 @@ void Settings::Load() {
     stackCheck = get(L"editor.stackCheck", L"1") == L"1";
     autosave = get(L"editor.autosave") == L"1";
     formatOnSave = get(L"editor.formatOnSave") == L"1";
+    checkUpdates = get(L"update.check", L"1") == L"1";
+    lastUpdateCheck = _wtoi(get(L"update.last").c_str());
     log = get(L"log") == L"1";
     theme = get(L"ui.theme", L"dark");
     language = get(L"ui.language", L"ru");
@@ -430,6 +432,8 @@ void Settings::Save() const {
         {L"editor.stackCheck", stackCheck ? L"1" : L"0"},
         {L"editor.autosave", autosave ? L"1" : L"0"},
         {L"editor.formatOnSave", formatOnSave ? L"1" : L"0"},
+        {L"update.check", checkUpdates ? L"1" : L"0"},
+        {L"update.last", std::to_wstring(lastUpdateCheck)},
         {L"log", log ? L"1" : L"0"},
         {L"ui.theme", theme},
         {L"ui.language", language},

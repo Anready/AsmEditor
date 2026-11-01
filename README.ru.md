@@ -8,6 +8,18 @@
 Лёгкий нативный редактор и отладчик NASM для Windows: C++20, чистый Win32 и [Scintilla](https://www.scintilla.org/) 5.6.5
 (статически, одним exe). Интерфейс на русском или английском, тёмная и светлая темы.
 
+![Остановка на точке останова: регистры, память и строка исходника](docs/screenshots/debugger.png)
+
+## Установка
+
+Последняя версия — в [**Releases**](https://github.com/Anready/AsmEditor/releases/latest): установщик
+`AsmEditor-setup-<версия>.exe`, портативный `AsmEditor-portable.zip` (настройки рядом с exe) или один `AsmEditor.exe`.
+Через [Scoop](https://scoop.sh):
+`scoop install https://raw.githubusercontent.com/Anready/AsmEditor/main/packaging/scoop/asmeditor.json`
+
+Нужны [NASM](https://www.nasm.us/) и компоновщик: Visual Studio (или Build Tools) с C++ или MinGW `gcc`; редактор
+находит их при первом запуске.
+
 ## Сборка
 
 ```
@@ -72,6 +84,7 @@ build.bat nobuild …    цели без пересборки exe (наприм�
 - Файл изменён другой программой — вкладка перечитывается (или вопрос, если есть несохранённые правки).
   Несохранённые тексты каждые 30 секунд копируются, после сбоя редактор предлагает их восстановить;
   по желанию — автосохранение при переключении в другое окно.
+- Если упадёт сам редактор, он сохранит минидамп и при следующем запуске предложит сообщить о сбое на GitHub.
 
 ### Сборка и запуск
 - Сборка (Ctrl+F9), пересборка (Ctrl+Shift+F9), запуск (Ctrl+F5): `nasm` → `link.exe` (или gcc), многофайловые
@@ -185,6 +198,10 @@ build.bat nobuild …    цели без пересборки exe (наприм�
 | `src/mw_debug.cpp` | панель отладчика, условия, наблюдение, память, подсказки при наведении |
 | `src/mw_navigation.cpp` | определения, использования, переименование, автодополнение, шаблоны, форматирование, поиск |
 | `src/editor.*` | обёртка над Scintilla: стили, лексер со сворачиванием, маркеры, точки останова с условиями |
+| `src/scrollbar.*` | тонкие полосы прокрутки вместо системных и плавная прокрутка (колесо, тачпад, вбок) |
+| `src/sticky.*`, `src/blockguides.*`, `src/changemarks.*` | липкие строки, направляющие блоков, метки изменённых строк |
+| `src/codeinfo.*`, `src/vcs.*` | подсказки в коде и построчное сравнение; файл из последнего коммита git |
+| `src/fileicons.*`, `src/switcher.*`, `src/crash.*` | иконки файлов, переключатель Ctrl+Tab, минидамп при сбое |
 | `src/debugger.*` | отладчик: цикл Debug API, WOW64, точки останова, шаги, DR0–DR3, стек вызовов (`.pdata`), выражения, шаг назад, профилировщик |
 | `src/gdbmi.*` | gdb/MI: разбор записей и сессия gdb в WSL для Linux-программ |
 | `src/uitest.cpp` | автотест интерфейса (`--ui-test`) |
@@ -203,3 +220,5 @@ build.bat nobuild …    цели без пересборки exe (наприм�
 | `tests/tests.cpp` | юнит-тесты и сквозные тесты отладчика (`build.bat test`) |
 | `tools/make-icon.ps1` | рисует `assets/app.ico` |
 | `installer/AsmEditor.iss` | установщик Inno Setup 6 |
+| `packaging/`, `tools/update-packaging.ps1` | манифесты Scoop и winget и их обновление после релиза |
+| `docs/index.html` | страница проекта (GitHub Pages) |

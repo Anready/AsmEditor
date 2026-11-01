@@ -131,6 +131,7 @@ Built on the Win32 Debug API; works with 64‑bit and 32‑bit (WOW64) programs.
 - English and Russian interface (including the instruction reference).
 - Custom keyboard shortcuts, F1 help with all commands and their current keys.
 - Crash recovery for unsaved text, reload on external change, optional autosave.
+- If the editor itself crashes, it writes a minidump and on the next start offers to report the crash on GitHub.
 - Portable mode: put `portable.txt` next to the exe.
 
 ## Building from source
@@ -169,6 +170,9 @@ DbgHelp, gdb/MI for WSL, WinHTTP and BCrypt for updates. No other dependencies.
 | `src/main.cpp` | entry point, message loop |
 | `src/mainwindow.*`, `src/mw_*.cpp` | the main window: layout, commands, files, build, debugging, navigation, updates |
 | `src/editor.*` | Scintilla wrapper: styles, lexer with folding, markers, breakpoints |
+| `src/scrollbar.*`, `src/sticky.*`, `src/blockguides.*`, `src/changemarks.*` | thin scrollbars and smooth scrolling, sticky lines, block guides, the change margin |
+| `src/codeinfo.*`, `src/vcs.*` | inlay hints and the line diff; the file at the last git commit |
+| `src/fileicons.*`, `src/switcher.*`, `src/crash.*` | file icons, the Ctrl+Tab switcher, crash minidumps |
 | `src/debugger.*` | the debugger: Debug API loop, WOW64, breakpoints, stepping, DR0–DR3, unwinding, expressions, step back, profilers |
 | `src/gdbmi.*` | gdb/MI parser and the gdb session in WSL |
 | `src/disasm.cpp` | x86 / x86‑64 disassembler (NASM syntax) |
@@ -181,6 +185,8 @@ DbgHelp, gdb/MI for WSL, WinHTTP and BCrypt for updates. No other dependencies.
 | `src/uitest.cpp` | the UI self-test |
 | `tests/tests.cpp` | unit tests and end-to-end debugger tests |
 | `installer/AsmEditor.iss` | Inno Setup script |
+| `packaging/`, `tools/update-packaging.ps1` | Scoop and winget manifests and their update after a release |
+| `docs/index.html` | the project page (GitHub Pages) |
 
 </details>
 

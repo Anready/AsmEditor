@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: Anready.AsmEditor
+PackageVersion: 1.5.0
+InstallerType: inno
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+UpgradeBehavior: install
+FileExtensions:
+  - asm
+  - inc
+  - nasm
+  - mac
+ProductCode: '{6F4E2B1A-8C3D-4F5E-9A7B-2D1C0E9F8A61}_is1'
+ReleaseDate: 2026-11-01
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/Anready/AsmEditor/releases/download/v1.5.0/AsmEditor-setup-1.5.0.exe
+    InstallerSha256: E015F475CB5FF3BC70B173D4BB664F89562B0046D09618979F138F16BDBB531B
+ManifestType: installer
+ManifestVersion: 1.6.0

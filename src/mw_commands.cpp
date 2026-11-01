@@ -14,6 +14,8 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_OPEN_FILE, L"Открыть файл…", L"Ctrl+O"},
         {ID_OPEN_FOLDER, L"Открыть папку…", L"Ctrl+Shift+O"},
         {ID_QUICK_OPEN, L"Перейти к файлу…", L"Ctrl+P"},
+        {ID_SEARCH_EVERYWHERE, L"Искать везде (Shift дважды)…", L""},
+        {ID_RECENT_FILES, L"Недавние файлы…", L"Ctrl+E"},
         {ID_SAVE, L"Сохранить", L"Ctrl+S"},
         {ID_SAVE_AS, L"Сохранить как…", L"Ctrl+Shift+S"},
         {ID_SAVE_ALL, L"Сохранить всё", L""},
@@ -67,6 +69,7 @@ const std::vector<MainWindow::CommandDef>& MainWindow::Commands() {
         {ID_SHOW_TERMINAL, L"Вкладка «Терминал»", L"Ctrl+`"},
         {ID_SHOW_PROBLEMS, L"Вкладка «Проблемы»", L"Ctrl+Shift+M"},
         {ID_LANGUAGE, L"English / Русский", L""},
+        {ID_INLAY_HINTS, L"Подсказки в коде", L""},
         {ID_BUILD, L"Собрать", L"Ctrl+F9"},
         {ID_REBUILD, L"Пересобрать всё", L"Ctrl+Shift+F9"},
         {ID_RUN, L"Запустить без отладки", L"Ctrl+F5 / Shift+F10"},
@@ -270,11 +273,13 @@ void MainWindow::QuickOpen() {
         return;
     }
     std::vector<std::wstring> items;
+    std::vector<int> icons;
     for (const fs::path& f : files) {
         fs::path rel = !projectRoot_.empty() && IsUnder(f, projectRoot_) ? NormalizePath(f).lexically_relative(NormalizePath(projectRoot_)) : f;
         items.push_back(f.filename().wstring() + L"\t" + rel.parent_path().wstring());
+        icons.push_back(static_cast<int>(FileIcons::KindOf(f)));
     }
-    auto pick = PickFromList(hwnd_, Tr(L"Перейти к файлу"), items, Tr(L"Имя файла…"), true);
+    auto pick = PickFromList(hwnd_, Tr(L"Перейти к файлу"), items, Tr(L"Имя файла…"), icons);
     if (pick) OpenFile(files[*pick]);
 }
 
@@ -487,4 +492,120 @@ void MainWindow::ShowHelpPage() {
     fs::create_directories(file.parent_path(), ec);
     std::ofstream(file, std::ios::binary | std::ios::trunc) << page;
     ShellExecuteW(hwnd_, L"open", file.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+// ---- search everywhere, recent files, switcher ------------------------------------------------------------------
+
+void MainWindow::NoteShown(Editor* ed) {
+    tabMru_.erase(std::remove(tabMru_.begin(), tabMru_.end(), ed->id()), tabMru_.end());
+    tabMru_.insert(tabMru_.begin(), ed->id());
+    if (ed->file().empty()) return;
+    auto& recent = settings_->recentFiles;
+    std::wstring path = ed->file().wstring();
+    recent.erase(std::remove_if(recent.begin(), recent.end(), [&](const std::wstring& r) { return SamePath(r, path); }),
+                 recent.end());
+    recent.insert(recent.begin(), path);
+    if (recent.size() > 50) recent.resize(50);
+}
+
+void MainWindow::SearchEverywhere() {
+    std::vector<std::wstring> items;
+    std::vector<int> icons;
+    std::vector<std::function<void()>> actions;
+    auto folderOf = [&](const fs::path& f) {
+        return !projectRoot_.empty() && IsUnder(f, projectRoot_)
+                   ? NormalizePath(f).lexically_relative(NormalizePath(projectRoot_)).parent_path().wstring()
+                   : f.parent_path().wstring();
+    };
+    std::vector<fs::path> files = ProjectFiles();
+    for (const auto& e : editors_) {
+        if (!e->file().empty() && std::none_of(files.begin(), files.end(), [&](const fs::path& f) { return SamePath(f, e->file()); })) {
+            files.push_back(e->file());
+        }
+    }
+    for (const fs::path& f : files) {
+        items.push_back(f.filename().wstring() + L"\t" + folderOf(f));
+        icons.push_back(static_cast<int>(FileIcons::KindOf(f)));
+        actions.push_back([this, f] { OpenFile(f); });
+    }
+    // Labels, macros and constants of the project's sources (open files as they are in the editor).
+    size_t symbols = 0;
+    for (const fs::path& f : files) {
+        std::wstring ext = Lower(f.extension().wstring());
+        if (ext != L".asm" && ext != L".inc" && ext != L".nasm" && ext != L".s" && ext != L".mac") continue;
+        std::string text;
+        if (int open = FindByPath(f); open >= 0) {
+            text = editors_[open]->Text();
+        } else {
+            std::error_code ec;
+            if (fs::file_size(f, ec) > 2'000'000 || ec) continue;
+            std::ifstream in(f, std::ios::binary);
+            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        for (const Completion::Symbol& s : Completion::ScanSymbols(text)) {
+            if (s.declaration || symbols >= 5000) continue;
+            symbols++;
+            bool macro = s.kind == Completion::Kind::Macro;
+            std::wstring name = Widen(s.name);
+            if (!s.scope.empty() && !s.name.empty() && s.name[0] == '.') name = Widen(s.scope) + name;
+            items.push_back(name + L"\t" + f.filename().wstring() + L":" + std::to_wstring(s.line));
+            icons.push_back(static_cast<int>(macro ? FileIcons::Kind::Macro : FileIcons::Kind::Function));
+            int line = s.line;
+            actions.push_back([this, f, line] { OpenFile(f, line); });
+        }
+    }
+    for (const CommandDef& c : Commands()) {
+        if (c.id == ID_SEARCH_EVERYWHERE) continue;
+        items.push_back(std::wstring(Tr(c.name)) + L"\t" + KeysFor(c.id));
+        icons.push_back(static_cast<int>(FileIcons::Kind::Command));
+        int id = c.id;
+        actions.push_back([this, id] { OnCommand(id); });
+    }
+    auto pick = PickFromList(hwnd_, Tr(L"Искать везде"), items, Tr(L"Файл, метка, макрос или команда…"), icons);
+    if (pick) actions[*pick]();
+}
+
+void MainWindow::RecentFiles() {
+    Editor* current = Current();
+    std::vector<fs::path> files;
+    for (const std::wstring& r : settings_->recentFiles) {
+        if (current && SamePath(r, current->file())) continue;
+        if (FileExists(r)) files.push_back(r);
+    }
+    if (files.empty()) return;
+    std::vector<std::wstring> items;
+    std::vector<int> icons;
+    for (const fs::path& f : files) {
+        fs::path folder = !projectRoot_.empty() && IsUnder(f, projectRoot_)
+                              ? NormalizePath(f).lexically_relative(NormalizePath(projectRoot_)).parent_path()
+                              : f.parent_path();
+        items.push_back(f.filename().wstring() + L"\t" + folder.wstring());
+        icons.push_back(static_cast<int>(FileIcons::KindOf(f)));
+    }
+    auto pick = PickFromList(hwnd_, Tr(L"Недавние файлы"), items, Tr(L"Имя файла…"), icons);
+    if (pick) OpenFile(files[*pick]);
+}
+
+void MainWindow::SwitchTabs(bool forward) {
+    // The open files, most recently shown first; the others after them in tab order.
+    std::vector<int> order;
+    for (int id : tabMru_) {
+        if (FindById(id)) order.push_back(IndexOf(FindById(id)));
+    }
+    for (size_t i = 0; i < editors_.size(); i++) {
+        if (std::find(order.begin(), order.end(), static_cast<int>(i)) == order.end()) order.push_back(static_cast<int>(i));
+    }
+    std::vector<Switcher::Item> items;
+    for (int i : order) {
+        const Editor& e = *editors_[i];
+        fs::path folder = e.file().empty() ? fs::path()
+                          : !projectRoot_.empty() && IsUnder(e.file(), projectRoot_)
+                              ? NormalizePath(e.file()).lexically_relative(NormalizePath(projectRoot_)).parent_path()
+                              : e.file().parent_path();
+        items.push_back({(e.Modified() ? L"● " : L"") + e.Title(), folder.wstring(),
+                         static_cast<int>(FileIcons::KindOf(e.file().empty() ? fs::path(e.Title()) : e.file()))});
+    }
+    int n = static_cast<int>(items.size());
+    auto pick = Switcher::Run(hwnd_, Tr(L"Открытые файлы"), items, forward ? 1 % n : n - 1);
+    if (pick && *pick < n) Activate(order[*pick]);
 }

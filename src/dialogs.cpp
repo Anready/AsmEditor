@@ -606,13 +606,14 @@ LRESULT CALLBACK FilterEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_
 }
 
 std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std::vector<std::wstring>& items,
-                                const std::wstring& placeholder, bool fileIcons) {
+                                const std::wstring& placeholder, const std::vector<int>& icons) {
     RegisterDialogClass();
     Dialog d(owner, title, 640, 440);
     HWND filter = d.Edit(L"", 16, 14, 608, 28);
     SendMessageW(filter, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(placeholder.c_str()));
-    HWND list = d.List(16, 52, 608, 330, fileIcons);
-    if (fileIcons) {  // the file's icon, its name, and the folder dimmed
+    HWND list = d.List(16, 52, 608, 330, !icons.empty());
+    std::vector<int> shown;
+    if (!icons.empty()) {  // the item's icon, its text, and the detail dimmed
         d.onDrawItem = [&](const DRAWITEMSTRUCT& di) {
             if (di.itemID == static_cast<UINT>(-1)) return;
             HDC dc = di.hDC;
@@ -624,7 +625,11 @@ std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std
             size_t tab = text.find(L'\t');
             std::wstring name = text.substr(0, tab), detail = tab == std::wstring::npos ? L"" : text.substr(tab + 1);
             int icon = d.S(16);
-            FileIcons::Draw(dc, r.left + d.S(8), (r.top + r.bottom - icon) / 2, icon, FileIcons::KindOf(name));
+            size_t item = di.itemID < shown.size() ? static_cast<size_t>(shown[di.itemID]) : icons.size();
+            if (item < icons.size() && icons[item] >= 0) {
+                FileIcons::Draw(dc, r.left + d.S(8), (r.top + r.bottom - icon) / 2, icon,
+                                static_cast<FileIcons::Kind>(icons[item]));
+            }
             HGDIOBJ old = SelectObject(dc, d.font());
             SetBkMode(dc, TRANSPARENT);
             int column = r.left + (r.right - r.left) * 55 / 100;
@@ -639,7 +644,6 @@ std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std
     d.Button(IDOK, L"OK", 432, 396, 92, 30, FB_PRIMARY);
     d.Button(IDCANCEL, Tr(L"Отмена"), 532, 396, 92, 30);
     SetWindowSubclass(filter, FilterEditProc, 1, reinterpret_cast<DWORD_PTR>(list));
-    std::vector<int> shown;
     auto refill = [&] {
         std::wstring f = Trim(GetText(filter));
         std::vector<std::pair<int, int>> ranked;  // score, index

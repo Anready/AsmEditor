@@ -14,6 +14,14 @@ void AttachLater(HWND hwnd);
 // Which bars a Scintilla window shows (both by default): the main editor's vertical one is its mark bar, the
 // debugger's views do not scroll sideways.
 void Show(HWND hwnd, bool vertical, bool horizontal);
+// The first visible line of a Scintilla window, with the part of a line while it scrolls smoothly (for thumbs).
+double Position(HWND hwnd);
+// Sent to the parent of a Scintilla window (wp = the window) at each frame of smooth scrolling.
+UINT MovedMessage();
+// While a Scintilla window scrolls smoothly it is moved up by part of a line: where its visible part starts.
+int TopOffset(HWND hwnd);
+// Lines the window is taller by while it glides (Scintilla counts them as on screen; the scroll limit must not).
+int ExtraLines(HWND hwnd);
 // The width of the vertical bar over the right edge of the window while it is shown, else 0.
 int VerticalWidth(HWND hwnd);
 // Something the bars show may have changed out of sight (text added below the screen): they update a moment later.

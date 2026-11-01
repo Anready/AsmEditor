@@ -394,10 +394,12 @@ void Settings::Load() {
     programEncoding = get(L"run.encoding", L"UTF-8");
     externalConsole = get(L"run.externalConsole") == L"1";
     liveCheck = get(L"editor.liveCheck", L"1") == L"1";
+    inlayHints = get(L"editor.inlayHints", L"1") == L"1";
     fontSize = std::clamp(getInt(L"editor.fontSize", 11), 6, 40);
     recent = Split(get(L"recentProjects"), L'|');
     lastProject = get(L"lastProject");
     sessionFiles = Split(get(L"session.files"), L'|');
+    recentFiles = Split(get(L"recentFiles"), L'|');
     window = {getInt(L"window.x", CW_USEDEFAULT), getInt(L"window.y", CW_USEDEFAULT),
               getInt(L"window.w", 0), getInt(L"window.h", 0)};
     maximized = get(L"window.maximized") == L"1";
@@ -418,10 +420,12 @@ void Settings::Save() const {
         {L"run.encoding", programEncoding},
         {L"run.externalConsole", externalConsole ? L"1" : L"0"},
         {L"editor.liveCheck", liveCheck ? L"1" : L"0"},
+        {L"editor.inlayHints", inlayHints ? L"1" : L"0"},
         {L"editor.fontSize", std::to_wstring(fontSize)},
         {L"recentProjects", Join(recent, L"|")},
         {L"lastProject", lastProject},
         {L"session.files", Join(sessionFiles, L"|")},
+        {L"recentFiles", Join(recentFiles, L"|")},
         {L"window.x", std::to_wstring(window.left)},
         {L"window.y", std::to_wstring(window.top)},
         {L"window.w", std::to_wstring(window.right)},

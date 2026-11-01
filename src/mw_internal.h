@@ -4,10 +4,16 @@
 
 #include "mainwindow.h"
 #include "asmtools.h"
+#include "blockguides.h"
+#include "changemarks.h"
+#include "codeinfo.h"
+#include "crash.h"
 #include "fileicons.h"
 #include "scrollbar.h"
 #include "sticky.h"
+#include "switcher.h"
 #include "tip.h"
+#include "vcs.h"
 
 #include <cmath>
 #include <fstream>
@@ -40,7 +46,7 @@ enum : int {
     ID_TREE_REVEAL, ID_TREE_EXCLUDE,
     ID_TREE_CTRL = 601, ID_MEM_EXPR = 603, ID_WATCH_EXPR = 604, ID_OUTLINE_CTRL = 605,
     ID_THEME = 700,  // + index of Theme::All()
-    ID_SPLIT_DOWN = 800, ID_DETACH_TAB, ID_DETACH_DEBUG,
+    ID_SPLIT_DOWN = 800, ID_DETACH_TAB, ID_DETACH_DEBUG, ID_INLAY_HINTS, ID_SEARCH_EVERYWHERE, ID_RECENT_FILES,
 };
 
 // Styles of the debug panel views.
@@ -62,6 +68,7 @@ enum : UINT {
     WM_APP_SOLUTION_DONE,         // lp = SolutionDone*
     WM_APP_UPDATE_INFO,           // lp = UpdateInfo* (mw_update.cpp)
     WM_APP_UPDATE_DONE,           // lp = UpdateDone*
+    WM_APP_BASELINE,              // wp = editor id, lp = std::string* (the file at HEAD)
 };
 
 constexpr UINT_PTR kCheckTimerBase = 1000;
@@ -75,6 +82,7 @@ constexpr UINT_PTR kUiTestTimer = 8;
 constexpr UINT_PTR kUpdateTimer = 9;      // the update check a few seconds after start
 constexpr UINT_PTR kMenuHoverTimer = 10;  // opens the menu title under the mouse
 constexpr UINT_PTR kMenuLeaveTimer = 11;  // closes a hover-opened menu once the mouse leaves it
+constexpr UINT_PTR kInlayTimer = 12;      // inlay hints and changed-line marks after edits
 
 struct BuildDone {
     BuildResult result;

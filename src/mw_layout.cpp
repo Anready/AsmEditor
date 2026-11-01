@@ -761,11 +761,10 @@ void MainWindow::PaintWelcome(HDC dc) {
 void MainWindow::PaintStatus(HDC dc) {
     FillRectColor(dc, rcStatus_, Theme::FrameBg);
     SelectObject(dc, uiFont_);
-    RECT left = rcStatus_;
-    left.left += S(14);
-    DrawTextColor(dc, toolStatus_, left, toolStatusWarn_ ? Theme::Warning : Theme::Muted, DT_SINGLELINE | DT_VCENTER);
 
+    // Right: the toolchain, problems, position, encoding, line ends.
     std::vector<std::pair<std::wstring, COLORREF>> parts;
+    if (!toolStatus_.empty()) parts.push_back({toolStatus_, toolStatusWarn_ ? Theme::Warning : Theme::Muted});
     Editor* ed = Current();
     if (ed) {
         int errors = ed->Count(Severity::Error), warnings = ed->Count(Severity::Warning);
@@ -784,6 +783,114 @@ void MainWindow::PaintStatus(HDC dc) {
         DrawTextColor(dc, it->first, {x - w, rcStatus_.top, x, rcStatus_.bottom}, it->second, DT_SINGLELINE | DT_VCENTER);
         x -= w + S(20);
     }
+
+    // Left: the breadcrumbs; when they do not fit, the outer ones give way to "…".
+    crumbs_ = Breadcrumbs(ed);
+    int iconSize = S(16), sep = TextWidth(dc, L"  ›  "), avail = x - S(14) - S(10);
+    auto width = [&](const Crumb& c) { return TextWidth(dc, c.text) + (c.file ? iconSize + S(4) : 0) + S(8); };
+    auto total = [&] {
+        int t = 0;
+        for (const Crumb& c : crumbs_) t += width(c) + sep;
+        return t - sep;
+    };
+    bool cut = false;
+    while (crumbs_.size() > 1 && total() > avail) {
+        crumbs_.erase(crumbs_.begin());
+        cut = true;
+    }
+    if (cut) crumbs_.insert(crumbs_.begin(), Crumb{L"…"});
+    int cx = rcStatus_.left + S(10);
+    for (size_t i = 0; i < crumbs_.size(); i++) {
+        Crumb& c = crumbs_[i];
+        int w = width(c);
+        c.rc = {cx, rcStatus_.top + S(3), cx + w, rcStatus_.bottom - S(3)};
+        if (static_cast<int>(i) == hoverCrumb_ && c.line >= 0) FillRound(dc, c.rc, S(4), Theme::Hover);
+        int tx = cx + S(4);
+        if (c.file) {
+            FileIcons::Draw(dc, tx, (rcStatus_.top + rcStatus_.bottom - iconSize) / 2, iconSize,
+                            FileIcons::KindOf(ed && !ed->file().empty() ? ed->file() : fs::path(c.text)));
+            tx += iconSize + S(4);
+        }
+        bool last = i + 1 == crumbs_.size();
+        DrawTextColor(dc, c.text, {tx, rcStatus_.top, cx + w, rcStatus_.bottom}, last ? Theme::Text : Theme::Muted,
+                      DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        cx += w;
+        if (!last) {
+            DrawTextColor(dc, L"  ›  ", {cx, rcStatus_.top, cx + sep, rcStatus_.bottom}, Theme::Dim, DT_SINGLELINE | DT_VCENTER);
+            cx += sep;
+        }
+    }
+}
+
+int MainWindow::CrumbAt(int x, int y) const {
+    for (size_t i = 0; i < crumbs_.size(); i++) {
+        if (crumbs_[i].line >= 0 && Contains(crumbs_[i].rc, x, y)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::vector<MainWindow::Crumb> MainWindow::Breadcrumbs(Editor* ed) const {
+    std::vector<Crumb> out;
+    if (!ed) return out;
+    if (!ed->file().empty() && !projectRoot_.empty() && IsUnder(ed->file(), projectRoot_)) {
+        out.push_back({projectRoot_.filename().wstring()});
+        fs::path rel = NormalizePath(ed->file()).lexically_relative(NormalizePath(projectRoot_)).parent_path();
+        for (const fs::path& part : rel) {
+            if (!part.empty() && part != L".") out.push_back({part.wstring()});
+        }
+    }
+    out.push_back({ed->Title(), -1, true});
+
+    // What the caret is in: the fold parents (global label, %macro/%if/%rep), the section above, the local label.
+    int caret = ed->CaretLine() - 1;
+    std::vector<int> lines;
+    for (Sci_Position p = caret; (p = ed->Call(SCI_GETFOLDPARENT, p)) >= 0 && lines.size() < 16;) lines.push_back(static_cast<int>(p));
+    auto firstWord = [&](int line) {
+        std::string t = ed->LineText(line);
+        size_t a = t.find_first_not_of(" \t[");
+        if (a == std::string::npos) return std::string();
+        size_t b = t.find_first_of(" \t:;]", a);
+        std::string w = t.substr(a, b == std::string::npos ? std::string::npos : b - a);
+        for (char& c : w) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        return w;
+    };
+    static const std::set<std::string> kSections = {"section", "segment", ".section", ".text", ".data", ".bss", ".rodata", ".code"};
+    for (int l = caret; l >= 0 && caret - l < 20000; l--) {
+        if (kSections.count(firstWord(l))) {
+            lines.push_back(l);
+            break;
+        }
+    }
+    int global = -1;
+    for (int l : lines) {
+        std::string w = firstWord(l);
+        if (!w.empty() && w[0] != '%' && w[0] != '.' && !kSections.count(w)) global = std::max(global, l);
+    }
+    if (global >= 0) {
+        for (int l = caret; l > global; l--) {
+            std::string t = ed->LineText(l);
+            if (!t.empty() && t[0] == '.' && t.find(':') != std::string::npos) {
+                lines.push_back(l);
+                break;
+            }
+        }
+    }
+    std::sort(lines.begin(), lines.end());
+    lines.erase(std::unique(lines.begin(), lines.end()), lines.end());
+    for (int l : lines) {
+        std::string t = ed->LineText(l);
+        t = t.substr(0, t.find(';'));
+        std::string text;
+        for (char c : t) {
+            if (c == '\t' || c == '\r' || c == '\n') c = ' ';
+            if (c == ' ' && (text.empty() || text.back() == ' ')) continue;
+            text += c;
+        }
+        while (!text.empty() && (text.back() == ' ' || text.back() == ':')) text.pop_back();
+        if (text.size() > 40) text = text.substr(0, 39) + "…";
+        if (!text.empty()) out.push_back({Widen(text), l});
+    }
+    return out;
 }
 
 void MainWindow::OnMouseMove(int x, int y) {
@@ -802,6 +909,10 @@ void MainWindow::OnMouseMove(int x, int y) {
     if (drag_ == Drag::Tab) {
         TabDragMove(hwnd_, x, y);
         return;
+    }
+    if (int crumb = CrumbAt(x, y); crumb != hoverCrumb_) {
+        hoverCrumb_ = crumb;
+        InvalidateRect(hwnd_, &rcStatus_, FALSE);
     }
     int tool = -1, close = -1, link = -1, pane = -1, leftTab = -1;
     for (size_t i = 0; i < tools_.size(); i++) if (Contains(tools_[i].rc, x, y)) tool = (int)i;
@@ -1080,11 +1191,11 @@ RECT MainWindow::MarkBarThumb(HWND bar, Editor* ed) const {
     RECT rc;
     GetClientRect(bar, &rc);
     int64_t total = std::max<int64_t>(1, ed->ScrollLines()), shown = ed->Call(SCI_LINESONSCREEN);
-    int64_t top = ed->Call(SCI_GETFIRSTVISIBLELINE);
+    double top = ScrollBars::Position(ed->hwnd());  // with the part of a line while scrolling smoothly
     if (shown >= total) return {};  // everything fits: no thumb
     int h = rc.bottom, minH = S(24);
     int thumbH = std::max<int>(minH, static_cast<int>(shown * h / total));
-    int y = static_cast<int>(top * (h - thumbH) / std::max<int64_t>(1, total - shown));
+    int y = static_cast<int>(std::lround(top * (h - thumbH) / static_cast<double>(std::max<int64_t>(1, total - shown))));
     return {S(2), y, rc.right - S(2), y + thumbH};
 }
 
@@ -1157,6 +1268,18 @@ void MainWindow::PaintMarkBar(HWND bar, HDC dc) {
         }
         Sci_Position exec = ed->Call(SCI_MARKERNEXT, 0, 1 << Editor::kMarkerExecArrow);
         if (exec >= 0) mark(static_cast<int>(exec), Theme::ExecArrow, S(2), w - S(2));
+        // Changed lines (as in the change margin): a thin stripe on the left.
+        const std::pair<int, COLORREF> changes[] = {{Editor::kMarkerAdded, Theme::Success},
+                                                    {Editor::kMarkerModified, Theme::Link},
+                                                    {Editor::kMarkerDeleted, Theme::Muted}};
+        for (auto [marker, color] : changes) {
+            int count = 0;
+            sptr_t mask = sptr_t{1} << marker;
+            for (Sci_Position l = ed->Call(SCI_MARKERNEXT, 0, mask); l >= 0 && count < 5000;
+                 l = ed->Call(SCI_MARKERNEXT, l + 1, mask), count++) {
+                mark(static_cast<int>(l), Theme::Blend(Theme::EditorBg, color, 70), 0, S(2));
+            }
+        }
     }
     BitBlt(dc, 0, 0, rc.right, rc.bottom, mem, 0, 0, SRCCOPY);
     SelectObject(mem, old);

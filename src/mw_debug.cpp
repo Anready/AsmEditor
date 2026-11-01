@@ -127,6 +127,29 @@ void MainWindow::OnDebugStopped(std::unique_ptr<DebugStop> stop) {
             };
             std::string note = Analyzer::ExplainLine(ed->LineText(stop->location.line - 1), eval, stop->context.EFlags);
             if (!note.empty()) ed->SetLineNotes({{stop->location.line, " ▸ " + note + " "}});
+            // IntelliJ-style values: the registers each line of the function so far uses, with their values now.
+            if (settings_->inlayHints) {
+                int cur = stop->location.line;
+                Sci_Position parent = ed->Call(SCI_GETFOLDPARENT, cur - 1);
+                int from = std::max({1, cur - 40, parent >= 0 ? static_cast<int>(parent) + 1 : cur - 15});
+                std::map<int, std::string> values;
+                for (int l = from; l <= cur; l++) {
+                    std::string text;
+                    int shown = 0;
+                    for (const std::string& reg : Inlay::Registers(ed->LineText(l - 1))) {
+                        if (shown == 3) break;
+                        auto v = eval(reg);
+                        if (!v) continue;
+                        char buf[48];
+                        if (*v < 100000) sprintf_s(buf, "%s = %llu", reg.c_str(), static_cast<unsigned long long>(*v));
+                        else sprintf_s(buf, "%s = 0x%llX", reg.c_str(), static_cast<unsigned long long>(*v));
+                        text += (text.empty() ? "" : ", ") + std::string(buf);
+                        shown++;
+                    }
+                    if (!text.empty()) values[l] = text;
+                }
+                ed->SetNotes(Editor::Layer::Values, values);
+            }
         }
     }
     frames_ = debugger_->CallStack();
@@ -163,6 +186,7 @@ void MainWindow::OnDebugExited(DWORD code, const std::string& stats) {
 void MainWindow::ClearExecutionLine() {
     for (auto& e : editors_) {
         e->SetExecutionLine(0);
+        e->SetNotes(Editor::Layer::Values, {});
         if (profile_.empty()) e->SetLineNotes({});  // the "explain the line" note
         else ShowProfileNotes(e.get());
     }

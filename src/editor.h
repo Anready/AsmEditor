@@ -1,5 +1,6 @@
 #pragma once
 
+#include "codeinfo.h"
 #include "common.h"
 
 #include <set>
@@ -14,17 +15,23 @@ public:
     static constexpr int kIndicatorOccurrence = 12;  // every use of the word under the caret
     static constexpr int kIndicatorPair = 13;        // matching %if/%endif, %macro/%endmacro
     static constexpr int kIndicatorSearch = 14;      // hits of "find in files" in an open file
-    static constexpr int kMarkerError = 1;        // line background
-    static constexpr int kMarkerWarning = 2;      // line background
+    static constexpr int kMarkerBreakpointLine = 0;  // red line background of breakpoints (under the execution line)
+    static constexpr int kMarkerError = 1;        // lines with problems (no background: the squiggles show them)
+    static constexpr int kMarkerWarning = 2;
     static constexpr int kMarkerBreakpoint = 3;   // red dot in the margin
     static constexpr int kMarkerExecArrow = 4;    // current execution line (margin)
     static constexpr int kMarkerExecLine = 5;     // current execution line (background)
     static constexpr int kMarkerConditional = 6;  // breakpoint with a condition (orange dot)
     static constexpr int kStyleNote = 70;         // end-of-line notes
+    static constexpr int kStyleHint = 71;         // inlay hints and values at the end of lines
     static constexpr int kMarkerLogpoint = 7;     // breakpoint that only prints ("log: ...", orange square)
     static bool IsLogpoint(const std::string& condition) { return condition.find("log:") != std::string::npos; }
+    static constexpr int kMarkerAdded = 11;       // lines changed since the last commit (or save): change margin
+    static constexpr int kMarkerModified = 12;
+    static constexpr int kMarkerDeleted = 13;
     static constexpr int kFoldMargin = 2;
-    static constexpr int kGapMargin = 3;
+    static constexpr int kChangeMargin = 3;
+    static constexpr int kGapMargin = 4;
 
     Editor(HWND parent, int fontSize);
     ~Editor();
@@ -84,8 +91,18 @@ public:
     void SetBreakpointCondition(int line, const std::string& condition);
     bool HasBreakpoint(int line) const;
     void SetExecutionLine(int line);    // 0 clears
-    // Grey notes after the end of lines (profiler results): 1-based line -> text. An empty map clears them.
-    void SetLineNotes(const std::map<int, std::string>& notes);
+    // Text after the end of lines, in layers shown side by side: inlay hints (argument names, operand sizes), the
+    // values of registers while debugging, and boxed notes (profiler results, the explained line).
+    // 1-based line -> text; an empty map clears the layer.
+    enum class Layer { Hints, Values, Notes };
+    void SetNotes(Layer layer, const std::map<int, std::string>& lines);
+    void SetLineNotes(const std::map<int, std::string>& notes) { SetNotes(Layer::Notes, notes); }
+    int hintsVersion = -1;  // version() the inlay hints were made for
+
+    // The text the change margin compares with: the last commit (git) or, without one, the text as loaded or saved.
+    std::string baseline;
+    bool baselineSet = false, baselineGit = false;
+    int changesVersion = -1;  // version() the marks were made for (ChangeMarks::Show)
     std::string WordAt(Sci_Position pos) const;
     bool WordRange(Sci_Position pos, Sci_Position& start, Sci_Position& end) const;
 
@@ -106,8 +123,10 @@ private:
     std::map<int, std::vector<Diagnostic>> diagnostics_;
     std::map<int, std::string> conditions_;  // marker handle -> condition of a conditional breakpoint
     std::vector<Token> tokens_;
+    std::map<int, std::string> layers_[3];
 
     void RegisterCompletionIcons();
     void SelectedLines(Sci_Position& first, Sci_Position& last) const;
     void RememberDiskTime();
+    void RefreshBreakpointLines();  // the line background follows the breakpoint markers
 };

@@ -24,6 +24,7 @@ public:
     bool PreTranslate(MSG& msg);
     void OpenPath(const fs::path& path);
     void RestoreSession();
+    void OfferCrashReport();  // after a crash of the previous run: report it on GitHub?
     void StartUiTest(const fs::path& out);  // --ui-test: see uitest.cpp
 
 private:
@@ -79,6 +80,17 @@ private:
     bool MouseInToolMenu() const;
     static LRESULT CALLBACK MenuFilter(int code, WPARAM wp, LPARAM lp);
     void PaintStatus(HDC dc);
+    // The status bar's navigation path, as in IntelliJ: project › folders › file › section › label › local label.
+    struct Crumb {
+        std::wstring text;
+        int line = -1;      // 0-based line it goes to, -1: none
+        bool file = false;  // drawn with the file's icon
+        RECT rc{};
+    };
+    std::vector<Crumb> Breadcrumbs(Editor* ed) const;
+    std::vector<Crumb> crumbs_;
+    int hoverCrumb_ = -1;
+    int CrumbAt(int x, int y) const;
     void PaintWelcome(HDC dc);
     void PaintHeaderTabs(HDC dc, const RECT& area, const std::vector<std::wstring>& titles, int active,
                          std::vector<RECT>& rects, int hover);
@@ -256,6 +268,21 @@ private:  // F1: a page with the shortcuts and short examples, opened in the bro
     std::vector<fs::path> ProjectFiles();  // every file of the project tree
     void ShowLeftTab(LeftTab tab);
     void RefreshOutline();
+    void UpdateInlayHints(Editor* ed);  // when its text changed since (or the setting)
+    // Search Everywhere (Shift twice): files, symbols of the project and commands in one list.
+    void SearchEverywhere();
+    void RecentFiles();               // Ctrl+E: the files shown lately, the current one left out
+    void SwitchTabs(bool forward);    // Ctrl+Tab: the open files in the order they were used
+    void NoteShown(Editor* ed);       // keeps that order and the recent files
+    std::vector<int> tabMru_;         // editor ids, most recently shown first
+    bool shiftAlone_ = false;         // Shift is down and nothing else was pressed with it
+    DWORD lastShiftTap_ = 0;
+    // When the text last scrolled: hover cards wait until scrolling stops (the pointer rests over the text while the
+    // wheel turns, and a card made and hidden at every pause made scrolling over many problems stutter).
+    DWORD lastScrollTick_ = 0;
+    // Change margin: the baseline from git (in the background), else the text as loaded/saved; the marks.
+    void RequestBaseline(Editor* ed);
+    void UpdateChangeMarks(Editor* ed);
     // external changes, autosave and crash recovery
     void CheckExternalChanges();
     fs::path BackupDir() const;

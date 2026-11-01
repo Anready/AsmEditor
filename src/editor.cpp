@@ -44,13 +44,18 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_SETSCROLLWIDTHTRACKING, 1);
     Call(SCI_SETSCROLLWIDTH, 1);
     Call(SCI_SETMOUSEDWELLTIME, 450);
-    Call(SCI_SETMARGINS, 4);
+    Call(SCI_SETMARGINS, 5);
     Call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_SYMBOL);  // breakpoints and the execution arrow
     Call(SCI_SETMARGINMASKN, 0, (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerLogpoint) | (1 << kMarkerExecArrow));
     Call(SCI_SETMARGINSENSITIVEN, 0, 1);
     Call(SCI_SETMARGINCURSORN, 0, SC_CURSORARROW);
     Call(SCI_SETMARGINTYPEN, 1, SC_MARGIN_NUMBER);
     Call(SCI_SETMARGINMASKN, 1, 0);
+    // Added / changed / deleted lines (files only): the markers only record them, changemarks.cpp draws the margin.
+    Call(SCI_SETMARGINTYPEN, kChangeMargin, SC_MARGIN_SYMBOL);
+    Call(SCI_SETMARGINMASKN, kChangeMargin, 0);
+    Call(SCI_SETMARGINWIDTHN, kChangeMargin, 0);
+    for (int m : {kMarkerAdded, kMarkerModified, kMarkerDeleted}) Call(SCI_MARKERDEFINE, m, SC_MARK_EMPTY);
     Call(SCI_SETMARGINTYPEN, kGapMargin, SC_MARGIN_COLOUR);
     Call(SCI_SETMARGINMASKN, kGapMargin, 0);
     Call(SCI_SETMARGINWIDTHN, kGapMargin, 8);
@@ -61,16 +66,17 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_USEPOPUP, SC_POPUP_TEXT);
     Call(SCI_ASSIGNCMDKEY, 'D' + (SCMOD_CTRL << 16), SCI_SELECTIONDUPLICATE);
 
-    Call(SCI_MARKERDEFINE, kMarkerError, SC_MARK_BACKGROUND);
-    Call(SCI_MARKERDEFINE, kMarkerWarning, SC_MARK_BACKGROUND);
+    Call(SCI_MARKERDEFINE, kMarkerError, SC_MARK_EMPTY);
+    Call(SCI_MARKERDEFINE, kMarkerWarning, SC_MARK_EMPTY);
+    Call(SCI_MARKERDEFINE, kMarkerBreakpointLine, SC_MARK_BACKGROUND);
     Call(SCI_MARKERDEFINE, kMarkerBreakpoint, SC_MARK_CIRCLE);
     Call(SCI_MARKERDEFINE, kMarkerConditional, SC_MARK_CIRCLE);
     Call(SCI_MARKERDEFINE, kMarkerLogpoint, SC_MARK_SMALLRECT);
     Call(SCI_MARKERDEFINE, kMarkerExecArrow, SC_MARK_SHORTARROW);
     Call(SCI_MARKERDEFINE, kMarkerExecLine, SC_MARK_BACKGROUND);
 
-    Call(SCI_INDICSETSTYLE, kIndicatorError, INDIC_SQUIGGLEPIXMAP);
-    Call(SCI_INDICSETSTYLE, kIndicatorWarning, INDIC_SQUIGGLEPIXMAP);
+    Call(SCI_INDICSETSTYLE, kIndicatorError, INDIC_SQUIGGLE);
+    Call(SCI_INDICSETSTYLE, kIndicatorWarning, INDIC_SQUIGGLE);
     Call(SCI_INDICSETSTYLE, kIndicatorFind, INDIC_ROUNDBOX);
     Call(SCI_INDICSETALPHA, kIndicatorFind, 60);
     Call(SCI_INDICSETSTYLE, kIndicatorLink, INDIC_PLAIN);
@@ -176,12 +182,15 @@ void Editor::ApplyStyles(int fontSize) {
     Call(SCI_STYLESETBACK, kStyleNote, Theme::Blend(Theme::EditorBg, Theme::Muted, 10));
     Call(SCI_STYLESETITALIC, kStyleNote, 1);
     Call(SCI_STYLESETSIZE, kStyleNote, std::max(6, fontSize - 1));
+    Call(SCI_STYLESETFORE, kStyleHint, Theme::Blend(Theme::EditorBg, Theme::Muted, 75));
+    Call(SCI_STYLESETBACK, kStyleHint, Theme::EditorBg);
+    Call(SCI_STYLESETITALIC, kStyleHint, 1);
+    Call(SCI_STYLESETSIZE, kStyleHint, std::max(6, fontSize - 1));
     Call(SCI_CALLTIPSETBACK, Theme::CallTipBg);
     Call(SCI_CALLTIPSETFORE, Theme::Bright);
     Call(SCI_CALLTIPSETFOREHLT, Theme::Link);  // syntax line of instruction hints
 
-    Call(SCI_MARKERSETBACK, kMarkerError, Theme::ErrorLine);
-    Call(SCI_MARKERSETBACK, kMarkerWarning, Theme::WarningLine);
+    Call(SCI_MARKERSETBACK, kMarkerBreakpointLine, Theme::ErrorLine);
     Call(SCI_MARKERSETFORE, kMarkerBreakpoint, Theme::Breakpoint);
     Call(SCI_MARKERSETBACK, kMarkerBreakpoint, Theme::Breakpoint);
     Call(SCI_MARKERSETFORE, kMarkerConditional, Theme::ConditionalBreakpoint);
@@ -235,7 +244,7 @@ void Editor::ApplyStyles(int fontSize) {
 std::wstring Editor::Title() const {
     if (!file_.empty()) return file_.filename().wstring();
     if (!untitled_) const_cast<Editor*>(this)->untitled_ = g_nextUntitled++;
-    return Tr(L"Безымянный-") + std::to_wstring(untitled_) + L".asm";
+    return Tr(L"Ð‘ÐµÐ·Ñ‹Ð¼ÑÐ½Ð½Ñ‹Ð¹-") + std::to_wstring(untitled_) + L".asm";
 }
 
 std::string Editor::Text() const {
@@ -263,7 +272,7 @@ int Editor::CaretColumn() const {
 bool Editor::Load(const fs::path& path, std::wstring& error) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        error = Tr(L"не удалось открыть файл");
+        error = Tr(L"Ð½Ðµ ÑƒÐ´Ð°Ð»Ð¾ÑÑŒ Ð¾Ñ‚ÐºÑ€Ñ‹Ñ‚ÑŒ Ñ„Ð°Ð¹Ð»");
         return false;
     }
     std::stringstream ss;
@@ -327,13 +336,13 @@ bool Editor::Save(const fs::path& path, std::wstring& error) {
     if (ansi_) data = Narrow(Widen(data), 1251);
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
-        error = Tr(L"не удалось записать файл");
+        error = Tr(L"Ð½Ðµ ÑƒÐ´Ð°Ð»Ð¾ÑÑŒ Ð·Ð°Ð¿Ð¸ÑÐ°Ñ‚ÑŒ Ñ„Ð°Ð¹Ð»");
         return false;
     }
     if (bom_) out.write("\xEF\xBB\xBF", 3);
     out.write(data.data(), (std::streamsize)data.size());
     if (!out) {
-        error = Tr(L"ошибка записи");
+        error = Tr(L"Ð¾ÑˆÐ¸Ð±ÐºÐ° Ð·Ð°Ð¿Ð¸ÑÐ¸");
         return false;
     }
     out.close();
@@ -459,7 +468,7 @@ void Editor::ShowDiagnosticTip(Sci_Position pos) {
     std::wstring tip;
     for (const Diagnostic& d : *diags) {
         if (!tip.empty()) tip += L"\n";
-        tip += std::wstring(d.severity == Severity::Error ? Tr(L"Ошибка: ") : Tr(L"Предупреждение: ")) + d.message;
+        tip += std::wstring(d.severity == Severity::Error ? Tr(L"ÐžÑˆÐ¸Ð±ÐºÐ°: ") : Tr(L"ÐŸÑ€ÐµÐ´ÑƒÐ¿Ñ€ÐµÐ¶Ð´ÐµÐ½Ð¸Ðµ: ")) + d.message;
     }
     ShowTip(pos, Narrow(tip));
 }
@@ -470,7 +479,9 @@ Sci_Position Editor::ScrollLines() const {
 }
 
 void Editor::LimitScroll() const {
-    Sci_Position maxTop = std::max<Sci_Position>(0, ScrollLines() - Call(SCI_LINESONSCREEN));
+    // Lines on screen without the one the window may be taller by while it scrolls smoothly (scrollbar.cpp).
+    Sci_Position shown = Call(SCI_LINESONSCREEN) - ScrollBars::ExtraLines(hwnd_);
+    Sci_Position maxTop = std::max<Sci_Position>(0, ScrollLines() - shown);
     if (Call(SCI_GETFIRSTVISIBLELINE) > maxTop) Call(SCI_SETFIRSTVISIBLELINE, maxTop);
 }
 
@@ -578,6 +589,15 @@ void Editor::SetBreakpoints(const std::map<int, std::string>& lines) {
             conditions_[handle] = condition;
         }
     }
+    RefreshBreakpointLines();
+}
+
+void Editor::RefreshBreakpointLines() {
+    Call(SCI_MARKERDELETEALL, kMarkerBreakpointLine);
+    int mask = (1 << kMarkerBreakpoint) | (1 << kMarkerConditional) | (1 << kMarkerLogpoint);
+    for (Sci_Position l = Call(SCI_MARKERNEXT, 0, mask); l >= 0; l = Call(SCI_MARKERNEXT, l + 1, mask)) {
+        Call(SCI_MARKERADD, l, kMarkerBreakpointLine);
+    }
 }
 
 bool Editor::HasBreakpoint(int line) const {
@@ -588,10 +608,11 @@ bool Editor::HasBreakpoint(int line) const {
 void Editor::ToggleBreakpoint(int line) {
     if (!HasBreakpoint(line)) {
         Call(SCI_MARKERADD, line - 1, kMarkerBreakpoint);
-        return;
+    } else {
+        SetBreakpointCondition(line, {});  // drops the condition, leaves an ordinary marker
+        Call(SCI_MARKERDELETE, line - 1, kMarkerBreakpoint);
     }
-    SetBreakpointCondition(line, {});  // drops the condition, leaves an ordinary marker
-    Call(SCI_MARKERDELETE, line - 1, kMarkerBreakpoint);
+    RefreshBreakpointLines();
 }
 
 // Replaces the breakpoint on a line by one with the condition (an empty condition makes an ordinary one).
@@ -611,16 +632,32 @@ void Editor::SetBreakpointCondition(int line, const std::string& condition) {
         int handle = static_cast<int>(Call(SCI_MARKERADD, l, IsLogpoint(condition) ? kMarkerLogpoint : kMarkerConditional));
         conditions_[handle] = condition;
     }
+    RefreshBreakpointLines();
 }
 
-void Editor::SetLineNotes(const std::map<int, std::string>& notes) {
+void Editor::SetNotes(Layer layer, const std::map<int, std::string>& lines) {
+    auto& current = layers_[static_cast<int>(layer)];
+    if (current == lines) return;
+    current = lines;
+    // One annotation per line: the layers joined; boxed while there are notes, plain text otherwise.
+    std::map<int, std::pair<std::string, bool>> merged;  // line -> text, has a note
+    for (int l = 0; l < 3; l++) {
+        for (const auto& [line, text] : layers_[l]) {
+            auto& m = merged[line];
+            if (!m.first.empty()) m.first += "   ";
+            m.first += l == static_cast<int>(Layer::Notes) ? text : "  " + text;
+            m.second = m.second || l == static_cast<int>(Layer::Notes);
+        }
+    }
     Call(SCI_EOLANNOTATIONCLEARALL);
-    Call(SCI_EOLANNOTATIONSETVISIBLE, notes.empty() ? EOLANNOTATION_HIDDEN : EOLANNOTATION_BOXED);
+    Call(SCI_EOLANNOTATIONSETVISIBLE, merged.empty() ? EOLANNOTATION_HIDDEN
+                                      : layers_[static_cast<int>(Layer::Notes)].empty() ? EOLANNOTATION_STANDARD
+                                                                                         : EOLANNOTATION_BOXED);
     Sci_Position count = Call(SCI_GETLINECOUNT);
-    for (const auto& [line, text] : notes) {
+    for (const auto& [line, m] : merged) {
         if (line < 1 || line > count) continue;
-        Call(SCI_EOLANNOTATIONSETTEXT, line - 1, reinterpret_cast<sptr_t>(text.c_str()));
-        Call(SCI_EOLANNOTATIONSETSTYLE, line - 1, kStyleNote);
+        Call(SCI_EOLANNOTATIONSETTEXT, line - 1, reinterpret_cast<sptr_t>(m.first.c_str()));
+        Call(SCI_EOLANNOTATIONSETSTYLE, line - 1, m.second ? kStyleNote : kStyleHint);
     }
 }
 

@@ -241,6 +241,8 @@ void MainWindow::BuildMenus() {
     AppendCommand(fileMenu_, ID_OPEN_FILE);
     AppendCommand(fileMenu_, ID_OPEN_FOLDER);
     AppendCommand(fileMenu_, ID_QUICK_OPEN);
+    AppendCommand(fileMenu_, ID_SEARCH_EVERYWHERE);
+    AppendCommand(fileMenu_, ID_RECENT_FILES);
     AppendMenuW(fileMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(recentMenu_), Tr(L"Недавние проекты"));
     AppendMenuW(fileMenu_, MF_SEPARATOR, 0, nullptr);
     AppendCommand(fileMenu_, ID_SAVE);
@@ -279,7 +281,9 @@ void MainWindow::BuildMenus() {
     AppendMenuW(viewMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(viewMenu_, MF_POPUP, reinterpret_cast<UINT_PTR>(themeMenu_), Tr(L"Тема"));
     AppendCommand(viewMenu_, ID_LANGUAGE);
+    AppendCommand(viewMenu_, ID_INLAY_HINTS);
     CheckMenuItem(viewMenu_, ID_DEBUG_PANEL, showDebugPanel_ ? MF_CHECKED : MF_UNCHECKED);
+    CheckMenuItem(viewMenu_, ID_INLAY_HINTS, settings_->inlayHints ? MF_CHECKED : MF_UNCHECKED);
 
     runMenu_ = CreatePopupMenu();
     AppendCommands(runMenu_, {ID_BUILD, ID_REBUILD, 0, ID_RUN, ID_DEBUG, ID_RUN_TO_CURSOR, ID_STOP, 0});
@@ -301,7 +305,30 @@ void MainWindow::BuildMenus() {
 
 bool MainWindow::PreTranslate(MSG& msg) {
     if (findDialog_ && IsDialogMessageW(findDialog_, &msg)) return true;
-    if (msg.hwnd == hwnd_ || IsChild(hwnd_, msg.hwnd) || IsFloatWindow(GetAncestor(msg.hwnd, GA_ROOT))) {
+    bool ours = msg.hwnd == hwnd_ || IsChild(hwnd_, msg.hwnd) || IsFloatWindow(GetAncestor(msg.hwnd, GA_ROOT));
+    // Shift pressed twice on its own: Search Everywhere, as in IntelliJ.
+    if (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) {
+        if (msg.wParam != VK_SHIFT) {
+            shiftAlone_ = false;
+            lastShiftTap_ = 0;
+        } else if (!(msg.lParam & 0x40000000)) {
+            shiftAlone_ = true;
+        }
+    } else if (msg.message == WM_KEYUP && msg.wParam == VK_SHIFT) {
+        if (shiftAlone_ && ours) {
+            DWORD now = GetTickCount();
+            if (lastShiftTap_ && now - lastShiftTap_ < 400) {
+                lastShiftTap_ = 0;
+                PostMessageW(hwnd_, WM_COMMAND, ID_SEARCH_EVERYWHERE, 0);
+            } else {
+                lastShiftTap_ = now;
+            }
+        }
+        shiftAlone_ = false;
+    } else if (msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN) {
+        lastShiftTap_ = 0;
+    }
+    if (ours) {
         if (TranslateAcceleratorW(hwnd_, accel_, &msg)) return true;
     }
     return false;
@@ -339,6 +366,13 @@ LRESULT CALLBACK MainWindow::InputProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
 }
 
 LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == ScrollBars::MovedMessage()) {  // a frame of smooth scrolling: the mark bar's thumb follows at once
+        HWND moved = reinterpret_cast<HWND>(wp);
+        for (auto [bar, ed] : {std::pair{markBar_, Active()}, std::pair{markBar2_, SplitEditor()}}) {
+            if (ed && ed->hwnd() == moved) RedrawWindow(bar, nullptr, nullptr, RDW_INVALIDATE | RDW_UPDATENOW);
+        }
+        return 0;
+    }
     if (msg == findMsg_ && findMsg_) {
         OnFindMessage(reinterpret_cast<FINDREPLACEW*>(lp));
         return 0;
@@ -390,6 +424,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEWE));
                 return TRUE;
             }
+            if (drag_ == Drag::None && CrumbAt(p.x, p.y) >= 0) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
             if (drag_ == Drag::Console || Contains(rcSplitH_, p.x, p.y)) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZENS));
                 return TRUE;
@@ -411,7 +449,9 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSELEAVE:
         hoverTool_ = hoverTab_ = hoverClose_ = hoverLink_ = hoverPane_ = hoverLeftTab_ = hoverPart_ = -1;
         hoverClear_ = hoverRefresh_ = hoverMemFormat_ = false;
+        hoverCrumb_ = -1;
         InvalidateChrome();
+        InvalidateRect(hwnd_, &rcStatus_, FALSE);
         return 0;
     case WM_LBUTTONDOWN: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
@@ -423,6 +463,10 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         }
         if (TabMouseDown(hwnd_, x, y)) return 0;  // a tab (file or part): show it now, drag to move it
+        if (int crumb = CrumbAt(x, y); crumb >= 0) {  // a breadcrumb: go to its line
+            if (Editor* ed = Current()) ed->GotoLine(crumbs_[crumb].line + 1);
+            return 0;
+        }
         OnClick(x, y, false);
         return 0;
     }
@@ -536,6 +580,15 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
             RefreshOutline();
             return 0;
         }
+        if (wp == kInlayTimer) {
+            KillTimer(hwnd_, wp);
+            for (Editor* e : {Active(), SplitEditor()}) {
+                if (!e) continue;
+                UpdateInlayHints(e);
+                UpdateChangeMarks(e);
+            }
+            return 0;
+        }
         if (wp == kBackupTimer) {
             WriteBackups();
             return 0;
@@ -550,6 +603,7 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp) {
             RefreshTree();
             CheckExternalChanges();
+            for (auto& e : editors_) RequestBaseline(e.get());  // a commit made meanwhile
         } else if (settings_->autosave) {
             for (auto& e : editors_) {
                 if (e->Modified() && !e->file().empty()) Save(e.get());
@@ -628,6 +682,16 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_APP_UPDATE_DONE:
         OnUpdateDone(lp);
         return 0;
+    case WM_APP_BASELINE: {
+        std::unique_ptr<std::string> text(reinterpret_cast<std::string*>(lp));
+        if (Editor* ed = FindById(static_cast<int>(wp))) {
+            ed->baseline = *text;
+            ed->baselineSet = ed->baselineGit = true;
+            ed->changesVersion = -1;
+            UpdateChangeMarks(ed);
+        }
+        return 0;
+    }
     case WM_DEBUG_PROFILE: {
         std::unique_ptr<std::vector<ProfileLine>> lines(reinterpret_cast<std::vector<ProfileLine>*>(lp));
         OnProfile(std::move(*lines));
@@ -747,6 +811,8 @@ void MainWindow::OnCommand(int id) {
         if (auto dir = PickFolder(Tr(L"Открыть папку проекта"))) OpenProject(*dir);
         break;
     case ID_QUICK_OPEN: QuickOpen(); break;
+    case ID_SEARCH_EVERYWHERE: SearchEverywhere(); break;
+    case ID_RECENT_FILES: RecentFiles(); break;
     case ID_SAVE: Save(ed); break;
     case ID_SAVE_AS: SaveAs(ed); break;
     case ID_SAVE_ALL: SaveAll(); break;
@@ -816,8 +882,10 @@ void MainWindow::OnCommand(int id) {
     case ID_ZOOM_OUT: ApplyFontSize(settings_->fontSize - 1); break;
     case ID_ZOOM_RESET: ApplyFontSize(11); break;
     case ID_NEXT_TAB:
-    case ID_PREV_TAB:  // within the tab row of the focused group
-        if (ed) {
+    case ID_PREV_TAB:  // with Ctrl held (Ctrl+Tab): the switcher; else within the tab row of the focused group
+        if (ed && (GetKeyState(VK_CONTROL) & 0x8000) && editors_.size() > 1) {
+            SwitchTabs(id == ID_NEXT_TAB);
+        } else if (ed) {
             std::vector<int> tabs = GroupTabs(ed->group);
             int n = (int)tabs.size();
             int at = (int)(std::find(tabs.begin(), tabs.end(), IndexOf(ed)) - tabs.begin());
@@ -844,6 +912,15 @@ void MainWindow::OnCommand(int id) {
     case ID_SHOW_PROBLEMS:
         RefreshProblems();
         ShowPane(Pane::Problems);
+        break;
+    case ID_INLAY_HINTS:
+        settings_->inlayHints = !settings_->inlayHints;
+        settings_->Save();
+        CheckMenuItem(viewMenu_, ID_INLAY_HINTS, settings_->inlayHints ? MF_CHECKED : MF_UNCHECKED);
+        for (auto& e : editors_) {
+            e->hintsVersion = -1;
+            UpdateInlayHints(e.get());
+        }
         break;
     case ID_LANGUAGE:
         settings_->language = English() ? L"ru" : L"en";
@@ -1133,6 +1210,12 @@ void MainWindow::OnNotify(NMHDR* nm) {
     auto* scn = reinterpret_cast<SCNotification*>(nm);
     // Lines added out of sight change the scroll range without a repaint.
     if (nm->code == SCN_MODIFIED || nm->code == SCN_ZOOM) ScrollBars::Changed(nm->hwndFrom);
+    if (nm->code == SCN_ZOOM) {  // the change marks are images a line tall
+        if (Editor* zoomed = FindByHwnd(nm->hwndFrom)) {
+            zoomed->changesVersion = -1;
+            UpdateChangeMarks(zoomed);
+        }
+    }
     for (auto& view : views_) {
         if (!view || nm->hwndFrom != view->hwnd()) continue;
         if (nm->code == SCN_DOUBLECLICK && view.get() != &View(Pane::Terminal)) ConsoleDoubleClick(*view, scn->position);
@@ -1158,6 +1241,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
             if (ed == usageEditor_) ClearUsageHighlight();
             if (settings_->liveCheck) SetTimer(hwnd_, kCheckTimerBase + ed->id(), 700, nullptr);
             if (ed->id() == outlineEditor_ || leftTab_ == LeftTab::Outline) SetTimer(hwnd_, kOutlineTimer, 800, nullptr);
+            SetTimer(hwnd_, kInlayTimer, 600, nullptr);
             if (scn->linesAdded) {
                 InvalidateRect(markBar_, nullptr, FALSE);
                 InvalidateRect(markBar2_, nullptr, FALSE);
@@ -1173,6 +1257,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
         InvalidateRect(hwnd_, &rcStatus_, FALSE);
         // The hint card goes when the text scrolls or the caret moves without typing (typing keeps the operands
         // reminder of the line).
+        if (scn->updated & (SC_UPDATE_V_SCROLL | SC_UPDATE_H_SCROLL)) lastScrollTick_ = GetTickCount();
         if ((scn->updated & (SC_UPDATE_V_SCROLL | SC_UPDATE_H_SCROLL)) ||
             ((scn->updated & SC_UPDATE_SELECTION) && !(scn->updated & SC_UPDATE_CONTENT))) {
             Tip::HideUnlessNew();
@@ -1228,6 +1313,7 @@ void MainWindow::OnNotify(NMHDR* nm) {
         }
         break;
     case SCN_DWELLSTART:
+        if (GetTickCount() - lastScrollTick_ < 600) break;  // still scrolling (or just stopped): no card
         if (scn->position >= 0 && ed->DiagnosticsAt(static_cast<int>(ed->Call(SCI_LINEFROMPOSITION, scn->position)) + 1)) {
             ed->ShowDiagnosticTip(scn->position);
         } else {

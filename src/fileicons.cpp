@@ -142,6 +142,20 @@ void Paint(const Canvas& c, Kind kind) {
     case Kind::JavaScript:
         c.Badge(Hex(0xE8C547), L"JS", 7.5, Hex(0x2B2B2B));
         break;
+    case Kind::Function:
+        c.Oval(1.5, 1.5, 14.5, 14.5, Hex(0x4D8FE0));
+        c.Text(L"f", 1.5, 1, 14.5, 14, 10, white);
+        break;
+    case Kind::Macro:
+        c.Oval(1.5, 1.5, 14.5, 14.5, Hex(0x9E78D8));
+        c.Text(L"m", 1.5, 0.5, 14.5, 14, 10, white);
+        break;
+    case Kind::Section:
+        c.Badge(Hex(0x4C9A8E), L"S", 9.5);
+        break;
+    case Kind::Command:
+        c.Badge(Hex(0x5A6470), L"›", 11);
+        break;
     default:
         c.Page(Hex(0xAEB5BE), Hex(0x7E868F));
         break;

@@ -1,3 +1,4 @@
+#include "crash.h"
 #include "mainwindow.h"
 #include "update.h"
 
@@ -20,6 +21,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         uiTest = fs::absolute(argv[2]);
         SetEnvironmentVariableW(L"ASMEDITOR_HOME", (uiTest / L"home").c_str());
     }
+    Crash::Install();
 
     {
         wchar_t self[MAX_PATH * 2];
@@ -42,8 +44,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         window.StartUiTest(uiTest);
     } else {
         // AsmEditor.exe [project folder] [files…]
-        for (int i = 1; i < argc; i++) window.OpenPath(NormalizePath(argv[i]));
+        // --crash-test: crashes on purpose once the window is up (checks the crash report).
+        bool crashTest = argc >= 2 && wcscmp(argv[1], L"--crash-test") == 0;
+        for (int i = crashTest ? 2 : 1; i < argc; i++) window.OpenPath(NormalizePath(argv[i]));
         if (argc <= 1) window.RestoreSession();
+        window.OfferCrashReport();
+        if (crashTest) {
+            volatile int* nowhere = nullptr;
+            *nowhere = 1;
+        }
     }
     LocalFree(argv);
 

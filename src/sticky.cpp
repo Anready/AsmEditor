@@ -182,7 +182,7 @@ void Update(State& s) {
         if (!text.empty()) text += '\n';
         text += ed.LineText(line);
     }
-    std::string key = text + "\x01" + std::to_string(zoom) + "/" + std::to_string(xOffset) + "/" + std::to_string(width) +
+    std::string key = text + "\x01" + std::to_string(ScrollBars::TopOffset(e)) + "/" + std::to_string(zoom) + "/" + std::to_string(xOffset) + "/" + std::to_string(width) +
                       "/" + std::to_string(lh);
     for (int line : chain) key += "/" + std::to_string(line);
     for (int m = 0; m < 5; m++) key += "/" + std::to_string(ed.Call(SCI_GETMARGINWIDTHN, m));
@@ -208,7 +208,7 @@ void Update(State& s) {
 
     int height = lh * static_cast<int>(chain.size());
     int border = std::max(1, MulDiv(1, static_cast<int>(GetDpiForWindow(e)), 96));
-    SetWindowPos(s.host, HWND_BOTTOM, 0, 0, width, height + border, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    SetWindowPos(s.host, HWND_BOTTOM, 0, ScrollBars::TopOffset(e), width, height + border, SWP_NOACTIVATE | SWP_SHOWWINDOW);
     SetWindowPos(v.hwnd(), nullptr, 0, 0, width, height, SWP_NOZORDER | SWP_NOACTIVATE);
     InvalidateRect(s.host, nullptr, FALSE);
 }
@@ -246,6 +246,11 @@ LRESULT CALLBACK EditorProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
     LRESULT r = DefSubclassProc(hwnd, msg, wp, lp);
+    if (msg == WM_WINDOWPOSCHANGED && s->host && IsWindowVisible(s->host)) {  // moved while scrolling smoothly
+        // Without drawing: the editor repaints itself and its children once everything is in place.
+        SetWindowPos(s->host, nullptr, 0, ScrollBars::TopOffset(hwnd), 0, 0,
+                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS);
+    }
     // Scintilla repaints after it scrolls, edits or restyles: the sticky lines follow.
     if ((msg == WM_PAINT || msg == WM_SIZE || msg == WM_SHOWWINDOW) && !s->pending) {
         s->pending = true;

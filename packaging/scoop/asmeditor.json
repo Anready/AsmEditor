@@ -1,0 +1,23 @@
+{
+    "version": "1.4.0",
+    "description": "x86-64 assembly IDE for Windows (NASM): editor, build, debugger, profiler and lessons in one window.",
+    "homepage": "https://github.com/Anready/AsmEditor",
+    "license": "MIT",
+    "url": "https://github.com/Anready/AsmEditor/releases/download/v1.4.0/AsmEditor-portable.zip",
+    "hash": "be998f0f9e607ad038ffa1aa06359d4eafdd1a03fb2019329926c4decadcf743",
+    "bin": "AsmEditor.exe",
+    "shortcuts": [
+        [
+            "AsmEditor.exe",
+            "AsmEditor"
+        ]
+    ],
+    "persist": "settings",
+    "suggest": {
+        "NASM": "main/nasm"
+    },
+    "checkver": "github",
+    "autoupdate": {
+        "url": "https://github.com/Anready/AsmEditor/releases/download/v$version/AsmEditor-portable.zip"
+    }
+}

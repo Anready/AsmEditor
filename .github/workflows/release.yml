@@ -15,6 +15,9 @@ jobs:
     env:
       SIGNING_CERT: ${{ secrets.SIGNING_CERT }}
       SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      # Or SignPath (free for open source through the SignPath Foundation; see packaging/README.md).
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,9 +55,61 @@ jobs:
           & $signtool.FullName sign /f "$env:RUNNER_TEMP\cert.pfx" /p $env:SIGNING_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 AsmEditor.exe
           if ($LASTEXITCODE) { throw "signtool failed" }
 
+      - name: Upload AsmEditor.exe for SignPath
+        id: unsigned-exe
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-exe
+          path: AsmEditor.exe
+
+      - name: Sign AsmEditor.exe (SignPath)
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: AsmEditor
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: exe
+          github-artifact-id: ${{ steps.unsigned-exe.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-exe
+
+      - name: Use the signed AsmEditor.exe
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: Copy-Item signed-exe\AsmEditor.exe AsmEditor.exe -Force
+
       - name: Portable zip and installer
         shell: cmd
         run: build.bat nobuild package installer
+
+      - name: Upload the installer for SignPath
+        id: unsigned-setup
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-setup
+          path: out/installer/*.exe
+
+      - name: Sign the installer (SignPath)
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: AsmEditor
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: installer
+          github-artifact-id: ${{ steps.unsigned-setup.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: signed-setup
+
+      - name: Use the signed installer
+        if: ${{ env.SIGNPATH_API_TOKEN != '' }}
+        shell: pwsh
+        run: Copy-Item signed-setup\*.exe out\installer\ -Force
 
       - name: Sign the installer
         if: ${{ env.SIGNING_CERT != '' }}

@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AsmEditor</title>
+<meta name="description" content="A lightweight NASM editor and debugger for Windows, built for learning x86-64 assembly.">
+<link rel="icon" href="https://raw.githubusercontent.com/Anready/AsmEditor/main/assets/app.ico">
+<style>
+:root {
+  --bg: #1e1f22; --panel: #2b2d30; --border: #393b40; --text: #dfe1e5; --muted: #9da0a8; --accent: #3574f0;
+  --accent-text: #ffffff; --code: #26282c; --purple: #9b7cf0;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f7f8fa; --panel: #ffffff; --border: #dfe1e5; --text: #1e1f22; --muted: #5d6068; --code: #eef0f3;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 "Segoe UI", system-ui, sans-serif; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+header { padding: 56px 0 32px; text-align: center; }
+header img.logo { width: 64px; height: 64px; }
+h1 { font-size: 44px; margin: 12px 0 8px; letter-spacing: -0.5px; }
+.tagline { font-size: 20px; color: var(--muted); max-width: 720px; margin: 0 auto 28px; }
+.buttons { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.button { display: inline-block; padding: 11px 22px; border-radius: 8px; background: var(--panel); color: var(--text);
+  border: 1px solid var(--border); font-weight: 600; }
+.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.button:hover { text-decoration: none; filter: brightness(1.08); }
+.note { margin: 18px auto 0; color: var(--muted); font-size: 14px; }
+.hero { margin: 36px auto 0; }
+.hero img, .shots img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--border);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35); display: block; }
+section { padding: 48px 0 8px; }
+h2 { font-size: 28px; margin: 0 0 20px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 20px; }
+.card h3 { margin: 0 0 6px; font-size: 17px; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+.shots figure { margin: 0; }
+.shots figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; }
+pre { background: var(--code); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+  font: 14px/1.5 "Cascadia Mono", Consolas, monospace; margin: 8px 0 16px; }
+.steps { padding-left: 20px; }
+.steps li { margin-bottom: 8px; }
+.ai { border-left: 4px solid var(--purple); }
+footer { padding: 48px 0; color: var(--muted); font-size: 14px; text-align: center; }
+@media (max-width: 600px) { h1 { font-size: 34px; } .tagline { font-size: 17px; } header { padding-top: 36px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <img class="logo" src="https://raw.githubusercontent.com/Anready/AsmEditor/main/assets/app.ico" alt="">
+    <h1>AsmEditor</h1>
+    <p class="tagline">A lightweight NASM editor and debugger for Windows, built for learning x86-64 assembly.
+      Write code, build it with one key, and step through it while registers, flags, the stack and memory change.</p>
+    <div class="buttons">
+      <a class="button primary" href="https://github.com/Anready/AsmEditor/releases/latest">Download for Windows</a>
+      <a class="button" href="https://github.com/Anready/AsmEditor">Source on GitHub</a>
+    </div>
+    <p class="note">Windows 10 and 11 · free and open source (MIT) · needs NASM and a linker (Visual Studio or MinGW)</p>
+    <div class="hero">
+      <img src="screenshots/debugger.png" width="1280" height="800"
+           alt="AsmEditor stopped at a breakpoint: the source, registers and memory">
+    </div>
+  </header>
+
+  <section>
+    <h2>What it does</h2>
+    <div class="grid">
+      <div class="card"><h3>An editor that knows assembly</h3>
+        <p>Highlighting, folding, completion of instructions, registers and your own labels, hover help for every
+          instruction, inlay hints with argument names, sticky section lines, go to definition and rename.</p></div>
+      <div class="card"><h3>Catches beginner mistakes</h3>
+        <p>Errors as you type, a misaligned stack or missing shadow space before a call, callee-saved registers
+          left changed, <code>div</code> without preparing <code>rdx</code>, with quick fixes.</p></div>
+      <div class="card"><h3>A debugger for learning</h3>
+        <p>Breakpoints, stepping (also backwards), registers with their changes, memory, the stack, flags and
+          the conditions of jumps, values of registers shown next to the code.</p></div>
+      <div class="card"><h3>See what the code costs</h3>
+        <p>The disassembly under each source line, and a profiler that counts how many times each line ran and
+          how long it took.</p></div>
+      <div class="card"><h3>Lessons and exercises</h3>
+        <p>Built-in lessons and tasks checked by tests, and a format for teachers to give their own tasks and
+          collect the results.</p></div>
+      <div class="card"><h3>Feels like a modern IDE</h3>
+        <p>Tabs, split views and windows of their own, Search Everywhere on double Shift, a switcher on Ctrl+Tab,
+          changed lines in the gutter, themes, English and Russian.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Screenshots</h2>
+    <div class="shots">
+      <figure><img src="screenshots/disassembly.png" width="1280" height="800" loading="lazy"
+                   alt="The Code tab: disassembly under each source line">
+        <figcaption>The machine code of each line, next to the source.</figcaption></figure>
+      <figure><img src="screenshots/profiler.png" width="1280" height="800" loading="lazy"
+                   alt="The profiler: how many times each line ran and its time">
+        <figcaption>The profiler: runs, instructions and time for every line.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>Get started</h2>
+    <ol class="steps">
+      <li>Download <b>AsmEditor-setup</b> (installer) or <b>AsmEditor-portable.zip</b> from the
+        <a href="https://github.com/Anready/AsmEditor/releases/latest">latest release</a>. With
+        <a href="https://scoop.sh">Scoop</a>:
+        <pre>scoop install https://raw.githubusercontent.com/Anready/AsmEditor/main/packaging/scoop/asmeditor.json</pre></li>
+      <li>Install <a href="https://www.nasm.us/">NASM</a> and a linker: Visual Studio (or the Build Tools) with the C++
+        workload, or MinGW <code>gcc</code>. AsmEditor finds them on its first start.</li>
+      <li>Create a project from a template (File → New project), press <b>F5</b> to debug and <b>F10</b> to step.</li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="card ai">
+      <h3>Written by an AI</h3>
+      <p>The code, tests, build scripts, installer and documentation of AsmEditor were written by Claude, an AI
+        model made by Anthropic, working in Claude Code. Read
+        <a href="https://github.com/Anready/AsmEditor#how-this-project-was-made">how the project was made</a>.</p>
+    </div>
+  </section>
+
+  <footer>
+    AsmEditor · MIT license · <a href="https://github.com/Anready/AsmEditor/issues">Report a problem</a>
+  </footer>
+</div>
+</body>
+</html>

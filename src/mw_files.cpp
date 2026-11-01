@@ -29,6 +29,10 @@ void MainWindow::AddEditor(std::unique_ptr<Editor> ed) {
     Editor* raw = ed.get();
     SetWindowSubclass(raw->hwnd(), EditorProc, 4, reinterpret_cast<DWORD_PTR>(this));
     StickyLines::Attach(raw);
+    BlockGuides::Attach(raw);
+    ChangeMarks::Attach(raw);
+    raw->Call(SCI_SETMARGINWIDTHN, Editor::kChangeMargin, S(5));
+    RequestBaseline(raw);
     // A new tab opens in the group that has the focus.
     raw->group = floatFocus_ >= kPanelGroup && GroupInfo(floatFocus_) ? floatFocus_ : (focusRight_ && GroupHasItems(1) ? 1 : 0);
     editors_.push_back(std::move(ed));
@@ -75,6 +79,8 @@ void MainWindow::Activate(int index) {
     }
     UpdateTitle();
     if (leftTab_ == LeftTab::Outline) RefreshOutline();
+    SetTimer(hwnd_, kInlayTimer, 50, nullptr);
+    if (Editor* shown = Current()) NoteShown(shown);
     InvalidateRect(hwnd_, nullptr, FALSE);
 }
 
@@ -188,6 +194,12 @@ bool MainWindow::Save(Editor* ed) {
         return false;
     }
     RemoveBackup(ed);
+    if (!ed->baselineGit) {  // no commit to compare with: the saved text
+        ed->baseline = ed->Text();
+        ed->baselineSet = true;
+        ed->changesVersion = -1;
+        UpdateChangeMarks(ed);
+    }
     InvalidateChrome();
     return true;
 }
@@ -233,7 +245,11 @@ void MainWindow::ApplyFontSize(int size) {
 
 // Re-applies font size and theme colors to every view (after a font size or theme change).
 void MainWindow::RestyleAll() {
-    for (auto& e : editors_) e->ApplyStyles(settings_->fontSize);
+    for (auto& e : editors_) {
+        e->ApplyStyles(settings_->fontSize);
+        e->changesVersion = -1;  // the change marks in the new colors
+        UpdateChangeMarks(e.get());
+    }
     for (auto& view : views_) {
         view->ApplyStyles(settings_->fontSize);
         SetupOutputView(*view);
@@ -847,6 +863,8 @@ void MainWindow::CheckExternalChanges() {
         if (ed->Reload(error)) {
             Print(Tr(std::string("Файл изменён на диске и перечитан: ")) + Narrow(ed->file().filename().wstring()) + "\n", Out::Info);
             if (settings_->liveCheck) RequestCheck(ed);
+            ed->baselineGit = false;
+            RequestBaseline(ed);
         }
     }
     busy = false;
@@ -951,4 +969,57 @@ void MainWindow::OfferRecovery() {
         }
     }
     for (const fs::path& d : dirs) fs::remove_all(d, ec);
+}
+
+void MainWindow::OfferCrashReport() {
+    auto report = Crash::TakePending();
+    if (!report) return;
+    std::wstring q = Tr(L"AsmEditor неожиданно закрылся в прошлый раз") + (L" (" + report->code + L", " + report->where + L").\n\n") +
+                     Tr(L"Сообщить о сбое на GitHub? Откроется страница новой задачи с описанием, а файл отчёта будет "
+                        L"показан в проводнике, чтобы его можно было приложить.");
+    if (MessageBoxW(hwnd_, q.c_str(), L"AsmEditor", MB_YESNO | MB_ICONWARNING) != IDYES) return;
+    ShellExecuteW(hwnd_, L"open", Crash::IssueUrl(*report).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    std::wstring args = L"/select,\"" + report->dump.wstring() + L"\"";
+    ShellExecuteW(hwnd_, L"open", L"explorer.exe", args.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
+// ---- inlay hints ------------------------------------------------------------------------------------------------
+
+void MainWindow::UpdateInlayHints(Editor* ed) {
+    if (!settings_->inlayHints) {
+        ed->SetNotes(Editor::Layer::Hints, {});
+        ed->SetNotes(Editor::Layer::Values, {});
+        return;
+    }
+    if (ed->hintsVersion == ed->version()) return;
+    ed->hintsVersion = ed->version();
+    std::map<int, std::string> lines;
+    for (const auto& [line, hint] : Inlay::Hints(ed->Text())) lines[line + 1] = hint;
+    ed->SetNotes(Editor::Layer::Hints, lines);
+}
+
+// ---- change margin ----------------------------------------------------------------------------------------------
+
+void MainWindow::RequestBaseline(Editor* ed) {
+    if (ed->file().empty()) return;
+    if (!ed->baselineSet) {  // until git answers (or without git): the text as loaded
+        ed->baseline = ed->Text();
+        ed->baselineSet = true;
+    }
+    HWND hwnd = hwnd_;
+    int id = ed->id();
+    fs::path file = ed->file();
+    std::thread([hwnd, id, file] {
+        if (auto text = Vcs::HeadText(file)) {
+            auto* copy = new std::string(std::move(*text));
+            if (!PostMessageW(hwnd, WM_APP_BASELINE, static_cast<WPARAM>(id), reinterpret_cast<LPARAM>(copy))) delete copy;
+        }
+    }).detach();
+}
+
+void MainWindow::UpdateChangeMarks(Editor* ed) {
+    if (!ed->baselineSet || ed->changesVersion == ed->version()) return;
+    ed->changesVersion = ed->version();
+    ChangeMarks::Show(*ed, LineDiff::Compare(LineDiff::SplitLines(ed->baseline), LineDiff::SplitLines(ed->Text())));
+    InvalidateRect(ed == SplitEditor() ? markBar2_ : markBar_, nullptr, FALSE);
 }

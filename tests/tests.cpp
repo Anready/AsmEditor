@@ -1,6 +1,7 @@
 // Unit tests for the parts of AsmEditor that do not need the UI, plus an end-to-end debugger test that builds a
 // small program with NASM and the linker from the settings and debugs it. Build and run: build.bat test
 #include "../src/asmtools.h"
+#include "../src/codeinfo.h"
 #include "../src/completion.h"
 #include "../src/debugger.h"
 #include "../src/gdbmi.h"
@@ -367,6 +368,43 @@ TEST(AnalyzerClobberedAndOwnArguments) {
         CHECK(a->arguments[0].name == "a" && a->arguments[0].setOnLine == 19);
         CHECK(a->arguments[1].name == "b" && a->arguments[1].setOnLine == -1);
     }
+}
+
+TEST(InlayHintsArgumentsAndSizes) {
+    std::string text =
+        "extern printf\n"           // 0
+        "main:\n"                   // 1
+        "    lea rcx, [fmt]\n"      // 2
+        "    mov rdx, 5\n"          // 3
+        "    call printf\n"         // 4
+        "    mov [counter], eax\n"  // 5
+        "    mov dword [x], 1\n"    // 6
+        "    lea rax, [rbx]\n";     // 7
+    auto hints = Inlay::Hints(text);
+    CHECK(hints.count(2) && hints[2].find("printf") != std::string::npos);
+    CHECK(hints.count(4));
+    CHECK(hints.count(5) && hints[5] == "dword");
+    CHECK(!hints.count(6));
+    CHECK(!hints.count(7));
+    CHECK(!hints.count(1));
+    std::vector<std::string> regs = Inlay::Registers("    mov rax, [rbx+rcx*8] ; rdx");
+    CHECK((regs == std::vector<std::string>{"rax", "rbx", "rcx"}));
+}
+
+TEST(LineDiffChanges) {
+    using LineDiff::Change;
+    auto lines = [](const char* s) { return LineDiff::SplitLines(s); };
+    CHECK(LineDiff::Compare(lines("a\nb\nc"), lines("a\nb\nc")).empty());
+    auto d = LineDiff::Compare(lines("a\nb\nc"), lines("a\nB\nc"));
+    CHECK(d.size() == 1 && d[1] == Change::Modified);
+    d = LineDiff::Compare(lines("a\nb\nc"), lines("a\nb\nx\ny\nc"));
+    CHECK(d.size() == 2 && d[2] == Change::Added && d[3] == Change::Added);
+    d = LineDiff::Compare(lines("a\nb\nc\nd"), lines("a\nd"));
+    CHECK(d.size() == 1 && d[1] == Change::Deleted);
+    d = LineDiff::Compare(lines("a\r\nb\r\n"), lines("a\nb\n"));
+    CHECK(d.empty());
+    d = LineDiff::Compare(lines("1\n2\n3\n4\n5\n6"), lines("1\nX\n3\n4\nY\nZ\n6"));
+    CHECK(d.size() == 3 && d[1] == Change::Modified && d[4] == Change::Modified && d[5] == Change::Added);
 }
 
 TEST(QuickFixesExternAndStack) {

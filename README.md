@@ -39,6 +39,9 @@ Get the latest version from [**Releases**](https://github.com/Anready/AsmEditor/
 You also need **[NASM](https://www.nasm.us/)** and a linker: **Visual Studio** (or Build Tools) with the C++
 workload, or MinGW `gcc`. AsmEditor finds them on first start; you can change the paths in Settings (Ctrl+Alt+S).
 
+With [Scoop](https://scoop.sh):
+`scoop install https://raw.githubusercontent.com/Anready/AsmEditor/main/packaging/scoop/asmeditor.json`
+
 AsmEditor checks for a new release once a day and can update itself (Help → Update AsmEditor). Downloads are
 verified against the SHA‑256 digest GitHub publishes.
 
@@ -50,6 +53,13 @@ verified against the SHA‑256 digest GitHub publishes.
 - Hover help for every instruction, register and directive (x87, SSE–SSE4.2, AVX/AVX2, FMA, BMI…), with examples
   for the common ones. Hover over `printf` or `WriteFile` to see the prototype and which registers take the arguments.
 - Go to definition, find usages, rename, file outline, find in files, command palette, go to file.
+- IntelliJ-style navigation: Search Everywhere (Shift twice) for files, labels, macros and commands, recent files
+  (Ctrl+E), a switcher on Ctrl+Tab, and breadcrumbs in the status bar (`project › main.asm › section .text › main`).
+- Inlay hints: which parameter a register gets before a `call` (`format → printf`), the size a memory operand
+  takes from a register, and the values of the registers next to the lines while debugging (View → Inlay hints).
+- Sticky lines keep the section, label and `%macro`/`%if` you are in at the top while you scroll; block guides show
+  where each label's body and each block ends; the gutter marks lines changed since the last git commit (or save).
+- Thin scrollbars over the edges, pixel-smooth wheel scrolling, file icons by type in the tree, tabs and lists.
 - Code formatting into columns (mnemonics, operands, comments), optional format on save.
 - Code snippets: a function with a prologue, loops, `printf`/`scanf`, `WriteFile`, a whole program.
 

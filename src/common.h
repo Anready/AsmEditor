@@ -114,6 +114,7 @@ struct Settings {
     bool autosave = false;        // save every file when the window loses focus
     bool formatOnSave = false;    // align the columns (Ctrl+Alt+L) of .asm files when saving
     bool checkUpdates = true;     // look for a new AsmEditor release once a day at start
+    bool inlayHints = true;       // argument names, operand sizes and register values at the end of lines
     int lastUpdateCheck = 0;      // yyyymmdd
     bool log = false;             // write %APPDATA%\AsmEditor\asmeditor.log
     std::wstring theme = L"dark";
@@ -126,6 +127,7 @@ struct Settings {
     std::vector<std::wstring> recent;
     std::wstring lastProject;
     std::vector<std::wstring> sessionFiles;
+    std::vector<std::wstring> recentFiles;  // most recently shown first (Ctrl+E)
     RECT window{};
     bool maximized = false;
     int treeWidth = 240;
@@ -285,10 +287,10 @@ std::optional<std::wstring> InputBox(HWND owner, const std::wstring& title, cons
 bool ShowSettingsDialog(HWND owner, Settings& settings);
 void ShowMessage(HWND owner, const std::wstring& text, bool error = true);
 
-// Popup list with a filter box (command palette, quick open, templates). Items are "text\tdetail"; with fileIcons
-// the text is a file name, shown with the icon of its type. Returns the index of the chosen item.
+// Popup list with a filter box (command palette, quick open, templates). Items are "text\tdetail"; icons, when
+// given, holds a FileIcons::Kind per item (-1: none). Returns the index of the chosen item.
 std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std::vector<std::wstring>& items,
-                                const std::wstring& placeholder = L"", bool fileIcons = false);
+                                const std::wstring& placeholder = L"", const std::vector<int>& icons = {});
 
 struct FindInFilesRequest {
     std::wstring what, replaceWith;

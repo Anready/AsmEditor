@@ -2,6 +2,7 @@
 
 #include "editor.h"
 
+#include <chrono>
 #include <cmath>
 
 namespace {
@@ -11,6 +12,7 @@ constexpr UINT_PTR kWheelTimer = 0x5CB1;
 constexpr int kBarWidth = 10;  // 96-dpi pixels
 constexpr int kMinThumb = 24;
 const UINT kSyncMessage = RegisterWindowMessageW(L"AsmEditor.ScrollBars.Sync");
+const UINT kMovedMessage = RegisterWindowMessageW(L"AsmEditor.ScrollBars.Moved");
 
 enum class Kind { Scintilla, Tree, ListBox, Edit, Other };
 
@@ -24,6 +26,7 @@ struct Bar {
     HWND hwnd = nullptr;
     RECT rc{};  // in the target's client area; empty while hidden
     int64_t total = 0, page = 0, pos = 0;
+    double smooth = 0;  // pos, with the part of a line while Scintilla scrolls smoothly (where the thumb is drawn)
     bool hover = false, drag = false;
     int grab = 0;  // where the thumb was taken, from its start
 };
@@ -38,13 +41,30 @@ struct State {
     COLORREF bg = 0;
     // The system scrollbars kept out of sight: the window is this much wider / taller than it was given, and clipped.
     int extraW = 0, extraH = 0;
-    int visibleW = 0, visibleH = 0;
+    int visibleX = 0, visibleY = 0, visibleW = 0, visibleH = 0;  // where the owner put the window
+    // Pixel-smooth scrolling of Scintilla (which scrolls by whole lines): the window moves up by the part of a line
+    // (offset) and is a line taller meanwhile, clipped back to where it was put.
+    int offset = 0, lineExtra = 0;
+    bool selfMove = false;      // our own SetWindowPos: the visible rectangle stays
+    bool framing = false;       // a frame of smooth scrolling is being put together: nothing reaches the screen yet
+    bool smoothing = false;
+    double smoothFrom = 0, smoothTo = 0, smoothPos = 0;
+    double smoothStart = 0;  // NowMs() when the glide to smoothTo began
+    int64_t expectedFirst = -1;  // the first line we set: another one means something else scrolled
+    bool hSmoothing = false;     // Scintilla: a sideways glide of the x offset (in pixels)
+    double hFrom = 0, hTo = 0, hStart = 0;
     int sciMargin = 1;   // Scintilla: its right margin before the vertical bar covered the edge
     int editMargin = 0;  // multi-line edit: its right margin as created
     double wheelTarget = 0;  // smooth wheel scrolling: the first line it is heading for
     double wheelRest = 0;    // the part of a line left over (touchpads send small steps)
     bool wheeling = false;
 };
+
+// Milliseconds on a fine clock (GetTickCount steps by 16 ms: too coarse for frames).
+double NowMs() {
+    using namespace std::chrono;
+    return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
+}
 
 int Px(HWND hwnd, int v) {
     int dpi = static_cast<int>(GetDpiForWindow(hwnd));
@@ -96,10 +116,12 @@ void Measure(State& s) {
         // The scroll range of the editors: the lines plus a few past the end (Editor::LimitScroll).
         int64_t last = Send(s, SCI_GETLINECOUNT) - 1;
         s.v.total = Send(s, SCI_VISIBLEFROMDOCLINE, last) + Send(s, SCI_WRAPCOUNT, last) + Editor::kScrollPastEnd;
-        s.v.page = Send(s, SCI_LINESONSCREEN);
+        s.v.page = Send(s, SCI_LINESONSCREEN) - (s.lineExtra ? 1 : 0);
         s.v.pos = Send(s, SCI_GETFIRSTVISIBLELINE);
+        s.v.smooth = s.smoothing ? s.smoothPos : static_cast<double>(s.v.pos);
     } else {
         native(SB_VERT, s.v, WS_VSCROLL);
+        s.v.smooth = static_cast<double>(s.v.pos);
     }
     native(SB_HORZ, s.h, WS_HSCROLL);  // Scintilla keeps its (hidden) horizontal scrollbar: it tracks the line width
     s.bg = Background(s);
@@ -119,13 +141,18 @@ void Place(Bar& b, RECT r, bool show) {
         b.hwnd = CreateWindowExW(0, L"AsmScrollBar", L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0, b.state->target, nullptr,
                                  GetModuleHandleW(nullptr), &b);
     }
-    SetWindowPos(b.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    // Within a frame of smooth scrolling the bar only moves (copying its old pixels on the screen would show a torn
+    // thumb before the frame is painted); the frame paints it with everything else.
+    UINT quiet = b.state->framing || b.state->selfMove ? SWP_NOREDRAW | SWP_NOCOPYBITS : 0;
+    SetWindowPos(b.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE | SWP_SHOWWINDOW | quiet);
+    InvalidateRect(b.hwnd, nullptr, FALSE);  // all of it: the thumb moves with the size
 }
 
 void Sync(State& s) {
     s.pending = false;
     if (!IsWindow(s.target)) return;
     int64_t before[] = {s.v.total, s.v.page, s.v.pos, s.h.total, s.h.page, s.h.pos};
+    double smoothBefore = s.v.smooth;
     COLORREF bg = s.bg;
     bool was = s.syncing;
     s.syncing = true;
@@ -145,14 +172,18 @@ void Sync(State& s) {
 
     RECT rc;
     GetClientRect(s.target, &rc);
+    if (s.kind == Kind::Scintilla) {  // the part on screen (it moves while scrolling smoothly)
+        rc.top = s.offset;
+        rc.bottom = std::min<LONG>(rc.bottom, s.offset + s.visibleH);
+    }
     // Scintilla scrolls a few lines past the end: no thumb while the lines themselves fit (unless scrolled down).
     int64_t pastEnd = s.kind == Kind::Scintilla ? Editor::kScrollPastEnd : 0;
     bool needV = s.wantV && s.v.page > 0 && s.v.page < s.v.total && (s.v.pos > 0 || s.v.page < s.v.total - pastEnd);
     bool needH = s.wantH && s.h.page > 0 && s.h.page < s.h.total;
-    Place(s.v, {rc.right - w, 0, rc.right, rc.bottom - (needH ? w : 0)}, needV);
+    Place(s.v, {rc.right - w, rc.top, rc.right, rc.bottom - (needH ? w : 0)}, needV);
     Place(s.h, {0, rc.bottom - w, rc.right - (needV ? w : 0), rc.bottom}, needH);
     int64_t after[] = {s.v.total, s.v.page, s.v.pos, s.h.total, s.h.page, s.h.pos};
-    if (bg != s.bg || !std::equal(std::begin(before), std::end(before), std::begin(after))) {
+    if (bg != s.bg || smoothBefore != s.v.smooth || !std::equal(std::begin(before), std::end(before), std::begin(after))) {
         if (s.v.hwnd) InvalidateRect(s.v.hwnd, nullptr, FALSE);
         if (s.h.hwnd) InvalidateRect(s.h.hwnd, nullptr, FALSE);
     }
@@ -192,13 +223,118 @@ void ScrollTo(State& s, bool vertical, int64_t pos) {
 
 // ---- smooth wheel scrolling -------------------------------------------------------------------------------------
 
+// Moves the window up by `offset` pixels (0..a line) and makes it `extra` taller. The size changes only when a glide
+// starts and ends (a resize makes Scintilla lay out and repaint everything); in between the window only moves.
+// Moves the window without drawing or copying bits (with its old clip it would cover the tab row for a moment);
+// it is clipped back in WM_WINDOWPOSCHANGED. Frame() then paints.
+void SetOffset(State& s, int offset, int extra) {
+    if (offset == s.offset && extra == s.lineExtra) return;
+    s.offset = offset;
+    s.lineExtra = extra;
+    s.selfMove = true;
+    SetWindowPos(s.target, nullptr, s.visibleX, s.visibleY - s.offset, s.visibleW + s.extraW,
+                 s.visibleH + s.extraH + s.lineExtra, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS);
+    s.selfMove = false;
+}
+
+// One frame of smooth scrolling, shown at once: the sticky lines and bars in place, everything painted together,
+// and whoever draws a scrollbar for the window outside it (the editor's mark bar) moves its thumb along.
+void Frame(State& s) {
+    s.framing = true;
+    Sync(s);
+    s.framing = false;
+    RedrawWindow(s.target, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    if (HWND parent = GetParent(s.target)) SendMessageW(parent, kMovedMessage, reinterpret_cast<WPARAM>(s.target), 0);
+}
+
 void StopWheel(State& s) {
     s.wheeling = false;
-    KillTimer(s.target, kWheelTimer);
+    if (s.smoothing) {
+        s.smoothing = false;
+        SetOffset(s, 0, 0);
+        Frame(s);
+    }
+    if (!s.hSmoothing) KillTimer(s.target, kWheelTimer);
+}
+
+// Scintilla sideways: the same eased glide of its x offset, which is in pixels already.
+void SideStep(State& s) {
+    double t = std::min(1.0, (NowMs() - s.hStart) / 110.0);
+    double eased = 1 - (1 - t) * (1 - t) * (1 - t);
+    Send(s, SCI_SETXOFFSET, static_cast<WPARAM>(std::lround(s.hFrom + (s.hTo - s.hFrom) * eased)));
+    UpdateWindow(s.target);
+    Sync(s);
+    if (t >= 1) {
+        s.hSmoothing = false;
+        if (!s.wheeling) KillTimer(s.target, kWheelTimer);
+    }
+}
+
+bool SideWheel(State& s, int delta) {
+    if (s.kind != Kind::Scintilla) return false;
+    Measure(s);
+    int64_t maxX = s.h.total - s.h.page;
+    if (!s.wantH || s.h.page <= 0 || maxX <= 0) return false;
+    UINT chars = 3;
+    SystemParametersInfoW(SPI_GETWHEELSCROLLCHARS, 0, &chars, 0);
+    int charW = std::max(1, static_cast<int>(Send(s, SCI_TEXTWIDTH, STYLE_DEFAULT, reinterpret_cast<LPARAM>("x"))));
+    double base = s.hSmoothing ? s.hTo : static_cast<double>(Send(s, SCI_GETXOFFSET));
+    double to = std::clamp(base + delta / static_cast<double>(WHEEL_DELTA) * chars * charW, 0.0, static_cast<double>(maxX));
+    if (std::lround(to) == std::lround(base)) return true;  // at an end: nothing to glide to
+    s.hFrom = static_cast<double>(Send(s, SCI_GETXOFFSET));
+    s.hTo = to;
+    s.hStart = NowMs() - 16;
+    if (!s.hSmoothing) {
+        s.hSmoothing = true;
+        SetTimer(s.target, kWheelTimer, 8, nullptr);
+    }
+    SideStep(s);
+    return true;
+}
+
+// Scintilla: an eased glide from where it is to the target, a frame at a time, by pixels.
+void SmoothStep(State& s) {
+    int64_t first = Send(s, SCI_GETFIRSTVISIBLELINE);
+    if (s.expectedFirst >= 0 && first != s.expectedFirst) {  // scrolled by something else (keys, the caret)
+        StopWheel(s);
+        return;
+    }
+    double t = std::min(1.0, (NowMs() - s.smoothStart) / 110.0);
+    double eased = 1 - (1 - t) * (1 - t) * (1 - t);
+    s.smoothPos = t >= 1 ? std::round(s.smoothTo) : s.smoothFrom + (s.smoothTo - s.smoothFrom) * eased;
+    int lineHeight = std::max(1, static_cast<int>(Send(s, SCI_TEXTHEIGHT, 0)));
+    int64_t top = static_cast<int64_t>(std::floor(s.smoothPos));
+    int offset = static_cast<int>(std::lround((s.smoothPos - static_cast<double>(top)) * lineHeight));
+    if (offset >= lineHeight) {
+        top++;
+        offset = 0;
+    }
+    bool last = t >= 1;
+    // The window only moves: the strip it leaves at the bottom is the panel's own color. With a horizontal scrollbar
+    // (Windows' own, kept below the bottom edge) it is also a line taller while it glides, or moving up would bring
+    // that scrollbar into view.
+    bool hbar = (GetWindowLongW(s.target, GWL_STYLE) & WS_HSCROLL) != 0;
+    if (last) {
+        SetOffset(s, 0, 0);  // normal size before the last line is set, so the scroll limit counts the right lines
+        if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
+    } else {
+        if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
+        SetOffset(s, offset, hbar ? lineHeight : 0);
+    }
+    s.expectedFirst = Send(s, SCI_GETFIRSTVISIBLELINE);
+    Frame(s);
+    if (t >= 1) {
+        s.smoothing = false;
+        StopWheel(s);
+    }
 }
 
 // One step towards the target: a part of the way left, at least a line, so a notch takes a few frames.
 void WheelStep(State& s) {
+    if (s.smoothing) {
+        SmoothStep(s);
+        return;
+    }
     Measure(s);
     double diff = s.wheelTarget - static_cast<double>(s.v.pos);
     if (std::abs(diff) < 1) {
@@ -220,7 +356,8 @@ void WheelStep(State& s) {
 }
 
 bool Wheel(State& s, WPARAM wp) {
-    if (GET_KEYSTATE_WPARAM(wp) & (MK_CONTROL | MK_SHIFT)) return false;  // zoom, sideways
+    if (GET_KEYSTATE_WPARAM(wp) & MK_CONTROL) return false;  // zoom
+    if (GET_KEYSTATE_WPARAM(wp) & MK_SHIFT) return SideWheel(s, -GET_WHEEL_DELTA_WPARAM(wp));  // sideways
     if (s.kind == Kind::Scintilla && Send(s, SCI_AUTOCACTIVE)) return false;
     Measure(s);
     int64_t maxPos = s.v.total - s.v.page;
@@ -228,8 +365,29 @@ bool Wheel(State& s, WPARAM wp) {
     UINT lines = 3;
     SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
     double perNotch = lines == WHEEL_PAGESCROLL ? static_cast<double>(std::max<int64_t>(1, s.v.page - 1)) : lines;
-    if (!s.wheeling) s.wheelTarget = static_cast<double>(s.v.pos) + s.wheelRest;
     double delta = -GET_WHEEL_DELTA_WPARAM(wp) / static_cast<double>(WHEEL_DELTA) * perNotch;
+    if (s.kind == Kind::Scintilla) {  // by pixels: from where it is now to the new target
+        // The target is a whole line, so a glide ends without a snap; touchpads and free-spinning wheels send
+        // parts of a notch: they add up until they make a line. At the ends, nothing starts (no shaking there).
+        double base = (s.smoothing ? s.smoothTo : static_cast<double>(s.v.pos)) + s.wheelRest;
+        double target = base + delta;
+        double clamped = std::clamp(target, 0.0, static_cast<double>(maxPos));
+        double to = std::round(clamped);
+        s.wheelRest = clamped == target ? clamped - to : 0;
+        if (to == (s.smoothing ? s.smoothTo : static_cast<double>(s.v.pos))) return true;
+        s.smoothFrom = s.smoothing ? s.smoothPos : static_cast<double>(s.v.pos);
+        s.smoothTo = to;
+        // As if a frame had passed: the first step moves at once, under the wheel, not a frame later.
+        s.smoothStart = NowMs() - 16;
+        s.expectedFirst = s.v.pos;
+        if (!s.smoothing) {
+            s.smoothing = s.wheeling = true;
+            SetTimer(s.target, kWheelTimer, 8, nullptr);
+        }
+        SmoothStep(s);
+        return true;
+    }
+    if (!s.wheeling) s.wheelTarget = static_cast<double>(s.v.pos) + s.wheelRest;
     s.wheelTarget = std::clamp(s.wheelTarget + delta, 0.0, static_cast<double>(maxPos));
     if (!s.wheeling) {
         s.wheeling = true;
@@ -248,7 +406,8 @@ RECT Thumb(const Bar& b) {
     if (b.page <= 0 || b.page >= b.total || len <= 0) return {};
     int64_t range = b.total - b.page;
     int thumb = std::max(std::min(Px(b.hwnd, kMinThumb), len), static_cast<int>(b.page * len / b.total));
-    int at = static_cast<int>(std::clamp<int64_t>(b.pos, 0, range) * (len - thumb) / range);
+    double pos = b.vertical ? b.smooth : static_cast<double>(b.pos);
+    int at = static_cast<int>(std::lround(std::clamp(pos, 0.0, static_cast<double>(range)) * (len - thumb) / range));
     int inset = Px(b.hwnd, 2);
     return b.vertical ? RECT{inset, at, rc.right - inset, at + thumb} : RECT{at, inset, at + thumb, rc.bottom - inset};
 }
@@ -398,31 +557,47 @@ LRESULT CALLBACK TargetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     switch (msg) {
     case WM_TIMER:
         if (wp == kWheelTimer) {
-            WheelStep(*s);
+            if (s->hSmoothing) SideStep(*s);
+            if (s->wheeling) WheelStep(*s);
             return 0;
         }
         break;
     case WM_MOUSEWHEEL:
         if (Wheel(*s, wp)) return 0;
         break;
+    case WM_MOUSEHWHEEL:  // tilt wheels and touchpads: positive is to the right
+        if (SideWheel(*s, GET_WHEEL_DELTA_WPARAM(wp))) return 0;
+        break;
     case WM_WINDOWPOSCHANGING: {
         auto* p = reinterpret_cast<WINDOWPOS*>(lp);
+        if (s->selfMove) break;
+        if (!(p->flags & SWP_NOMOVE)) {
+            s->visibleX = p->x;
+            s->visibleY = p->y;
+            p->y -= s->offset;
+        }
         if (!(p->flags & SWP_NOSIZE)) {
             s->visibleW = p->cx;
             s->visibleH = p->cy;
             p->cx += s->extraW;
-            p->cy += s->extraH;
+            p->cy += s->extraH + s->lineExtra;
         }
         break;
     }
     case WM_WINDOWPOSCHANGED: {
         auto* p = reinterpret_cast<WINDOWPOS*>(lp);
-        if (!(p->flags & SWP_NOSIZE)) {
-            bool clip = s->extraW || s->extraH;
-            SetWindowRgn(hwnd, clip ? CreateRectRgn(0, 0, s->visibleW, s->visibleH) : nullptr, TRUE);
+        if (!(p->flags & SWP_NOSIZE) || s->selfMove) {
+            bool clip = s->extraW || s->extraH || s->offset;
+            SetWindowRgn(hwnd, clip ? CreateRectRgn(0, s->offset, s->visibleW, s->offset + s->visibleH) : nullptr,
+                         !s->selfMove);  // our own move repaints everything itself
         }
         break;
     }
+    case WM_KEYDOWN:
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+        if (s->smoothing) StopWheel(*s);
+        break;
     case WM_SIZE: {
         LRESULT r = DefSubclassProc(hwnd, msg, wp, lp);
         Sync(*s);  // at once, so the bars do not lag behind the edge
@@ -463,6 +638,7 @@ void Attach(HWND hwnd) {
     if (!registered) {
         WNDCLASSW wc{};
         wc.lpfnWndProc = BarProc;
+        wc.style = CS_HREDRAW | CS_VREDRAW;
         wc.hInstance = GetModuleHandleW(nullptr);
         wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         wc.lpszClassName = L"AsmScrollBar";
@@ -503,6 +679,9 @@ void Attach(HWND hwnd) {
     }
     RECT wr;
     GetWindowRect(hwnd, &wr);
+    MapWindowPoints(HWND_DESKTOP, GetParent(hwnd), reinterpret_cast<POINT*>(&wr), 2);
+    s->visibleX = wr.left;
+    s->visibleY = wr.top;
     s->visibleW = wr.right - wr.left;
     s->visibleH = wr.bottom - wr.top;
     SetWindowSubclass(hwnd, TargetProc, kSubclassId, reinterpret_cast<DWORD_PTR>(s));
@@ -527,6 +706,24 @@ void Show(HWND hwnd, bool vertical, bool horizontal) {
         Resize(*s);
     }
     Sync(*s);
+}
+
+UINT MovedMessage() { return kMovedMessage; }
+
+double Position(HWND hwnd) {
+    State* s = Find(hwnd);
+    if (s && s->smoothing) return s->smoothPos;
+    return static_cast<double>(SendMessageW(hwnd, SCI_GETFIRSTVISIBLELINE, 0, 0));
+}
+
+int ExtraLines(HWND hwnd) {
+    State* s = Find(hwnd);
+    return s && s->lineExtra ? 1 : 0;
+}
+
+int TopOffset(HWND hwnd) {
+    State* s = Find(hwnd);
+    return s ? s->offset : 0;
 }
 
 int VerticalWidth(HWND hwnd) {

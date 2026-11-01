@@ -888,4 +888,17 @@ const std::pair<const wchar_t*, const wchar_t*> kTable[] = {
     {L"Кадры DLL и C runtime — по их таблицам раскрутки (.pdata), кадры NASM-кода — по адресам возврата в стеке.",
      L"DLL and C runtime frames come from their unwind tables (.pdata); NASM code frames from return addresses on the "
      L"stack."},
+
+    // inlay hints, search everywhere, recent files, switcher, crash report
+    {L"Подсказки в коде", L"Inlay hints"},
+    {L"Искать везде (Shift дважды)…", L"Search everywhere (Shift twice)…"},
+    {L"Недавние файлы…", L"Recent files…"},
+    {L"Искать везде", L"Search everywhere"},
+    {L"Файл, метка, макрос или команда…", L"File, label, macro or command…"},
+    {L"Недавние файлы", L"Recent files"},
+    {L"Открытые файлы", L"Open files"},
+    {L"AsmEditor неожиданно закрылся в прошлый раз", L"AsmEditor closed unexpectedly last time"},
+    {L"Сообщить о сбое на GitHub? Откроется страница новой задачи с описанием, а файл отчёта будет показан в проводнике, чтобы его можно было приложить.",
+     L"Report the crash on GitHub? A new issue page opens with a description, and the report file is shown in Explorer "
+     L"so you can attach it."},
 };

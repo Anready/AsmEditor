@@ -55,6 +55,5 @@ your own also works: the secrets `SIGNING_CERT`, base64 of a .pfx, and `SIGNING_
 
 ## Project page (GitHub Pages)
 
-`docs/index.html` is the project page, with the screenshots from `docs/screenshots`. To publish it: repository
-Settings → Pages → Source: *Deploy from a branch*, branch `main`, folder `/docs`. It appears at
-https://anready.github.io/AsmEditor/.
+`docs/index.html` is the project page, with the screenshots from `docs/screenshots`, published by GitHub Pages
+(branch `main`, folder `/docs`) at https://anready.github.io/AsmEditor/. Every push to `main` updates it.

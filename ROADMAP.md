@@ -81,8 +81,9 @@
 
 ### Распространение
 - Сделано в репозитории (см. packaging/README.md): манифест Scoop, манифесты winget, страница GitHub Pages
-  (docs/index.html), подпись через SignPath в release.yml. Осталось владельцу: отправить манифест winget в
-  microsoft/winget-pkgs, включить Pages в настройках репозитория, подать заявку в SignPath Foundation.
+  (docs/index.html), подпись через SignPath в release.yml. Страница проекта опубликована:
+  https://anready.github.io/AsmEditor/. Осталось владельцу: отправить манифест winget в microsoft/winget-pkgs,
+  подать заявку в SignPath Foundation.
 
 ### Возможности
 - Дизассемблер: AVX-512 (EVEX), проверка на больших реальных бинарниках.

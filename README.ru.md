@@ -1,6 +1,6 @@
 # AsmEditor
 
-[English](README.md) · **Русский**
+[English](README.md) · **Русский** · [Страница проекта](https://anready.github.io/AsmEditor/)
 
 > Проект написан ИИ: код, тесты, сборка и документация — Claude (модель Anthropic) в Claude Code;
 > Подробнее — в [английском README](README.md#how-this-project-was-made).

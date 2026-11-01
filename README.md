@@ -13,7 +13,7 @@ Write x86‑64 assembly, build it with one key, and step through it while watchi
 ![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-blue)
 ![made by AI](https://img.shields.io/badge/written%20by-Claude%20(AI)-8A63D2)
 
-**English** · [Русский](README.ru.md)
+**English** · [Русский](README.ru.md) · [Project page](https://anready.github.io/AsmEditor/)
 
 </div>
 

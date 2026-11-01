@@ -2,6 +2,29 @@
 
 The release workflow publishes the section of the tagged version as the release notes.
 
+## 1.5.0
+
+- Inlay hints, as in IntelliJ: the parameter a register gets before a `call` (`format → printf`), the size of a
+  memory operand implied by the register, and the values of registers next to the lines while debugging. View →
+  Inlay hints turns them off.
+- Search Everywhere on Shift pressed twice: files, the labels and macros of the project, and commands in one list.
+- Recent files (Ctrl+E) and a switcher on Ctrl+Tab: the open files in the order you used them; release Ctrl to go.
+- Block guides: a thin line down each label body and `%macro`/`%if`/`%rep` block, brighter for the one the caret
+  is in (the fold margin highlights it too).
+- The gutter marks lines added, changed and deleted since the last git commit (or since the file was saved when it
+  is not in git); the scrollbar shows them too.
+- Breadcrumbs in the status bar: project › folders › file › section › label › local label; click one to go there.
+- Pixel-smooth scrolling with the mouse wheel and the touchpad, up and down and sideways; it starts at once, stops
+  on a whole line without a jerk, and the scrollbar thumbs, the sticky lines and the change marks move with it
+  without flicker (also in a split editor).
+- Lines with problems are no longer filled with red or yellow (the squiggles and the scrollbar marks show them);
+  breakpoint lines get a red background instead.
+- Scrolling over many problems is as fast as over clean code: the squiggles were drawn as small images, each frame
+  took about 13 ms instead of 3; hint cards no longer pop up while the text scrolls under the pointer.
+- After a crash, AsmEditor writes a minidump and on the next start offers to report the crash on GitHub.
+- Packaging: a Scoop manifest, winget manifests, a project page for GitHub Pages and optional SignPath signing in
+  the release workflow (see packaging/README.md).
+
 ## 1.4.0
 
 - Every scrollbar is IntelliJ-style: a thin rounded thumb over the edge of the editor, the panels, the project tree,

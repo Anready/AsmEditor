@@ -2,6 +2,16 @@
 
 The release workflow publishes the section of the tagged version as the release notes.
 
+## 1.4.0
+
+- Every scrollbar is IntelliJ-style: a thin rounded thumb over the edge of the editor, the panels, the project tree,
+  the outline and the lists of the dialogs, vertical and horizontal, all as thick as each other.
+- Smooth scrolling: a notch of the mouse wheel scrolls in a few steps instead of jumping.
+- Sticky lines, as in IntelliJ: the section, the global label and the %macro/%if/%rep blocks you are in stay at the
+  top of the editor while it scrolls, with their line numbers; click one to go to it.
+- File icons by type (assembly, include, C/C++, Python, text, configs, scripts, binaries, images…) in the project
+  tree, the tabs and Go to File (Ctrl+P).
+
 ## 1.3.1
 
 - Scrolling stops 5 empty lines past the end of the code instead of a whole page, in the editor and every panel.

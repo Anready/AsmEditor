@@ -3,7 +3,7 @@
 namespace {
 
 // Width of the mark bar: the scrollbar of the main editor, with the marks of the whole file.
-constexpr int kMarkBarWidth = 14;
+constexpr int kMarkBarWidth = 10;  // as thick as the other scrollbars (scrollbar.cpp)
 // Islands: the gap between the panels, the inset of the windows inside them and the corner radius (96-dpi pixels).
 constexpr int kIslandGap = 6;
 constexpr int kIslandPadding = 4;
@@ -127,9 +127,8 @@ void MainWindow::Layout() {
         Editor* e = editors_[i].get();
         int group = e->group;
         bool shown = static_cast<int>(i) == ShownIndex(group) && ShownPart(group) < 0 && onScreen(group);
-        // In the main editor the mark bar beside it is its scrollbar (IntelliJ-style); elsewhere Scintilla's own.
-        bool ownScrollbar = group >= kPanelGroup;
-        if ((e->Call(SCI_GETVSCROLLBAR) != 0) != ownScrollbar) e->Call(SCI_SETVSCROLLBAR, ownScrollbar ? 1 : 0);
+        // In the main editor the mark bar beside it is its scrollbar; elsewhere the one over its edge.
+        ScrollBars::Show(e->hwnd(), group >= kPanelGroup, true);
         if (shown) {
             RECT r = GroupContent(group);
             int m = group < kPanelGroup ? mark : 0;
@@ -599,7 +598,7 @@ void MainWindow::PaintTabs(HDC dc, int group) {
     for (int i : files) {
         Editor& ed = *editors_[i];
         std::wstring title = (ed.Modified() ? L"● " : L"") + ed.Title();
-        tabs.push_back({i, -1, TextWidth(dc, title) + S(ed.pinned ? 62 : 50)});
+        tabs.push_back({i, -1, TextWidth(dc, title) + S(ed.pinned ? 82 : 70)});
     }
     for (int part : parts) tabs.push_back({-1, part, TextWidth(dc, PartTitle(part)) + S(30)});
     int shownPart = ShownPart(group), shownFile = shownPart < 0 ? ShownIndex(group) : -1;
@@ -665,6 +664,11 @@ void MainWindow::PaintTabs(HDC dc, int group) {
             Ellipse(dc, textLeft, cy - S(3), textLeft + S(7), cy + S(4));
             textLeft += S(12);
         }
+        // The icon of the file type, as in IntelliJ.
+        int iconSize = S(16);
+        FileIcons::Draw(dc, textLeft, (r.top + r.bottom - iconSize) / 2, iconSize,
+                        FileIcons::KindOf(ed.file().empty() ? fs::path(ed.Title()) : ed.file()));
+        textLeft += iconSize + S(6);
         RECT tr{textLeft, r.top, r.right - S(28), r.bottom};
         SelectObject(dc, isMain ? uiBold_ : uiFont_);
         DrawTextColor(dc, title, tr, errors ? Theme::Error : (open ? Theme::Bright : Theme::Text),

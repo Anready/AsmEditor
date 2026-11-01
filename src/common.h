@@ -285,10 +285,10 @@ std::optional<std::wstring> InputBox(HWND owner, const std::wstring& title, cons
 bool ShowSettingsDialog(HWND owner, Settings& settings);
 void ShowMessage(HWND owner, const std::wstring& text, bool error = true);
 
-// Popup list with a filter box (command palette, quick open, templates). Items are "text\tdetail".
-// Returns the index of the chosen item.
+// Popup list with a filter box (command palette, quick open, templates). Items are "text\tdetail"; with fileIcons
+// the text is a file name, shown with the icon of its type. Returns the index of the chosen item.
 std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std::vector<std::wstring>& items,
-                                const std::wstring& placeholder = L"");
+                                const std::wstring& placeholder = L"", bool fileIcons = false);
 
 struct FindInFilesRequest {
     std::wstring what, replaceWith;

@@ -4,6 +4,9 @@
 
 #include "mainwindow.h"
 #include "asmtools.h"
+#include "fileicons.h"
+#include "scrollbar.h"
+#include "sticky.h"
 #include "tip.h"
 
 #include <cmath>

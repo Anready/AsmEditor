@@ -1,6 +1,7 @@
 #include "editor.h"
 
 #include "completion.h"
+#include "scrollbar.h"
 #include "tip.h"
 
 #include <cmath>
@@ -31,6 +32,7 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     fn_ = reinterpret_cast<SciFnDirect>(SendMessageW(hwnd_, SCI_GETDIRECTFUNCTION, 0, 0));
     ptr_ = static_cast<sptr_t>(SendMessageW(hwnd_, SCI_GETDIRECTPOINTER, 0, 0));
     ApplyDarkControl(hwnd_);
+    ScrollBars::Attach(hwnd_);
 
     Call(SCI_SETCODEPAGE, SC_CP_UTF8);
     Call(SCI_SETMODEVENTMASK, SC_MOD_INSERTTEXT | SC_MOD_DELETETEXT);

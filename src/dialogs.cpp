@@ -1,4 +1,6 @@
 #include "common.h"
+#include "fileicons.h"
+#include "scrollbar.h"
 
 #include <set>
 
@@ -32,6 +34,7 @@ public:
     std::function<bool()> onOk;
     std::function<void(int)> onCommand;
     std::function<void(HWND control, int code)> onControl;  // EN_CHANGE, LBN_DBLCLK… of child controls
+    std::function<void(const DRAWITEMSTRUCT&)> onDrawItem;  // rows of an owner-drawn list
 
     Dialog(HWND owner, const std::wstring& title, int width, int height) : owner_(owner) {
         dpi_ = owner ? GetDpiForWindow(owner) : 96;
@@ -58,6 +61,7 @@ public:
 
     int S(int v) const { return Scale(v, dpi_); }
     HWND hwnd() const { return hwnd_; }
+    HFONT font() const { return font_; }
     void Finish(bool ok) {
         if (ok && onOk && !onOk()) return;
         ok_ = ok;
@@ -96,21 +100,26 @@ public:
                                  height, hwnd_, nullptr, nullptr, nullptr);
         SendMessageW(e, WM_SETFONT, reinterpret_cast<WPARAM>(font_), FALSE);
         SendMessageW(e, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELPARAM(S(4), S(4)));
-        if (multiline) ApplyDarkControl(e);
+        if (multiline) {
+            ApplyDarkControl(e);
+            ScrollBars::Attach(e);
+        }
         edits_.push_back({e, frame});
         if (!firstFocus_) firstFocus_ = e;
         return e;
     }
 
-    HWND List(int x, int y, int w, int h) {
+    // ownerDraw: the rows are drawn by onDrawItem.
+    HWND List(int x, int y, int w, int h, bool ownerDraw = false) {
         HWND l = CreateWindowExW(0, L"LISTBOX", L"",
                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_USETABSTOPS |
-                                     LBS_NOINTEGRALHEIGHT,
+                                     LBS_NOINTEGRALHEIGHT | (ownerDraw ? LBS_OWNERDRAWFIXED | LBS_HASSTRINGS : 0),
                                  S(x), S(y), S(w), S(h), hwnd_, nullptr, nullptr, nullptr);
         SendMessageW(l, WM_SETFONT, reinterpret_cast<WPARAM>(font_), FALSE);
         int tab = w * 4 * 55 / 100 / std::max(1, static_cast<int>(LOWORD(GetDialogBaseUnits())));  // detail column
         SendMessageW(l, LB_SETTABSTOPS, 1, reinterpret_cast<LPARAM>(&tab));
         ApplyDarkControl(l);
+        ScrollBars::Attach(l);
         return l;
     }
 
@@ -188,6 +197,15 @@ public:
             SetBkColor(dc, Theme::InputBg);
             return reinterpret_cast<LRESULT>(self->inputBg_);
         }
+        case WM_MEASUREITEM:
+            reinterpret_cast<MEASUREITEMSTRUCT*>(lp)->itemHeight = self->S(26);
+            return TRUE;
+        case WM_DRAWITEM:
+            if (self->onDrawItem) {
+                self->onDrawItem(*reinterpret_cast<DRAWITEMSTRUCT*>(lp));
+                return TRUE;
+            }
+            break;
         case DM_GETDEFID:
             return MAKELRESULT(IDOK, DC_HASDEFID);
         case WM_COMMAND: {
@@ -588,12 +606,36 @@ LRESULT CALLBACK FilterEditProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_
 }
 
 std::optional<int> PickFromList(HWND owner, const std::wstring& title, const std::vector<std::wstring>& items,
-                                const std::wstring& placeholder) {
+                                const std::wstring& placeholder, bool fileIcons) {
     RegisterDialogClass();
     Dialog d(owner, title, 640, 440);
     HWND filter = d.Edit(L"", 16, 14, 608, 28);
     SendMessageW(filter, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(placeholder.c_str()));
-    HWND list = d.List(16, 52, 608, 330);
+    HWND list = d.List(16, 52, 608, 330, fileIcons);
+    if (fileIcons) {  // the file's icon, its name, and the folder dimmed
+        d.onDrawItem = [&](const DRAWITEMSTRUCT& di) {
+            if (di.itemID == static_cast<UINT>(-1)) return;
+            HDC dc = di.hDC;
+            RECT r = di.rcItem;
+            SetDCBrushColor(dc, (di.itemState & ODS_SELECTED) ? Theme::ListSelected : Theme::InputBg);
+            FillRect(dc, &r, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+            std::wstring text(static_cast<size_t>(SendMessageW(list, LB_GETTEXTLEN, di.itemID, 0)), L'\0');
+            SendMessageW(list, LB_GETTEXT, di.itemID, reinterpret_cast<LPARAM>(text.data()));
+            size_t tab = text.find(L'\t');
+            std::wstring name = text.substr(0, tab), detail = tab == std::wstring::npos ? L"" : text.substr(tab + 1);
+            int icon = d.S(16);
+            FileIcons::Draw(dc, r.left + d.S(8), (r.top + r.bottom - icon) / 2, icon, FileIcons::KindOf(name));
+            HGDIOBJ old = SelectObject(dc, d.font());
+            SetBkMode(dc, TRANSPARENT);
+            int column = r.left + (r.right - r.left) * 55 / 100;
+            RECT nr{r.left + d.S(32), r.top, column - d.S(8), r.bottom}, dr{column, r.top, r.right - d.S(8), r.bottom};
+            SetTextColor(dc, Theme::Bright);
+            DrawTextW(dc, name.c_str(), -1, &nr, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+            SetTextColor(dc, Theme::Muted);
+            DrawTextW(dc, detail.c_str(), -1, &dr, DT_SINGLELINE | DT_VCENTER | DT_PATH_ELLIPSIS | DT_NOPREFIX);
+            SelectObject(dc, old);
+        };
+    }
     d.Button(IDOK, L"OK", 432, 396, 92, 30, FB_PRIMARY);
     d.Button(IDCANCEL, Tr(L"Отмена"), 532, 396, 92, 30);
     SetWindowSubclass(filter, FilterEditProc, 1, reinterpret_cast<DWORD_PTR>(list));

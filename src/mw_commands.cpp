@@ -274,7 +274,7 @@ void MainWindow::QuickOpen() {
         fs::path rel = !projectRoot_.empty() && IsUnder(f, projectRoot_) ? NormalizePath(f).lexically_relative(NormalizePath(projectRoot_)) : f;
         items.push_back(f.filename().wstring() + L"\t" + rel.parent_path().wstring());
     }
-    auto pick = PickFromList(hwnd_, Tr(L"Перейти к файлу"), items, Tr(L"Имя файла…"));
+    auto pick = PickFromList(hwnd_, Tr(L"Перейти к файлу"), items, Tr(L"Имя файла…"), true);
     if (pick) OpenFile(files[*pick]);
 }
 

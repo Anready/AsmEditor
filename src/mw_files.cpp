@@ -28,6 +28,7 @@ int MainWindow::IndexOf(const Editor* ed) const {
 void MainWindow::AddEditor(std::unique_ptr<Editor> ed) {
     Editor* raw = ed.get();
     SetWindowSubclass(raw->hwnd(), EditorProc, 4, reinterpret_cast<DWORD_PTR>(this));
+    StickyLines::Attach(raw);
     // A new tab opens in the group that has the focus.
     raw->group = floatFocus_ >= kPanelGroup && GroupInfo(floatFocus_) ? floatFocus_ : (focusRight_ && GroupHasItems(1) ? 1 : 0);
     editors_.push_back(std::move(ed));
@@ -610,9 +611,6 @@ void MainWindow::BuildTree(HTREEITEM parent, const fs::path& dir, int depth) {
     std::sort(dirs.begin(), dirs.end(), byName);
     std::sort(files.begin(), files.end(), byName);
     auto insert = [&](const fs::path& p, bool folder) {
-        SHFILEINFOW sfi{};
-        SHGetFileInfoW(p.c_str(), folder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL, &sfi, sizeof(sfi),
-                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
         std::wstring name = p.filename().wstring();
         bool isMain = SamePath(p, mainFile_);
         if (isMain) name += L"   ▶ main";
@@ -620,9 +618,10 @@ void MainWindow::BuildTree(HTREEITEM parent, const fs::path& dir, int depth) {
         TVINSERTSTRUCTW ins{};
         ins.hParent = parent;
         ins.hInsertAfter = TVI_LAST;
-        ins.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_STATE | TVIF_CHILDREN;
+        ins.itemex.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_EXPANDEDIMAGE | TVIF_STATE | TVIF_CHILDREN;
         ins.item.pszText = name.data();
-        ins.item.iImage = ins.item.iSelectedImage = sfi.iIcon;
+        ins.item.iImage = ins.item.iSelectedImage = static_cast<int>(FileIcons::KindOf(p, folder));
+        ins.itemex.iExpandedImage = static_cast<int>(FileIcons::KindOf(p, folder, true));
         ins.item.lParam = static_cast<LPARAM>(treePaths_.size());
         ins.item.state = isMain ? TVIS_BOLD : 0;
         ins.item.stateMask = TVIS_BOLD;
@@ -653,16 +652,14 @@ void MainWindow::RefreshTree() {
     TreeView_DeleteAllItems(tree_);
     treePaths_.clear();
     if (!projectRoot_.empty()) {
-        SHFILEINFOW sfi{};
-        SHGetFileInfoW(projectRoot_.c_str(), FILE_ATTRIBUTE_DIRECTORY, &sfi, sizeof(sfi),
-                       SHGFI_SYSICONINDEX | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES);
         std::wstring name = projectRoot_.filename().wstring();
         if (name.empty()) name = projectRoot_.wstring();
         TVINSERTSTRUCTW ins{};
         ins.hParent = TVI_ROOT;
-        ins.item.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_STATE;
+        ins.itemex.mask = TVIF_TEXT | TVIF_PARAM | TVIF_IMAGE | TVIF_SELECTEDIMAGE | TVIF_EXPANDEDIMAGE | TVIF_STATE;
         ins.item.pszText = name.data();
-        ins.item.iImage = ins.item.iSelectedImage = sfi.iIcon;
+        ins.item.iImage = ins.item.iSelectedImage = static_cast<int>(FileIcons::Kind::Folder);
+        ins.itemex.iExpandedImage = static_cast<int>(FileIcons::Kind::FolderOpen);
         ins.item.lParam = 0;
         ins.item.state = TVIS_BOLD;
         ins.item.stateMask = TVIS_BOLD;

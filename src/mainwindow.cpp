@@ -17,6 +17,7 @@ LRESULT CALLBACK CbtProc(int code, WPARAM wp, LPARAM lp) {
         GetClassNameW(hwnd, cls, 32);
         if (create->lpcs->hwndParent) GetClassNameW(create->lpcs->hwndParent, parentCls, 32);
         if (wcscmp(cls, L"ListBoxX") == 0 || wcscmp(parentCls, L"ListBoxX") == 0) ApplyDarkControl(hwnd);
+        if (wcscmp(parentCls, L"ListBoxX") == 0) ScrollBars::AttachLater(hwnd);  // its list: our scrollbar
     }
     return CallNextHookEx(g_cbtHook, code, wp, lp);
 }
@@ -107,14 +108,12 @@ void MainWindow::CreateChildren() {
         TreeView_SetExtendedStyle(t, TVS_EX_DOUBLEBUFFER, TVS_EX_DOUBLEBUFFER);
         TreeView_SetBkColor(t, Theme::EditorBg);
         TreeView_SetTextColor(t, Theme::Text);
+        ScrollBars::Attach(t);
         return t;
     };
     tree_ = makeTree(ID_TREE_CTRL, TVS_HASBUTTONS);
     ShowWindow(tree_, SW_SHOW);
-    SHFILEINFOW sfi{};
-    auto images = reinterpret_cast<HIMAGELIST>(
-        SHGetFileInfoW(L"C:\\", 0, &sfi, sizeof(sfi), SHGFI_SYSICONINDEX | SHGFI_SMALLICON));
-    TreeView_SetImageList(tree_, images, TVSIL_NORMAL);
+    TreeView_SetImageList(tree_, FileIcons::ImageList(S(16)), TVSIL_NORMAL);
     outline_ = makeTree(ID_OUTLINE_CTRL, TVS_HASBUTTONS | TVS_LINESATROOT);
 
     for (auto& view : views_) {
@@ -207,7 +206,7 @@ void MainWindow::SetupPanelView(Editor& v) {
     v.Call(SCI_SETREADONLY, 1);
     v.Call(SCI_SETUNDOCOLLECTION, 0);
     v.Call(SCI_SETMOUSEDWELLTIME, SC_TIME_FOREVER);
-    v.Call(SCI_SETHSCROLLBAR, 0);
+    ScrollBars::Show(v.hwnd(), true, false);
     const std::pair<int, COLORREF> colors[] = {
         {P_TEXT, Theme::Text}, {P_LABEL, Theme::Register}, {P_CHANGED, Theme::Changed}, {P_HEADER, Theme::Muted},
         {P_SYMBOL, Theme::Link}, {P_FLAG_ON, Theme::Success}, {P_DIM, Theme::Dim}, {P_ERROR, Theme::Error},
@@ -1132,6 +1131,8 @@ void MainWindow::OnNotify(NMHDR* nm) {
     }
 
     auto* scn = reinterpret_cast<SCNotification*>(nm);
+    // Lines added out of sight change the scroll range without a repaint.
+    if (nm->code == SCN_MODIFIED || nm->code == SCN_ZOOM) ScrollBars::Changed(nm->hwndFrom);
     for (auto& view : views_) {
         if (!view || nm->hwndFrom != view->hwnd()) continue;
         if (nm->code == SCN_DOUBLECLICK && view.get() != &View(Pane::Terminal)) ConsoleDoubleClick(*view, scn->position);

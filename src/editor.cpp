@@ -43,6 +43,8 @@ Editor::Editor(HWND parent, int fontSize) : id_(g_nextId++) {
     Call(SCI_SETBACKSPACEUNINDENTS, 1);
     Call(SCI_SETSCROLLWIDTHTRACKING, 1);
     Call(SCI_SETSCROLLWIDTH, 1);
+    // Every line keeps its layout (by default only the caret's): scrolling does not measure the text again each frame.
+    Call(SCI_SETLAYOUTCACHE, SC_CACHE_DOCUMENT);
     Call(SCI_SETMOUSEDWELLTIME, 450);
     Call(SCI_SETMARGINS, 5);
     Call(SCI_SETMARGINTYPEN, 0, SC_MARGIN_SYMBOL);  // breakpoints and the execution arrow
@@ -479,8 +481,7 @@ Sci_Position Editor::ScrollLines() const {
 }
 
 void Editor::LimitScroll() const {
-    // Lines on screen without the one the window may be taller by while it scrolls smoothly (scrollbar.cpp).
-    Sci_Position shown = Call(SCI_LINESONSCREEN) - ScrollBars::ExtraLines(hwnd_);
+    Sci_Position shown = Call(SCI_LINESONSCREEN);
     Sci_Position maxTop = std::max<Sci_Position>(0, ScrollLines() - shown);
     if (Call(SCI_GETFIRSTVISIBLELINE) > maxTop) Call(SCI_SETFIRSTVISIBLELINE, maxTop);
 }

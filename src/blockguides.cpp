@@ -1,6 +1,7 @@
 #include "blockguides.h"
 
 #include "editor.h"
+#include "scrollbar.h"
 
 #include <set>
 
@@ -33,6 +34,7 @@ void Draw(Editor& ed) {
     int charW = static_cast<int>(ed.Call(SCI_TEXTWIDTH, STYLE_DEFAULT, reinterpret_cast<sptr_t>("x")));
     int dpi = static_cast<int>(GetDpiForWindow(hwnd));
     int width = std::max(1, MulDiv(1, dpi ? dpi : 96, 96));
+    int shift = ScrollBars::TopOffset(hwnd);  // the text is drawn higher while it scrolls smoothly
     COLORREF dim = Theme::Blend(Theme::EditorBg, Theme::Muted, 22), bright = Theme::Blend(Theme::EditorBg, Theme::Muted, 60);
 
     HDC dc = GetDC(hwnd);
@@ -64,7 +66,7 @@ void Draw(Editor& ed) {
                 flush();
                 continue;
             }
-            int y = static_cast<int>(ed.Call(SCI_POINTYFROMPOSITION, 0, ed.Call(SCI_POSITIONFROMLINE, l)));
+            int y = static_cast<int>(ed.Call(SCI_POINTYFROMPOSITION, 0, ed.Call(SCI_POSITIONFROMLINE, l))) - shift;
             int lh = static_cast<int>(ed.Call(SCI_TEXTHEIGHT, l));
             if (top < 0) top = y;
             bottom = y + lh;

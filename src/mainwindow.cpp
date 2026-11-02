@@ -393,14 +393,16 @@ LRESULT MainWindow::Handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC dc = BeginPaint(hwnd_, &ps);
-        RECT rc;
-        GetClientRect(hwnd_, &rc);
+        // Only the part to paint, in a bitmap of its size: the status bar alone (each frame of scrolling) is cheap.
+        const RECT& r = ps.rcPaint;
+        int w = std::max(1L, r.right - r.left), h = std::max(1L, r.bottom - r.top);
         HDC mem = CreateCompatibleDC(dc);
-        HBITMAP bmp = CreateCompatibleBitmap(dc, std::max(1L, rc.right), std::max(1L, rc.bottom));
+        HBITMAP bmp = CreateCompatibleBitmap(dc, w, h);
         HGDIOBJ old = SelectObject(mem, bmp);
+        SetViewportOrgEx(mem, -r.left, -r.top, nullptr);
+        IntersectClipRect(mem, r.left, r.top, r.right, r.bottom);
         Paint(mem);
-        BitBlt(dc, ps.rcPaint.left, ps.rcPaint.top, ps.rcPaint.right - ps.rcPaint.left,
-               ps.rcPaint.bottom - ps.rcPaint.top, mem, ps.rcPaint.left, ps.rcPaint.top, SRCCOPY);
+        BitBlt(dc, r.left, r.top, w, h, mem, r.left, r.top, SRCCOPY);
         SelectObject(mem, old);
         DeleteObject(bmp);
         DeleteDC(mem);

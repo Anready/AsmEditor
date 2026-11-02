@@ -41,11 +41,14 @@ struct State {
     COLORREF bg = 0;
     // The system scrollbars kept out of sight: the window is this much wider / taller than it was given, and clipped.
     int extraW = 0, extraH = 0;
-    int visibleX = 0, visibleY = 0, visibleW = 0, visibleH = 0;  // where the owner put the window
-    // Pixel-smooth scrolling of Scintilla (which scrolls by whole lines): the window moves up by the part of a line
-    // (offset) and is a line taller meanwhile, clipped back to where it was put.
-    int offset = 0, lineExtra = 0;
-    bool selfMove = false;      // our own SetWindowPos: the visible rectangle stays
+    int visibleW = 0, visibleH = 0;  // the size the owner gave the window
+    // Pixel-smooth scrolling of Scintilla (which scrolls by whole lines): its picture is drawn higher by the part of a
+    // line (offset). The window itself stays: moving and clipping it again each frame took 30-50 ms (SetWindowRgn).
+    int offset = 0;
+    HDC memDC = nullptr;  // where Scintilla paints meanwhile, kept for the frames of a glide
+    HBITMAP memBmp = nullptr;
+    HGDIOBJ memOld = nullptr;
+    int memW = 0, memH = 0;
     bool framing = false;       // a frame of smooth scrolling is being put together: nothing reaches the screen yet
     bool smoothing = false;
     double smoothFrom = 0, smoothTo = 0, smoothPos = 0;
@@ -116,7 +119,7 @@ void Measure(State& s) {
         // The scroll range of the editors: the lines plus a few past the end (Editor::LimitScroll).
         int64_t last = Send(s, SCI_GETLINECOUNT) - 1;
         s.v.total = Send(s, SCI_VISIBLEFROMDOCLINE, last) + Send(s, SCI_WRAPCOUNT, last) + Editor::kScrollPastEnd;
-        s.v.page = Send(s, SCI_LINESONSCREEN) - (s.lineExtra ? 1 : 0);
+        s.v.page = Send(s, SCI_LINESONSCREEN);
         s.v.pos = Send(s, SCI_GETFIRSTVISIBLELINE);
         s.v.smooth = s.smoothing ? s.smoothPos : static_cast<double>(s.v.pos);
     } else {
@@ -143,7 +146,7 @@ void Place(Bar& b, RECT r, bool show) {
     }
     // Within a frame of smooth scrolling the bar only moves (copying its old pixels on the screen would show a torn
     // thumb before the frame is painted); the frame paints it with everything else.
-    UINT quiet = b.state->framing || b.state->selfMove ? SWP_NOREDRAW | SWP_NOCOPYBITS : 0;
+    UINT quiet = b.state->framing ? SWP_NOREDRAW | SWP_NOCOPYBITS : 0;
     SetWindowPos(b.hwnd, HWND_TOP, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOACTIVATE | SWP_SHOWWINDOW | quiet);
     InvalidateRect(b.hwnd, nullptr, FALSE);  // all of it: the thumb moves with the size
 }
@@ -172,10 +175,6 @@ void Sync(State& s) {
 
     RECT rc;
     GetClientRect(s.target, &rc);
-    if (s.kind == Kind::Scintilla) {  // the part on screen (it moves while scrolling smoothly)
-        rc.top = s.offset;
-        rc.bottom = std::min<LONG>(rc.bottom, s.offset + s.visibleH);
-    }
     // Scintilla scrolls a few lines past the end: no thumb while the lines themselves fit (unless scrolled down).
     int64_t pastEnd = s.kind == Kind::Scintilla ? Editor::kScrollPastEnd : 0;
     bool needV = s.wantV && s.v.page > 0 && s.v.page < s.v.total && (s.v.pos > 0 || s.v.page < s.v.total - pastEnd);
@@ -223,18 +222,37 @@ void ScrollTo(State& s, bool vertical, int64_t pos) {
 
 // ---- smooth wheel scrolling -------------------------------------------------------------------------------------
 
-// Moves the window up by `offset` pixels (0..a line) and makes it `extra` taller. The size changes only when a glide
-// starts and ends (a resize makes Scintilla lay out and repaint everything); in between the window only moves.
-// Moves the window without drawing or copying bits (with its old clip it would cover the tab row for a moment);
-// it is clipped back in WM_WINDOWPOSCHANGED. Frame() then paints.
-void SetOffset(State& s, int offset, int extra) {
-    if (offset == s.offset && extra == s.lineExtra) return;
-    s.offset = offset;
-    s.lineExtra = extra;
-    s.selfMove = true;
-    SetWindowPos(s.target, nullptr, s.visibleX, s.visibleY - s.offset, s.visibleW + s.extraW,
-                 s.visibleH + s.extraH + s.lineExtra, SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS);
-    s.selfMove = false;
+void FreeMemory(State& s) {
+    if (!s.memDC) return;
+    SelectObject(s.memDC, s.memOld);
+    DeleteObject(s.memBmp);
+    DeleteDC(s.memDC);
+    s.memDC = nullptr;
+    s.memBmp = nullptr;
+}
+
+// Scintilla while its picture is drawn higher by `offset` pixels: it paints into memory, which is copied up. The
+// strip left at the bottom (the next line, which Scintilla does not paint) gets the editor's background.
+void PaintShifted(State& s) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(s.target, &ps);
+    RECT rc;
+    GetClientRect(s.target, &rc);
+    int w = std::max(1L, rc.right), h = std::max(1L, rc.bottom);
+    if (!s.memDC || s.memW != w || s.memH != h) {
+        FreeMemory(s);
+        s.memDC = CreateCompatibleDC(dc);
+        s.memBmp = CreateCompatibleBitmap(dc, w, h);
+        s.memOld = SelectObject(s.memDC, s.memBmp);
+        s.memW = w;
+        s.memH = h;
+    }
+    DefSubclassProc(s.target, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(s.memDC), PRF_CLIENT);
+    BitBlt(dc, 0, 0, w, h - s.offset, s.memDC, 0, s.offset, SRCCOPY);
+    RECT strip{0, h - s.offset, w, h};
+    SetDCBrushColor(dc, s.bg);
+    FillRect(dc, &strip, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+    EndPaint(s.target, &ps);
 }
 
 // One frame of smooth scrolling, shown at once: the sticky lines and bars in place, everything painted together,
@@ -243,7 +261,10 @@ void Frame(State& s) {
     s.framing = true;
     Sync(s);
     s.framing = false;
-    RedrawWindow(s.target, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    // The window does not move: its children (bars, sticky lines) are painted only where they changed. At once, as
+    // wheel messages come before WM_PAINT and would hold them back while the wheel spins.
+    RedrawWindow(s.target, nullptr, nullptr, RDW_INVALIDATE | RDW_NOCHILDREN | RDW_UPDATENOW);
+    RedrawWindow(s.target, nullptr, nullptr, RDW_ALLCHILDREN | RDW_UPDATENOW);
     if (HWND parent = GetParent(s.target)) SendMessageW(parent, kMovedMessage, reinterpret_cast<WPARAM>(s.target), 0);
 }
 
@@ -251,8 +272,9 @@ void StopWheel(State& s) {
     s.wheeling = false;
     if (s.smoothing) {
         s.smoothing = false;
-        SetOffset(s, 0, 0);
+        s.offset = 0;
         Frame(s);
+        FreeMemory(s);
     }
     if (!s.hSmoothing) KillTimer(s.target, kWheelTimer);
 }
@@ -309,18 +331,8 @@ void SmoothStep(State& s) {
         top++;
         offset = 0;
     }
-    bool last = t >= 1;
-    // The window only moves: the strip it leaves at the bottom is the panel's own color. With a horizontal scrollbar
-    // (Windows' own, kept below the bottom edge) it is also a line taller while it glides, or moving up would bring
-    // that scrollbar into view.
-    bool hbar = (GetWindowLongW(s.target, GWL_STYLE) & WS_HSCROLL) != 0;
-    if (last) {
-        SetOffset(s, 0, 0);  // normal size before the last line is set, so the scroll limit counts the right lines
-        if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
-    } else {
-        if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
-        SetOffset(s, offset, hbar ? lineHeight : 0);
-    }
+    if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
+    s.offset = t >= 1 ? 0 : offset;
     s.expectedFirst = Send(s, SCI_GETFIRSTVISIBLELINE);
     Frame(s);
     if (t >= 1) {
@@ -570,29 +582,29 @@ LRESULT CALLBACK TargetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
         break;
     case WM_WINDOWPOSCHANGING: {
         auto* p = reinterpret_cast<WINDOWPOS*>(lp);
-        if (s->selfMove) break;
-        if (!(p->flags & SWP_NOMOVE)) {
-            s->visibleX = p->x;
-            s->visibleY = p->y;
-            p->y -= s->offset;
-        }
         if (!(p->flags & SWP_NOSIZE)) {
             s->visibleW = p->cx;
             s->visibleH = p->cy;
             p->cx += s->extraW;
-            p->cy += s->extraH + s->lineExtra;
+            p->cy += s->extraH;
         }
         break;
     }
     case WM_WINDOWPOSCHANGED: {
         auto* p = reinterpret_cast<WINDOWPOS*>(lp);
-        if (!(p->flags & SWP_NOSIZE) || s->selfMove) {
-            bool clip = s->extraW || s->extraH || s->offset;
-            SetWindowRgn(hwnd, clip ? CreateRectRgn(0, s->offset, s->visibleW, s->offset + s->visibleH) : nullptr,
-                         !s->selfMove);  // our own move repaints everything itself
+        if (!(p->flags & SWP_NOSIZE)) {
+            bool clip = s->extraW || s->extraH;
+            SetWindowRgn(hwnd, clip ? CreateRectRgn(0, 0, s->visibleW, s->visibleH) : nullptr, TRUE);
         }
         break;
     }
+    case WM_PAINT:
+        if (s->offset) {
+            PaintShifted(*s);
+            PostSync(*s);
+            return 0;
+        }
+        break;
     case WM_KEYDOWN:
     case WM_LBUTTONDOWN:
     case WM_RBUTTONDOWN:
@@ -606,6 +618,7 @@ LRESULT CALLBACK TargetProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR,
     case WM_NCDESTROY:
         KillTimer(hwnd, kWheelTimer);
         RemoveWindowSubclass(hwnd, TargetProc, kSubclassId);
+        FreeMemory(*s);
         delete s;
         return DefSubclassProc(hwnd, msg, wp, lp);
     }
@@ -679,9 +692,6 @@ void Attach(HWND hwnd) {
     }
     RECT wr;
     GetWindowRect(hwnd, &wr);
-    MapWindowPoints(HWND_DESKTOP, GetParent(hwnd), reinterpret_cast<POINT*>(&wr), 2);
-    s->visibleX = wr.left;
-    s->visibleY = wr.top;
     s->visibleW = wr.right - wr.left;
     s->visibleH = wr.bottom - wr.top;
     SetWindowSubclass(hwnd, TargetProc, kSubclassId, reinterpret_cast<DWORD_PTR>(s));
@@ -714,11 +724,6 @@ double Position(HWND hwnd) {
     State* s = Find(hwnd);
     if (s && s->smoothing) return s->smoothPos;
     return static_cast<double>(SendMessageW(hwnd, SCI_GETFIRSTVISIBLELINE, 0, 0));
-}
-
-int ExtraLines(HWND hwnd) {
-    State* s = Find(hwnd);
-    return s && s->lineExtra ? 1 : 0;
 }
 
 int TopOffset(HWND hwnd) {

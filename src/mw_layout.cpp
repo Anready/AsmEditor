@@ -624,8 +624,8 @@ void MainWindow::PaintTabs(HDC dc, int group) {
     bool groupFocused = group >= kPanelGroup ? floatFocus_ == group
                                              : floatFocus_ == 0 && (group == 1) == (focusRight_ && GroupHasItems(1));
 
-    HRGN clip = CreateRectRgn(strip.left, strip.top, strip.right, strip.bottom);
-    SelectClipRgn(dc, clip);
+    int saved = SaveDC(dc);  // the clip in logical units: the window paints only a part of itself, moved to 0,0
+    IntersectClipRect(dc, strip.left, strip.top, strip.right, strip.bottom);
     int x = strip.left - scroll;
     for (const Tab& t : tabs) {
         RECT r{x, strip.top, x + t.width, strip.bottom};
@@ -683,8 +683,7 @@ void MainWindow::PaintTabs(HDC dc, int group) {
                           DT_SINGLELINE | DT_VCENTER | DT_CENTER);
         }
     }
-    SelectClipRgn(dc, nullptr);
-    DeleteObject(clip);
+    RestoreDC(dc, saved);
     SelectObject(dc, uiFont_);
 }
 

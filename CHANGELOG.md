@@ -2,6 +2,15 @@
 
 The release workflow publishes the section of the tagged version as the release notes.
 
+## 1.5.1
+
+- Smooth scrolling keeps up with the wheel: a frame took 50-80 ms (about 8 frames a second), now about 10 ms. The
+  editor window is no longer moved and clipped again each frame, the main window repaints only the status bar
+  instead of everything, every line keeps its layout, and the sticky lines follow the text in the same frame.
+- Touchpads and high-resolution wheels: the text follows each of their messages by pixels at once instead of
+  starting a new glide every few milliseconds (which lagged and then leapt), and settles on a whole line when they
+  stop. Notched wheels keep the glide.
+
 ## 1.5.0
 
 - Inlay hints, as in IntelliJ: the parameter a register gets before a `call` (`format → printf`), the size of a

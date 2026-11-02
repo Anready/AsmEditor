@@ -4,7 +4,7 @@
 
 #define AppVersion GetEnv("ASMEDITOR_VERSION")
 #if AppVersion == ""
-  #define AppVersion "1.5.0"
+  #define AppVersion "1.5.1"
 #endif
 
 [Setup]

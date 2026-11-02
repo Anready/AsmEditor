@@ -11,6 +11,7 @@ constexpr UINT_PTR kSubclassId = 0x5CB0;
 constexpr UINT_PTR kWheelTimer = 0x5CB1;
 constexpr int kBarWidth = 10;  // 96-dpi pixels
 constexpr int kMinThumb = 24;
+constexpr double kPreciseRest = 120;  // ms without touchpad messages after which the text settles on a whole line
 const UINT kSyncMessage = RegisterWindowMessageW(L"AsmEditor.ScrollBars.Sync");
 const UINT kMovedMessage = RegisterWindowMessageW(L"AsmEditor.ScrollBars.Moved");
 
@@ -61,6 +62,8 @@ struct State {
     double wheelTarget = 0;  // smooth wheel scrolling: the first line it is heading for
     double wheelRest = 0;    // the part of a line left over (touchpads send small steps)
     bool wheeling = false;
+    bool precise = false;    // Scintilla follows a touchpad or a high-resolution wheel message by message
+    double preciseLast = 0;  // NowMs() of its last message
 };
 
 // Milliseconds on a fine clock (GetTickCount steps by 16 ms: too coarse for frames).
@@ -270,6 +273,7 @@ void Frame(State& s) {
 
 void StopWheel(State& s) {
     s.wheeling = false;
+    s.precise = false;
     if (s.smoothing) {
         s.smoothing = false;
         s.offset = 0;
@@ -314,6 +318,22 @@ bool SideWheel(State& s, int delta) {
     return true;
 }
 
+// Scintilla shows its text from `pos` on (in lines, with the part of a line): the whole lines it scrolls itself,
+// the part is drawn higher. `paint`: the frame at once (else with the next one).
+void ShowAt(State& s, double pos, int64_t first, bool paint) {
+    int lineHeight = std::max(1, static_cast<int>(Send(s, SCI_TEXTHEIGHT, 0)));
+    int64_t top = static_cast<int64_t>(std::floor(pos));
+    int offset = static_cast<int>(std::lround((pos - static_cast<double>(top)) * lineHeight));
+    if (offset >= lineHeight) {
+        top++;
+        offset = 0;
+    }
+    if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
+    s.offset = offset;
+    s.expectedFirst = Send(s, SCI_GETFIRSTVISIBLELINE);
+    if (paint) Frame(s);
+}
+
 // Scintilla: an eased glide from where it is to the target, a frame at a time, by pixels.
 void SmoothStep(State& s) {
     int64_t first = Send(s, SCI_GETFIRSTVISIBLELINE);
@@ -321,20 +341,17 @@ void SmoothStep(State& s) {
         StopWheel(s);
         return;
     }
+    if (s.precise) {  // the touchpad moves the text itself; when it stops sending, a short glide to a whole line
+        if (NowMs() - s.preciseLast < kPreciseRest) return;
+        s.precise = false;
+        s.smoothFrom = s.smoothPos;
+        s.smoothTo = std::round(s.smoothPos);
+        s.smoothStart = NowMs() - 16;
+    }
     double t = std::min(1.0, (NowMs() - s.smoothStart) / 110.0);
     double eased = 1 - (1 - t) * (1 - t) * (1 - t);
     s.smoothPos = t >= 1 ? std::round(s.smoothTo) : s.smoothFrom + (s.smoothTo - s.smoothFrom) * eased;
-    int lineHeight = std::max(1, static_cast<int>(Send(s, SCI_TEXTHEIGHT, 0)));
-    int64_t top = static_cast<int64_t>(std::floor(s.smoothPos));
-    int offset = static_cast<int>(std::lround((s.smoothPos - static_cast<double>(top)) * lineHeight));
-    if (offset >= lineHeight) {
-        top++;
-        offset = 0;
-    }
-    if (top != first) Send(s, SCI_SETFIRSTVISIBLELINE, static_cast<WPARAM>(top));
-    s.offset = t >= 1 ? 0 : offset;
-    s.expectedFirst = Send(s, SCI_GETFIRSTVISIBLELINE);
-    Frame(s);
+    ShowAt(s, s.smoothPos, first, true);
     if (t >= 1) {
         s.smoothing = false;
         StopWheel(s);
@@ -378,6 +395,28 @@ bool Wheel(State& s, WPARAM wp) {
     SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
     double perNotch = lines == WHEEL_PAGESCROLL ? static_cast<double>(std::max<int64_t>(1, s.v.page - 1)) : lines;
     double delta = -GET_WHEEL_DELTA_WPARAM(wp) / static_cast<double>(WHEEL_DELTA) * perNotch;
+    int raw = GET_WHEEL_DELTA_WPARAM(wp);
+    if (s.kind == Kind::Scintilla && (raw % WHEEL_DELTA != 0 || (s.precise && NowMs() - s.preciseLast < kPreciseRest))) {
+        // A touchpad or a high-resolution wheel: parts of a notch, often many at once, with its own inertia. Each
+        // message moves the text by as much, at once (a glide for each would start over every few ms and lag
+        // behind); when they stop, the text settles on a whole line (SmoothStep).
+        double from = s.smoothing ? s.smoothPos : static_cast<double>(s.v.pos);
+        double pos = std::clamp(from + delta, 0.0, static_cast<double>(maxPos));
+        s.precise = true;
+        s.preciseLast = NowMs();
+        s.wheelRest = 0;
+        if (pos == from) return true;
+        s.smoothFrom = s.smoothTo = s.smoothPos = pos;
+        if (!s.smoothing) {
+            s.smoothing = s.wheeling = true;
+            SetTimer(s.target, kWheelTimer, 8, nullptr);
+        }
+        // More wheel messages waiting (they come faster than a frame is painted): the last of them paints.
+        MSG next;
+        bool more = PeekMessageW(&next, nullptr, WM_MOUSEWHEEL, WM_MOUSEWHEEL, PM_NOREMOVE | PM_NOYIELD) != 0;
+        ShowAt(s, pos, s.v.pos, !more);
+        return true;
+    }
     if (s.kind == Kind::Scintilla) {  // by pixels: from where it is now to the new target
         // The target is a whole line, so a glide ends without a snap; touchpads and free-spinning wheels send
         // parts of a notch: they add up until they make a line. At the ends, nothing starts (no shaking there).

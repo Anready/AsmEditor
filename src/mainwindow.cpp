@@ -295,7 +295,7 @@ void MainWindow::BuildMenus() {
     AppendSubmenu(runMenu_, L"Конфигурация", {ID_CHOOSE_TARGET, ID_RUN_CONFIG, 0, ID_PROFILE_DEBUG,
                                               ID_PROFILE_RELEASE, 0, ID_RESET_MAIN});
     AppendSubmenu(runMenu_, L"Упражнения", {ID_LESSONS, ID_NEW_EXERCISE, ID_EXERCISE_HINT, ID_CHECK_SOLUTION, 0,
-                                            ID_EXPORT_RESULTS, ID_GROUP_SUMMARY});
+                                            ID_LOAD_TASKS, ID_EXPORT_RESULTS, ID_GROUP_SUMMARY});
     AppendCommands(runMenu_, {0, ID_CLEAR_CONSOLE, ID_SETTINGS});
 
     helpMenu_ = CreatePopupMenu();
@@ -1003,6 +1003,7 @@ void MainWindow::OnCommand(int id) {
     case ID_CHECK_SOLUTION: CheckSolution(); break;
     case ID_NEW_EXERCISE: NewExercise(); break;
     case ID_LESSONS: OpenLesson(); break;
+    case ID_LOAD_TASKS: LoadTeacherTasks(); break;
     case ID_EXERCISE_HINT: ExerciseHint(); break;
     case ID_GROUP_SUMMARY: GroupSummary(); break;
     case ID_EXPORT_RESULTS: ExportResults(); break;

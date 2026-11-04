@@ -2,6 +2,11 @@
 
 The release workflow publishes the section of the tagged version as the release notes.
 
+## 1.5.2
+
+- Run → Exercises → "Load a teacher's tasks…" is in the menu and works: the command was there but never reachable
+  (no menu item, and choosing it in the command palette did nothing).
+
 ## 1.5.1
 
 - Smooth scrolling keeps up with the wheel: a frame took 50-80 ms (about 8 frames a second), now about 10 ms. The

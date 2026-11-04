@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: Anready.AsmEditor
+PackageVersion: 1.5.2
+PackageLocale: en-US
+Publisher: Anready
+PublisherUrl: https://github.com/Anready
+PackageName: AsmEditor
+PackageUrl: https://github.com/Anready/AsmEditor
+License: MIT
+LicenseUrl: https://github.com/Anready/AsmEditor/blob/main/LICENSE
+ShortDescription: x86-64 assembly IDE for Windows (NASM) with a debugger, profiler and lessons.
+Description: |-
+  AsmEditor is an IDE for x86-64 assembly on Windows, made for learning: write NASM code with highlighting,
+  completion and live checks, build and run it in one click, step through it in the debugger with registers,
+  memory, the stack and flags in view, profile it line by line, and work through built-in lessons and exercises.
+Moniker: asmeditor
+Tags:
+  - asm
+  - assembly
+  - debugger
+  - editor
+  - ide
+  - nasm
+  - x86-64
+ReleaseNotesUrl: https://github.com/Anready/AsmEditor/releases/tag/v1.5.2
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
